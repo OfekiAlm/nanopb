@@ -1,0 +1,7 @@
+# Nanopb options for simple_user_profile.proto
+
+# Field size limits
+SimpleUserProfile.username max_size:50
+SimpleUserProfile.email max_size:100
+SimpleUserProfile.phone max_size:20
+SimpleUserProfile.bio max_size:500

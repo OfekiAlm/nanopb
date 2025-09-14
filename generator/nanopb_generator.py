@@ -41,6 +41,14 @@ except:
     ''' + '\n')
     raise
 
+# Import validation module if available
+try:
+    from . import nanopb_validator
+    validate_pb2 = nanopb_validator.load_validate_pb2()
+except ImportError:
+    nanopb_validator = None
+    validate_pb2 = None
+
 # GetMessageClass() is used by modern python-protobuf (around 5.x onwards)
 # Retain compatibility with older python-protobuf versions.
 try:
@@ -596,6 +604,7 @@ class Field(ProtoElement):
         self.sort_by_tag = field_options.sort_by_tag
         self.submsg_callback_requested = False
         self.can_be_static = True
+        self.validate_rules = None  # Validation rules
 
         if field_options.type == nanopb_pb2.FT_INLINE:
             # Before nanopb-0.3.8, fixed length bytes arrays were specified
@@ -1308,6 +1317,7 @@ class Message(ProtoElement):
         self.math_include_required = False
         self.packed = message_options.packed_struct
         self.descriptorsize = message_options.descriptorsize
+        self.message_validate_rules = None  # Message-level validation rules
 
         if message_options.msgid:
             self.msgid = message_options.msgid
@@ -1355,6 +1365,11 @@ class Message(ProtoElement):
                 self.descriptorsize = field_options.descriptorsize
 
             field = Field(self.name, f, field_options, self.element_path + (ProtoElement.FIELD, index), self.comments)
+            
+            # Parse validation rules if available
+            if validate_pb2 and f.options.HasExtension(validate_pb2.rules):
+                field.validate_rules = f.options.Extensions[validate_pb2.rules]
+            
             if hasattr(f, 'oneof_index') and f.HasField('oneof_index'):
                 if hasattr(f, 'proto3_optional') and f.proto3_optional:
                     no_unions.append(f.oneof_index)
@@ -1907,6 +1922,12 @@ class ProtoFile:
         self.file_options = file_options
         self.dependencies = {}
         self.math_include_required = False
+        self.validate_enabled = False  # Whether validation is enabled for this file
+        
+        # Check if validation is enabled via file options
+        if validate_pb2 and fdesc.options.HasExtension(validate_pb2.validate):
+            self.validate_enabled = fdesc.options.Extensions[validate_pb2.validate]
+        
         self.parse()
         self.discard_unused_automatic_types()
         for message in self.messages:
@@ -1961,6 +1982,11 @@ class ProtoFile:
                 sys.stderr.write('Breaking circular dependency at message %s by converting to %s\n'
                                  % (msgobject.name, nanopb_pb2.FieldType.Name(message_options.type)))
                 msgobject = Message(name, message, message_options, comment_path, self.comment_locations)
+            
+            # Parse message-level validation rules if available
+            if validate_pb2 and message.options.HasExtension(validate_pb2.message):
+                msgobject.message_validate_rules = message.options.Extensions[validate_pb2.message]
+            
             self.messages.append(msgobject)
 
             # Process any nested enums
@@ -2264,6 +2290,44 @@ class ProtoFile:
 
         # End of header
         yield '\n#endif\n'
+    
+    def generate_validate_header(self, headerbasename, options):
+        '''Generate validation header file content.'''
+        if not (self.validate_enabled or options.validate):
+            return
+        
+        if not nanopb_validator:
+            return
+        
+        validator_gen = nanopb_validator.ValidatorGenerator(self)
+        
+        # Add validators for all messages
+        for msg in self.messages:
+            if hasattr(msg, 'fields'):
+                validator_gen.add_message_validator(msg, msg.message_validate_rules)
+        
+        # Generate header content
+        for line in validator_gen.generate_header():
+            yield line
+    
+    def generate_validate_source(self, headerbasename, options):
+        '''Generate validation source file content.'''
+        if not (self.validate_enabled or options.validate):
+            return
+        
+        if not nanopb_validator:
+            return
+        
+        validator_gen = nanopb_validator.ValidatorGenerator(self)
+        
+        # Add validators for all messages
+        for msg in self.messages:
+            if hasattr(msg, 'fields'):
+                validator_gen.add_message_validator(msg, msg.message_validate_rules)
+        
+        # Generate source content
+        for line in validator_gen.generate_source():
+            yield line
 
     def generate_source(self, headername, options):
         '''Generate content for a source file.'''
@@ -2489,6 +2553,10 @@ optparser.add_option("--protoc-insertion-points", dest="protoc_insertion_points"
     help="Include insertion point comments in output for use by custom protoc plugins")
 optparser.add_option("-C", "--c-style", dest="c_style", action="store_true", default=False,
     help="Use C naming convention.")
+optparser.add_option("--validate", dest="validate", action="store_true", default=False,
+    help="Generate validation code for messages.")
+optparser.add_option("--validate-consolidated", dest="validate_consolidated", action="store_true", default=False,
+    help="Generate consolidated validation files instead of per-proto files.")
 
 
 def parse_custom_style(option, opt_str, value, parser):
@@ -2649,6 +2717,21 @@ def process_file(filename, fdesc, options, other_files = {}):
 
     headerdata = ''.join(f.generate_header(includes, headerbasename, options))
     sourcedata = ''.join(f.generate_source(headerbasename, options))
+    
+    # Generate validation files if enabled
+    validate_headerdata = None
+    validate_sourcedata = None
+    validate_headername = None
+    validate_sourcename = None
+    
+    if f.validate_enabled or options.validate:
+        # Generate validation files
+        validate_headerdata = ''.join(f.generate_validate_header(headerbasename, options))
+        validate_sourcedata = ''.join(f.generate_validate_source(headerbasename, options))
+        
+        if validate_headerdata or validate_sourcedata:
+            validate_headername = noext + '_validate' + options.header_extension
+            validate_sourcename = noext + '_validate' + options.source_extension
 
     # Check if there were any lines in .options that did not match a member
     unmatched = [n for n,o in Globals.separate_options if n not in Globals.matched_namemasks]
@@ -2663,8 +2746,17 @@ def process_file(filename, fdesc, options, other_files = {}):
             if not Globals.verbose_options:
                 sys.stderr.write("Use  protoc --nanopb-out=-v:.   to see a list of the field names.\n")
 
-    return {'headername': headername, 'headerdata': headerdata,
-            'sourcename': sourcename, 'sourcedata': sourcedata}
+    result = {'headername': headername, 'headerdata': headerdata,
+              'sourcename': sourcename, 'sourcedata': sourcedata}
+    
+    if validate_headername:
+        result['validate_headername'] = validate_headername
+        result['validate_headerdata'] = validate_headerdata
+    if validate_sourcename:
+        result['validate_sourcename'] = validate_sourcename
+        result['validate_sourcedata'] = validate_sourcedata
+    
+    return result
 
 def main_cli():
     '''Main function when invoked directly from the command line.'''
@@ -2716,6 +2808,12 @@ def main_cli():
             (os.path.join(base_dir, results['headername']), results['headerdata']),
             (os.path.join(base_dir, results['sourcename']), results['sourcedata']),
         ]
+        
+        # Add validation files if generated
+        if 'validate_headername' in results:
+            to_write.append((os.path.join(base_dir, results['validate_headername']), results['validate_headerdata']))
+        if 'validate_sourcename' in results:
+            to_write.append((os.path.join(base_dir, results['validate_sourcename']), results['validate_sourcedata']))
 
         if not options.quiet:
             paths = " and ".join([x[0] for x in to_write])
@@ -2799,6 +2897,17 @@ def main_plugin():
                 f = response.file.add()
                 f.name = results['sourcename']
                 f.content = results['sourcedata']
+                
+                # Add validation files if generated
+                if 'validate_headername' in results:
+                    f = response.file.add()
+                    f.name = results['validate_headername']
+                    f.content = results['validate_headerdata']
+                
+                if 'validate_sourcename' in results:
+                    f = response.file.add()
+                    f.name = results['validate_sourcename']
+                    f.content = results['validate_sourcedata']
 
     if hasattr(plugin_pb2.CodeGeneratorResponse, "FEATURE_PROTO3_OPTIONAL"):
         response.supported_features = plugin_pb2.CodeGeneratorResponse.FEATURE_PROTO3_OPTIONAL

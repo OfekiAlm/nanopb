@@ -1,0 +1,8 @@
+# Nanopb options for user_profile.proto
+
+# Field size limits
+UserProfile.username max_size:20
+UserProfile.email max_size:100
+UserProfile.phone max_size:15
+UserProfile.bio max_size:500
+UserProfile.tags max_count:5

@@ -1,0 +1,18 @@
+syntax = "proto2";
+
+message SimpleUserProfile {
+    required string username = 1;
+    required int32 age = 2;
+    required string email = 3;
+    optional string phone = 4;
+    optional float score = 5;
+    optional string bio = 6;
+    
+    enum Status {
+        INACTIVE = 0;
+        ACTIVE = 1;
+        SUSPENDED = 2;
+        PENDING = 3;
+    }
+    optional Status status = 7;
+}

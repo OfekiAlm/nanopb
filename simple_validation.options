@@ -1,0 +1,3 @@
+# Nanopb options for simple_validation.proto
+
+SimpleValidation.name max_size:10
