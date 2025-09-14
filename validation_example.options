@@ -1,0 +1,4 @@
+# Nanopb options for validation_example.proto
+
+ValidationExample.username max_size:20
+ValidationExample.email max_size:100

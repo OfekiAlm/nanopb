@@ -51,6 +51,7 @@ The full set of available options is defined in [nanopb.proto](https://github.co
 * `fixed_count`: Generate arrays with constant length defined by `max_count`.
 * `package`: Package name that applies only for nanopb generator. Defaults to name defined by `package` keyword in .proto file, which applies for all languages.
 * `int_size`: Override the integer type of a field. For example, specify `int_size = IS_8` to convert `int32` from protocol definition into `int8_t` in the structure. When used with enum types, the size of the generated enum can be specified (C++ only)
+* `validate`: Enable validation code generation for the file or message. When enabled, additional `*_validate.h` and `*_validate.c` files are generated with validation functions. See [validation documentation](validation.md) for details.
 
 These options can be defined for the .proto files before they are
 converted using the nanopb-generator.py. There are three ways to define
@@ -170,6 +171,8 @@ other mechanisms, as they affect the whole generation:
 * `--no-timestamp`: Do not add timestamp to generated files.
 * `--strip-path`: Remove relative path from generated `#include` directives.
 * `--cpp-descriptors`: Generate extra convenience definitions for use from C++
+* `--validate`: Generate validation code for messages. Creates additional `*_validate.h` and `*_validate.c` files containing validation functions.
+* `--validate-consolidated`: Generate consolidated validation files instead of per-proto files (future feature).
 
 For a full list of generator command line options, use `nanopb_generator.py --help`:
 

@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+import "generator/proto/validate.proto";
+
+option (validate.validate) = true;
+
+message ValidationExample {
+    string username = 1 [
+        (validate.rules).string.min_len = 3,
+        (validate.rules).string.max_len = 20,
+        (validate.rules).required = true
+    ];
+    
+    int32 age = 2 [
+        (validate.rules).int32.gte = 13,
+        (validate.rules).int32.lte = 120
+    ];
+    
+    string email = 3 [
+        (validate.rules).string.contains = "@",
+        (validate.rules).required = true
+    ];
+    
+    float score = 4 [
+        (validate.rules).float.gte = 0.0,
+        (validate.rules).float.lte = 100.0
+    ];
+}

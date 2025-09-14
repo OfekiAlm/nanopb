@@ -1,0 +1,7 @@
+# Nanopb options for validated_user.proto
+
+# Field size limits
+ValidatedUser.username max_size:20
+ValidatedUser.email max_size:100
+ValidatedUser.phone max_size:15
+ValidatedUser.bio max_size:500

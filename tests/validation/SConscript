@@ -1,0 +1,24 @@
+# Test the validation feature
+
+Import("env")
+
+# Enable validation for code generation
+env = env.Clone()
+env.Append(PROTOCFLAGS = ['--nanopb_opt=--validate'])
+
+# Copy runtime validation files to test directory for building
+env.Command("pb_validate.h", "#pb_validate.h", Copy("$TARGET", "$SOURCE"))
+env.Command("pb_validate.c", "#pb_validate.c", Copy("$TARGET", "$SOURCE"))
+
+# Copy and generate validate.proto files
+env.Command("validate.proto", "../../generator/proto/validate.proto", Copy("$TARGET", "$SOURCE"))
+env.NanopbProto("validate")
+
+# Generate nanopb files with validation
+env.NanopbProto("validation_test")
+
+# Build the test program
+test = env.Program(["test_validation.c", "validation_test.pb.c", "validation_test_validate.c", "pb_validate.c"])
+
+# Run the test
+env.RunTest(test)

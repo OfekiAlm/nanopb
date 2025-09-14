@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+import "generator/proto/validate.proto";
+
+option (validate.validate) = true;
+
+message SimpleValidation {
+    string name = 1 [
+        (validate.rules).string.min_len = 1,
+        (validate.rules).string.max_len = 10
+    ];
+}
