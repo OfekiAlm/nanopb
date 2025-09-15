@@ -32,3 +32,4 @@ bazel-*
 extra/poetry/build
 build/
 .idea
+.vscode/
