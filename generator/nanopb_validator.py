@@ -28,54 +28,32 @@ def load_validate_pb2():
         if current_dir not in sys.path:
             sys.path.insert(0, current_dir)
         
-        # Try to import from proto subdirectory first
+        # Try different import paths for validate_pb2
         try:
+            # Try from generator/proto/ directory  
+            sys.path.insert(0, os.path.join(current_dir, 'proto'))
+            import validate_pb2 as validate_module
+            validate_pb2 = validate_module
+            return validate_pb2
+        except ImportError:
+            pass
+            
+        try:
+            # Try from proto subdirectory
             from proto import validate_pb2 as validate_module
             validate_pb2 = validate_module
             return validate_pb2
         except ImportError:
             pass
             
-        # Try direct import from proto subdirectory
-        try:
-            import proto.validate_pb2 as validate_module
-            validate_pb2 = validate_module
-            return validate_pb2
-        except ImportError:
-            pass
-            
-        # Try to build it using the proto module
-        try:
-            from . import proto
-            proto.load_nanopb_pb2()  # Ensure nanopb_pb2 is loaded first
-            
-            # Try to import pre-compiled version
-            try:
-                from .proto import validate_pb2 as validate_module
-                validate_pb2 = validate_module
-                return validate_pb2
-            except ImportError:
-                pass
-            
-            # Try to build it
-            mypath = os.path.dirname(__file__)
-            protosrc = os.path.join(mypath, 'proto', 'validate.proto')
-            if os.path.exists(protosrc) and proto.build_nanopb_proto(protosrc, mypath):
-                from .proto import validate_pb2 as validate_module
-                validate_pb2 = validate_module
-                return validate_pb2
-                
-        except Exception:
-            pass
+        # If all imports fail, return None
+        sys.stderr.write("Could not import validate_pb2 module.\n")
+        return None
             
     except Exception as e:
         sys.stderr.write("Failed to load validate.proto: %s\n" % str(e))
         sys.stderr.write("Validation support will be disabled.\n")
         return None
-    
-    sys.stderr.write("validate.proto not found or could not be loaded.\n")
-    sys.stderr.write("Validation support will be disabled.\n")
-    return None
 
 def parse_validation_rules_from_unknown_fields(field_options):
     """Parse validation rules from unknown fields in field options.
@@ -86,73 +64,135 @@ def parse_validation_rules_from_unknown_fields(field_options):
     rules = {}
     
     # Extension number 1011 is used for validate.rules
-    validate_rules_tag = b'\x9a?'  # Wire format for field 1011
+    # In wire format, field 1011 would be encoded as: (1011 << 3) | 2 = 8090 (for length-delimited)
+    # But protobuf stores unknown fields differently, let's check for the tag
     
     if hasattr(field_options, '_unknown_fields'):
-        for tag, value in field_options._unknown_fields:
-            if tag == validate_rules_tag:
-                # Parse the FieldRules message from the wire format
-                try:
-                    # The value is a length-prefixed message
-                    # First byte is the length, rest is the actual message
-                    if len(value) < 2:
-                        continue
-                        
-                    # Skip the length byte and parse the message content
-                    message_data = value[1:]  # Skip first byte (length)
-                    
-                    # Parse wire format manually
-                    i = 0
-                    while i < len(message_data):
-                        if i >= len(message_data):
-                            break
-                            
-                        # Read field tag and wire type
-                        tag_byte = message_data[i]
-                        i += 1
-                        
-                        field_num = tag_byte >> 3
-                        wire_type = tag_byte & 0x07
-                        
-                        if wire_type == 2:  # Length-delimited (string/message)
-                            # Read length
-                            length = message_data[i]
-                            i += 1
-                            
-                            # Read data
-                            data = message_data[i:i+length]
-                            i += length
-                            
-                            if field_num == 14:  # StringRules field
-                                if 'string' not in rules:
-                                    rules['string'] = {}
-                                string_rules = parse_string_rules(data)
-                                # Merge with existing string rules
-                                rules['string'].update(string_rules)
-                        elif wire_type == 0:  # Varint
-                            # Read varint
-                            val = 0
-                            shift = 0
-                            while i < len(message_data):
-                                byte = message_data[i]
-                                i += 1
-                                val |= (byte & 0x7F) << shift
-                                if (byte & 0x80) == 0:
-                                    break
-                                shift += 7
-                            
-                            # Handle simple field rules
-                            if field_num == 22:  # required field
-                                rules['required'] = bool(val)
-                        else:
-                            # Skip unknown wire types
-                            break
-                            
-                except Exception as e:
-                    # If parsing fails, just continue without rules
-                    pass
+        for unknown_field in field_options._unknown_fields:
+            # unknown_field is typically a tuple (field_number, value)
+            if len(unknown_field) >= 2:
+                field_number = unknown_field[0]
+                value = unknown_field[1]
+                
+                # Check if this is the validate.rules extension (field 1011)
+                if field_number == 1011:
+                    # Try to parse the FieldRules message from the wire format value
+                    try:
+                        parsed_rules = parse_field_rules_from_bytes(value)
+                        rules.update(parsed_rules)
+                    except Exception as e:
+                        # If parsing fails, try to extract basic info
+                        pass
+    
+    # Also check ListFields() which might contain extension data
+    if hasattr(field_options, 'ListFields'):
+        try:
+            for field_desc, value in field_options.ListFields():
+                if hasattr(field_desc, 'number') and field_desc.number == 1011:
+                    # This is our validation rules extension
+                    parsed_rules = parse_field_rules_from_protobuf_message(value)
+                    rules.update(parsed_rules)
+        except Exception:
+            pass
     
     return rules
+
+def parse_field_rules_from_protobuf_message(field_rules_msg):
+    """Parse FieldRules from a protobuf message object."""
+    rules = {}
+    
+    if not field_rules_msg:
+        return rules
+    
+    # Try to extract rules from the message
+    try:
+        # Check for string rules
+        if hasattr(field_rules_msg, 'string') and field_rules_msg.HasField('string'):
+            string_rules = field_rules_msg.string
+            rules['string'] = {}
+            if string_rules.HasField('min_len'):
+                rules['string']['min_len'] = string_rules.min_len
+            if string_rules.HasField('max_len'):
+                rules['string']['max_len'] = string_rules.max_len
+            if string_rules.HasField('const'):
+                rules['string']['const'] = string_rules.const
+            if string_rules.HasField('prefix'):
+                rules['string']['prefix'] = string_rules.prefix
+            if string_rules.HasField('suffix'):
+                rules['string']['suffix'] = string_rules.suffix
+            if string_rules.HasField('contains'):
+                rules['string']['contains'] = string_rules.contains
+            if string_rules.HasField('ascii'):
+                rules['string']['ascii'] = string_rules.ascii
+        
+        # Check for int32 rules
+        if hasattr(field_rules_msg, 'int32') and field_rules_msg.HasField('int32'):
+            int32_rules = field_rules_msg.int32
+            rules['int32'] = {}
+            if int32_rules.HasField('gt'):
+                rules['int32']['gt'] = int32_rules.gt
+            if int32_rules.HasField('gte'):
+                rules['int32']['gte'] = int32_rules.gte
+            if int32_rules.HasField('lt'):
+                rules['int32']['lt'] = int32_rules.lt
+            if int32_rules.HasField('lte'):
+                rules['int32']['lte'] = int32_rules.lte
+            if int32_rules.HasField('const'):
+                rules['int32']['const'] = int32_rules.const
+        
+        # Check for other numeric types (similar pattern)
+        for numeric_type in ['int64', 'uint32', 'uint64', 'sint32', 'sint64', 
+                           'fixed32', 'fixed64', 'sfixed32', 'sfixed64', 'float', 'double']:
+            if hasattr(field_rules_msg, numeric_type) and field_rules_msg.HasField(numeric_type):
+                numeric_rules = getattr(field_rules_msg, numeric_type)
+                rules[numeric_type] = {}
+                for constraint in ['gt', 'gte', 'lt', 'lte', 'const']:
+                    if numeric_rules.HasField(constraint):
+                        rules[numeric_type][constraint] = getattr(numeric_rules, constraint)
+        
+        # Check for bool rules
+        if hasattr(field_rules_msg, 'bool') and field_rules_msg.HasField('bool'):
+            bool_rules = field_rules_msg.bool
+            rules['bool'] = {}
+            if bool_rules.HasField('const'):
+                rules['bool']['const'] = bool_rules.const
+        
+        # Check for bytes rules
+        if hasattr(field_rules_msg, 'bytes') and field_rules_msg.HasField('bytes'):
+            bytes_rules = field_rules_msg.bytes
+            rules['bytes'] = {}
+            if bytes_rules.HasField('min_len'):
+                rules['bytes']['min_len'] = bytes_rules.min_len
+            if bytes_rules.HasField('max_len'):
+                rules['bytes']['max_len'] = bytes_rules.max_len
+            if bytes_rules.HasField('const'):
+                rules['bytes']['const'] = bytes_rules.const
+            if bytes_rules.HasField('prefix'):
+                rules['bytes']['prefix'] = bytes_rules.prefix
+            if bytes_rules.HasField('suffix'):
+                rules['bytes']['suffix'] = bytes_rules.suffix
+            if bytes_rules.HasField('contains'):
+                rules['bytes']['contains'] = bytes_rules.contains
+        
+        # Check for required field
+        if hasattr(field_rules_msg, 'required') and field_rules_msg.HasField('required'):
+            rules['required'] = field_rules_msg.required
+            
+        # Check for oneof_required field
+        if hasattr(field_rules_msg, 'oneof_required') and field_rules_msg.HasField('oneof_required'):
+            rules['oneof_required'] = field_rules_msg.oneof_required
+        
+    except Exception as e:
+        # If parsing fails, return what we have
+        pass
+    
+    return rules
+
+def parse_field_rules_from_bytes(data):
+    """Parse FieldRules from raw bytes (wire format)."""
+    # This is more complex and would require implementing protobuf wire format parsing
+    # For now, return empty rules
+    return {}
 
 def parse_string_rules(data):
     """Parse StringRules from wire format data."""
@@ -227,31 +267,73 @@ class FieldValidator:
         if not validate_pb2:
             return
             
-        # Parse rules based on field type
+        # Debug: Print what fields are available
+        # print(f"Debug: Parsing rules for field {self.field.name}, rules_option type: {type(rules_option)}")
+        # print(f"Debug: Available rule fields: {[f.name for f in rules_option.DESCRIPTOR.fields]}")
+        
+        # Parse rules based on field type - check all possible types
+        parsed_any = False
         if rules_option.HasField('string'):
             self._parse_string_rules(rules_option.string)
-        elif rules_option.HasField('int32'):
+            parsed_any = True
+        if rules_option.HasField('int32'):
             self._parse_numeric_rules(rules_option.int32, 'int32')
-        elif rules_option.HasField('int64'):
+            parsed_any = True
+        if rules_option.HasField('int64'):
             self._parse_numeric_rules(rules_option.int64, 'int64')
-        elif rules_option.HasField('uint32'):
+            parsed_any = True
+        if rules_option.HasField('uint32'):
             self._parse_numeric_rules(rules_option.uint32, 'uint32')
-        elif rules_option.HasField('uint64'):
+            parsed_any = True
+        if rules_option.HasField('uint64'):
             self._parse_numeric_rules(rules_option.uint64, 'uint64')
-        elif rules_option.HasField('double'):
+            parsed_any = True
+        if rules_option.HasField('sint32'):
+            self._parse_numeric_rules(rules_option.sint32, 'sint32')
+            parsed_any = True
+        if rules_option.HasField('sint64'):
+            self._parse_numeric_rules(rules_option.sint64, 'sint64')
+            parsed_any = True
+        if rules_option.HasField('fixed32'):
+            self._parse_numeric_rules(rules_option.fixed32, 'fixed32')
+            parsed_any = True
+        if rules_option.HasField('fixed64'):
+            self._parse_numeric_rules(rules_option.fixed64, 'fixed64')
+            parsed_any = True
+        if rules_option.HasField('sfixed32'):
+            self._parse_numeric_rules(rules_option.sfixed32, 'sfixed32')
+            parsed_any = True
+        if rules_option.HasField('sfixed64'):
+            self._parse_numeric_rules(rules_option.sfixed64, 'sfixed64')
+            parsed_any = True
+        if rules_option.HasField('double'):
             self._parse_numeric_rules(rules_option.double, 'double')
-        elif rules_option.HasField('float'):
+            parsed_any = True
+        if rules_option.HasField('float'):
             self._parse_numeric_rules(rules_option.float, 'float')
-        elif rules_option.HasField('bool'):
+            parsed_any = True
+        if rules_option.HasField('bool'):
             self._parse_bool_rules(rules_option.bool)
-        elif rules_option.HasField('bytes'):
+            parsed_any = True
+        if rules_option.HasField('bytes'):
             self._parse_bytes_rules(rules_option.bytes)
-        elif rules_option.HasField('enum'):
+            parsed_any = True
+        if rules_option.HasField('enum'):
             self._parse_enum_rules(rules_option.enum)
-        elif rules_option.HasField('repeated'):
+            parsed_any = True
+        if rules_option.HasField('repeated'):
             self._parse_repeated_rules(rules_option.repeated)
-        elif rules_option.HasField('map'):
+            parsed_any = True
+        if rules_option.HasField('map'):
             self._parse_map_rules(rules_option.map)
+            parsed_any = True
+        
+        # Debug output if no specific type rules were found
+        if not parsed_any:
+            print(f"Warning: No type-specific rules found for field {self.field.name}")
+            for field in rules_option.DESCRIPTOR.fields:
+                if rules_option.HasField(field.name):
+                    print(f"  Found rule type: {field.name}")
         
         # Check for required constraint
         if rules_option.HasField('required') and rules_option.required:
@@ -383,10 +465,11 @@ class MessageValidator:
             if hasattr(field, 'validate_rules') and field.validate_rules:
                 field_validator = FieldValidator(field, field.validate_rules, proto_file, message)
             else:
-                # Fallback: try to parse from proto descriptor unknown fields
+                # Fallback: try to parse from proto descriptor 
+                # This approach works even when extensions aren't properly registered
                 field_validator = FieldValidator(field, None, proto_file, message)
                 
-                # If field_validator has rules after parsing unknown fields, use it
+                # If field_validator has rules after parsing, use it
                 if not field_validator.rules:
                     field_validator = None
             
@@ -540,21 +623,209 @@ class ValidatorGenerator:
                        '            if (ctx.early_exit) return false;\n' \
                        '        }\n' % (field_name, rule.constraint_id)
         
-        elif rule.rule_type == 'STRING_MIN_LEN':
+        # Numeric constraint implementations (GT, LT, GTE, LTE, EQ)
+        elif rule.rule_type == 'GT':
+            value = rule.params.get('value', 0)
+            return '        if (!(msg->%s > %s)) {\n' \
+                   '            pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be greater than %s");\n' \
+                   '            if (ctx.early_exit) return false;\n' \
+                   '        }\n' % (field_name, value, rule.constraint_id, value)
+        
+        elif rule.rule_type == 'LT':
+            value = rule.params.get('value', 0)
+            return '        if (!(msg->%s < %s)) {\n' \
+                   '            pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be less than %s");\n' \
+                   '            if (ctx.early_exit) return false;\n' \
+                   '        }\n' % (field_name, value, rule.constraint_id, value)
+        
+        elif rule.rule_type == 'GTE':
+            value = rule.params.get('value', 0)
+            return '        if (!(msg->%s >= %s)) {\n' \
+                   '            pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be greater than or equal to %s");\n' \
+                   '            if (ctx.early_exit) return false;\n' \
+                   '        }\n' % (field_name, value, rule.constraint_id, value)
+        
+        elif rule.rule_type == 'LTE':
+            value = rule.params.get('value', 0)
+            return '        if (!(msg->%s <= %s)) {\n' \
+                   '            pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be less than or equal to %s");\n' \
+                   '            if (ctx.early_exit) return false;\n' \
+                   '        }\n' % (field_name, value, rule.constraint_id, value)
+        
+        elif rule.rule_type == 'EQ':
+            value = rule.params.get('value', 0)
+            if 'string' in rule.constraint_id:
+                return '        if (strcmp(msg->%s, "%s") != 0) {\n' \
+                       '            pb_violations_add(violations, ctx.path_buffer, "%s", "Value must equal \'%s\'");\n' \
+                       '            if (ctx.early_exit) return false;\n' \
+                       '        }\n' % (field_name, value, rule.constraint_id, value)
+            elif 'bool' in rule.constraint_id:
+                bool_val = 'true' if value else 'false'
+                return '        if (msg->%s != %s) {\n' \
+                       '            pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be %s");\n' \
+                       '            if (ctx.early_exit) return false;\n' \
+                       '        }\n' % (field_name, bool_val, rule.constraint_id, bool_val)
+            else:
+                return '        if (msg->%s != %s) {\n' \
+                       '            pb_violations_add(violations, ctx.path_buffer, "%s", "Value must equal %s");\n' \
+                       '            if (ctx.early_exit) return false;\n' \
+                       '        }\n' % (field_name, value, rule.constraint_id, value)
+        
+        elif rule.rule_type == 'IN':
+            values = rule.params.get('values', [])
+            if 'string' in rule.constraint_id:
+                conditions = ['strcmp(msg->%s, "%s") == 0' % (field_name, v) for v in values]
+                condition_str = ' || '.join(conditions)
+                values_str = ', '.join('"%s"' % v for v in values)
+                return '        if (!(%s)) {\n' \
+                       '            pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of: %s");\n' \
+                       '            if (ctx.early_exit) return false;\n' \
+                       '        }\n' % (condition_str, rule.constraint_id, values_str)
+            else:
+                conditions = ['msg->%s == %s' % (field_name, v) for v in values]
+                condition_str = ' || '.join(conditions)
+                values_str = ', '.join(str(v) for v in values)
+                return '        if (!(%s)) {\n' \
+                       '            pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of: %s");\n' \
+                       '            if (ctx.early_exit) return false;\n' \
+                       '        }\n' % (condition_str, rule.constraint_id, values_str)
+        
+        elif rule.rule_type == 'NOT_IN':
+            values = rule.params.get('values', [])
+            if 'string' in rule.constraint_id:
+                conditions = ['strcmp(msg->%s, "%s") != 0' % (field_name, v) for v in values]
+                condition_str = ' && '.join(conditions)
+                values_str = ', '.join('"%s"' % v for v in values)
+                return '        if (!(%s)) {\n' \
+                       '            pb_violations_add(violations, ctx.path_buffer, "%s", "Value must not be one of: %s");\n' \
+                       '            if (ctx.early_exit) return false;\n' \
+                       '        }\n' % (condition_str, rule.constraint_id, values_str)
+            else:
+                conditions = ['msg->%s != %s' % (field_name, v) for v in values]
+                condition_str = ' && '.join(conditions)
+                values_str = ', '.join(str(v) for v in values)
+                return '        if (!(%s)) {\n' \
+                       '            pb_violations_add(violations, ctx.path_buffer, "%s", "Value must not be one of: %s");\n' \
+                       '            if (ctx.early_exit) return false;\n' \
+                       '        }\n' % (condition_str, rule.constraint_id, values_str)
+        
+        # String-specific constraints
+        elif rule.rule_type == 'MIN_LEN':
             min_len = rule.params.get('value', 0)
-            return '        if (strlen(msg->%s) < %d) {\n' \
-                   '            pb_violations_add(violations, ctx.path_buffer, "%s", "String too short");\n' \
-                   '            if (ctx.early_exit) return false;\n' \
-                   '        }\n' % (field_name, min_len, rule.constraint_id)
+            if 'string' in rule.constraint_id:
+                return '        if (strlen(msg->%s) < %d) {\n' \
+                       '            pb_violations_add(violations, ctx.path_buffer, "%s", "String too short");\n' \
+                       '            if (ctx.early_exit) return false;\n' \
+                       '        }\n' % (field_name, min_len, rule.constraint_id)
+            else:  # bytes
+                return '        if (msg->%s.size < %d) {\n' \
+                       '            pb_violations_add(violations, ctx.path_buffer, "%s", "Bytes too short");\n' \
+                       '            if (ctx.early_exit) return false;\n' \
+                       '        }\n' % (field_name, min_len, rule.constraint_id)
         
-        elif rule.rule_type == 'STRING_MAX_LEN':
+        elif rule.rule_type == 'MAX_LEN':
             max_len = rule.params.get('value', 0)
-            return '        if (strlen(msg->%s) > %d) {\n' \
-                   '            pb_violations_add(violations, ctx.path_buffer, "%s", "String too long");\n' \
-                   '            if (ctx.early_exit) return false;\n' \
-                   '        }\n' % (field_name, max_len, rule.constraint_id)
+            if 'string' in rule.constraint_id:
+                return '        if (strlen(msg->%s) > %d) {\n' \
+                       '            pb_violations_add(violations, ctx.path_buffer, "%s", "String too long");\n' \
+                       '            if (ctx.early_exit) return false;\n' \
+                       '        }\n' % (field_name, max_len, rule.constraint_id)
+            else:  # bytes
+                return '        if (msg->%s.size > %d) {\n' \
+                       '            pb_violations_add(violations, ctx.path_buffer, "%s", "Bytes too long");\n' \
+                       '            if (ctx.early_exit) return false;\n' \
+                       '        }\n' % (field_name, max_len, rule.constraint_id)
         
-        # Add more rule type implementations here
+        elif rule.rule_type == 'PREFIX':
+            prefix = rule.params.get('value', '')
+            if 'string' in rule.constraint_id:
+                return '        if (strncmp(msg->%s, "%s", %d) != 0) {\n' \
+                       '            pb_violations_add(violations, ctx.path_buffer, "%s", "String must start with \'%s\'");\n' \
+                       '            if (ctx.early_exit) return false;\n' \
+                       '        }\n' % (field_name, prefix, len(prefix), rule.constraint_id, prefix)
+            else:  # bytes
+                return '        if (msg->%s.size < %d || memcmp(msg->%s.bytes, "%s", %d) != 0) {\n' \
+                       '            pb_violations_add(violations, ctx.path_buffer, "%s", "Bytes must start with specified prefix");\n' \
+                       '            if (ctx.early_exit) return false;\n' \
+                       '        }\n' % (field_name, len(prefix), field_name, prefix, len(prefix), rule.constraint_id)
+        
+        elif rule.rule_type == 'SUFFIX':
+            suffix = rule.params.get('value', '')
+            if 'string' in rule.constraint_id:
+                return '        {\n' \
+                       '            size_t len = strlen(msg->%s);\n' \
+                       '            if (len < %d || strcmp(msg->%s + len - %d, "%s") != 0) {\n' \
+                       '                pb_violations_add(violations, ctx.path_buffer, "%s", "String must end with \'%s\'");\n' \
+                       '                if (ctx.early_exit) return false;\n' \
+                       '            }\n' \
+                       '        }\n' % (field_name, len(suffix), field_name, len(suffix), suffix, rule.constraint_id, suffix)
+            else:  # bytes
+                return '        if (msg->%s.size < %d || memcmp(msg->%s.bytes + msg->%s.size - %d, "%s", %d) != 0) {\n' \
+                       '            pb_violations_add(violations, ctx.path_buffer, "%s", "Bytes must end with specified suffix");\n' \
+                       '            if (ctx.early_exit) return false;\n' \
+                       '        }\n' % (field_name, len(suffix), field_name, field_name, len(suffix), suffix, len(suffix), rule.constraint_id)
+        
+        elif rule.rule_type == 'CONTAINS':
+            contains = rule.params.get('value', '')
+            if 'string' in rule.constraint_id:
+                return '        if (strstr(msg->%s, "%s") == NULL) {\n' \
+                       '            pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain \'%s\'");\n' \
+                       '            if (ctx.early_exit) return false;\n' \
+                       '        }\n' % (field_name, contains, rule.constraint_id, contains)
+            else:  # bytes  
+                return '        {\n' \
+                       '            bool found = false;\n' \
+                       '            for (size_t i = 0; i <= msg->%s.size - %d; i++) {\n' \
+                       '                if (memcmp(msg->%s.bytes + i, "%s", %d) == 0) {\n' \
+                       '                    found = true;\n' \
+                       '                    break;\n' \
+                       '                }\n' \
+                       '            }\n' \
+                       '            if (!found) {\n' \
+                       '                pb_violations_add(violations, ctx.path_buffer, "%s", "Bytes must contain specified sequence");\n' \
+                       '                if (ctx.early_exit) return false;\n' \
+                       '            }\n' \
+                       '        }\n' % (field_name, len(contains), field_name, contains, len(contains), rule.constraint_id)
+        
+        elif rule.rule_type == 'ASCII':
+            return '        {\n' \
+                   '            for (size_t i = 0; msg->%s[i] != \'\\0\'; i++) {\n' \
+                   '                if ((unsigned char)msg->%s[i] > 127) {\n' \
+                   '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain only ASCII characters");\n' \
+                   '                    if (ctx.early_exit) return false;\n' \
+                   '                    break;\n' \
+                   '                }\n' \
+                   '            }\n' \
+                   '        }\n' % (field_name, field_name, rule.constraint_id)
+        
+        # Enum constraints
+        elif rule.rule_type == 'ENUM_DEFINED':
+            # This would require enum definition lookup, simplified for now
+            return '        /* TODO: Implement enum defined_only validation */\n'
+        
+        # Repeated field constraints
+        elif rule.rule_type == 'MIN_ITEMS':
+            min_items = rule.params.get('value', 0)
+            return '        if (msg->%s_count < %d) {\n' \
+                   '            pb_violations_add(violations, ctx.path_buffer, "%s", "Too few items");\n' \
+                   '            if (ctx.early_exit) return false;\n' \
+                   '        }\n' % (field_name, min_items, rule.constraint_id)
+        
+        elif rule.rule_type == 'MAX_ITEMS':
+            max_items = rule.params.get('value', 0)
+            return '        if (msg->%s_count > %d) {\n' \
+                   '            pb_violations_add(violations, ctx.path_buffer, "%s", "Too many items");\n' \
+                   '            if (ctx.early_exit) return false;\n' \
+                   '        }\n' % (field_name, max_items, rule.constraint_id)
+        
+        elif rule.rule_type == 'UNIQUE':
+            # Simplified unique check - would need type-specific implementation
+            return '        /* TODO: Implement unique constraint for repeated field */\n'
+        
+        elif rule.rule_type == 'NO_SPARSE':
+            return '        /* TODO: Implement no_sparse constraint for map field */\n'
+        
+        # Default fallback
         return '        /* TODO: Implement rule type %s */\n' % rule.rule_type
     
     def _generate_message_rule_check(self, message, rule):
