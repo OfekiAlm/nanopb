@@ -1376,9 +1376,16 @@ class Message(ProtoElement):
                 try:
                     if f.options.HasExtension(validate_pb2.rules):
                         field.validate_rules = f.options.Extensions[validate_pb2.rules]
-                except (KeyError, AttributeError):
+                    else:
+                        field.validate_rules = None
+                except (KeyError, AttributeError) as e:
                     # Extension not available or not properly registered
-                    pass
+                    field.validate_rules = None
+            else:
+                field.validate_rules = None
+            
+            # Store the field descriptor for validation fallback parsing
+            field.field_descriptor = f
             
             if hasattr(f, 'oneof_index') and f.HasField('oneof_index'):
                 if hasattr(f, 'proto3_optional') and f.proto3_optional:
