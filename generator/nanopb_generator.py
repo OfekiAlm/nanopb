@@ -46,8 +46,13 @@ try:
     from . import nanopb_validator
     validate_pb2 = nanopb_validator.load_validate_pb2()
 except ImportError:
-    nanopb_validator = None
-    validate_pb2 = None
+    try:
+        # Try absolute import for when running as script
+        import nanopb_validator
+        validate_pb2 = nanopb_validator.load_validate_pb2()
+    except ImportError:
+        nanopb_validator = None
+        validate_pb2 = None
 
 # GetMessageClass() is used by modern python-protobuf (around 5.x onwards)
 # Retain compatibility with older python-protobuf versions.
@@ -1367,8 +1372,13 @@ class Message(ProtoElement):
             field = Field(self.name, f, field_options, self.element_path + (ProtoElement.FIELD, index), self.comments)
             
             # Parse validation rules if available
-            if validate_pb2 and f.options.HasExtension(validate_pb2.rules):
-                field.validate_rules = f.options.Extensions[validate_pb2.rules]
+            if validate_pb2:
+                try:
+                    if f.options.HasExtension(validate_pb2.rules):
+                        field.validate_rules = f.options.Extensions[validate_pb2.rules]
+                except (KeyError, AttributeError):
+                    # Extension not available or not properly registered
+                    pass
             
             if hasattr(f, 'oneof_index') and f.HasField('oneof_index'):
                 if hasattr(f, 'proto3_optional') and f.proto3_optional:
@@ -1925,8 +1935,13 @@ class ProtoFile:
         self.validate_enabled = False  # Whether validation is enabled for this file
         
         # Check if validation is enabled via file options
-        if validate_pb2 and fdesc.options.HasExtension(validate_pb2.validate):
-            self.validate_enabled = fdesc.options.Extensions[validate_pb2.validate]
+        if validate_pb2:
+            try:
+                if fdesc.options.HasExtension(validate_pb2.validate):
+                    self.validate_enabled = fdesc.options.Extensions[validate_pb2.validate]
+            except (KeyError, AttributeError) as e:
+                # Extension not available or not properly registered
+                pass
         
         self.parse()
         self.discard_unused_automatic_types()
@@ -1984,8 +1999,13 @@ class ProtoFile:
                 msgobject = Message(name, message, message_options, comment_path, self.comment_locations)
             
             # Parse message-level validation rules if available
-            if validate_pb2 and message.options.HasExtension(validate_pb2.message):
-                msgobject.message_validate_rules = message.options.Extensions[validate_pb2.message]
+            if validate_pb2:
+                try:
+                    if message.options.HasExtension(validate_pb2.message):
+                        msgobject.message_validate_rules = message.options.Extensions[validate_pb2.message]
+                except (KeyError, AttributeError):
+                    # Extension not available or not properly registered
+                    pass
             
             self.messages.append(msgobject)
 
@@ -2306,6 +2326,13 @@ class ProtoFile:
             if hasattr(msg, 'fields'):
                 validator_gen.add_message_validator(msg, msg.message_validate_rules)
         
+        # When --validate flag is used, always generate validation files even if no rules are found
+        if options.validate and not validator_gen.validators:
+            # Add basic validators for all messages
+            for msg in self.messages:
+                if hasattr(msg, 'fields'):
+                    validator_gen.force_add_message_validator(msg)
+        
         # Generate header content
         for line in validator_gen.generate_header():
             yield line
@@ -2324,6 +2351,13 @@ class ProtoFile:
         for msg in self.messages:
             if hasattr(msg, 'fields'):
                 validator_gen.add_message_validator(msg, msg.message_validate_rules)
+        
+        # When --validate flag is used, always generate validation files even if no rules are found
+        if options.validate and not validator_gen.validators:
+            # Add basic validators for all messages
+            for msg in self.messages:
+                if hasattr(msg, 'fields'):
+                    validator_gen.force_add_message_validator(msg)
         
         # Generate source content
         for line in validator_gen.generate_source():
@@ -2763,13 +2797,26 @@ def main_cli():
 
     options, filenames = process_cmdline(sys.argv[1:], is_plugin = False)
 
-    if options.output_dir and not os.path.exists(options.output_dir):
-        optparser.print_help()
-        sys.stderr.write("\noutput_dir does not exist: %s\n" % options.output_dir)
-        sys.exit(1)
+    # Ensure output directory exists (create if needed)
+    if options.output_dir:
+        if not os.path.exists(options.output_dir):
+            if not options.quiet:
+                sys.stderr.write("Creating output directory: %s\n" % options.output_dir)
+            os.makedirs(options.output_dir, exist_ok=True)
 
-    # Load .pb files into memory and compile any .proto files.
-    include_path = ['-I%s' % p for p in options.options_path]
+    # Build include paths for protoc: include options paths and directories of proto files
+    include_dirs = set()
+    # Add user-specified options/proto search paths
+    for p in options.options_path:
+        include_dirs.add(os.path.abspath(p))
+    # Add directories containing the proto files
+    for fname in filenames:
+        d = os.path.dirname(fname)
+        if d:
+            include_dirs.add(os.path.abspath(d))
+        else:
+            include_dirs.add(os.getcwd())
+    include_path = ['-I%s' % d for d in include_dirs]
     all_fdescs = {}
     out_fdescs = {}
     for filename in filenames:

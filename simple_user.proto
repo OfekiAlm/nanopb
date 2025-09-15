@@ -1,9 +1,0 @@
-syntax = "proto2";
-
-message SimpleUser {
-    required string username = 1;
-    required int32 age = 2;
-    required string email = 3;
-    optional string phone = 4;
-    optional float score = 5;
-}

@@ -1,6 +1,0 @@
-# Nanopb options for simple_user.proto
-
-# Field size limits
-SimpleUser.username max_size:50
-SimpleUser.email max_size:100
-SimpleUser.phone max_size:20
