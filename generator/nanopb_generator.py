@@ -2326,19 +2326,7 @@ class ProtoFile:
         if not nanopb_validator:
             return
         
-        validator_gen = nanopb_validator.ValidatorGenerator(self)
-        
-        # Add validators for all messages
-        for msg in self.messages:
-            if hasattr(msg, 'fields'):
-                validator_gen.add_message_validator(msg, msg.message_validate_rules)
-        
-        # When --validate flag is used, always generate validation files even if no rules are found
-        if options.validate and not validator_gen.validators:
-            # Add basic validators for all messages
-            for msg in self.messages:
-                if hasattr(msg, 'fields'):
-                    validator_gen.force_add_message_validator(msg)
+        validator_gen = self._build_validator_generator(options)
         
         # Generate header content
         for line in validator_gen.generate_header():
@@ -2352,23 +2340,25 @@ class ProtoFile:
         if not nanopb_validator:
             return
         
-        validator_gen = nanopb_validator.ValidatorGenerator(self)
-        
-        # Add validators for all messages
-        for msg in self.messages:
-            if hasattr(msg, 'fields'):
-                validator_gen.add_message_validator(msg, msg.message_validate_rules)
-        
-        # When --validate flag is used, always generate validation files even if no rules are found
-        if options.validate and not validator_gen.validators:
-            # Add basic validators for all messages
-            for msg in self.messages:
-                if hasattr(msg, 'fields'):
-                    validator_gen.force_add_message_validator(msg)
+        validator_gen = self._build_validator_generator(options)
         
         # Generate source content
         for line in validator_gen.generate_source():
             yield line
+
+    def _build_validator_generator(self, options):
+        """Create and populate a ValidatorGenerator consistently for header/source generation."""
+        validator_gen = nanopb_validator.ValidatorGenerator(self)
+        # Add validators for all messages
+        for msg in self.messages:
+            if hasattr(msg, 'fields'):
+                validator_gen.add_message_validator(msg, msg.message_validate_rules)
+        # When --validate flag is used, always generate validation files even if no rules are found
+        if options.validate and not validator_gen.validators:
+            for msg in self.messages:
+                if hasattr(msg, 'fields'):
+                    validator_gen.force_add_message_validator(msg)
+        return validator_gen
 
     def generate_source(self, headername, options):
         '''Generate content for a source file.'''

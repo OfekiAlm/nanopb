@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package test;
+
+import "generator/proto/validate.proto";
+
+// Test basic validation for required types
+message BasicValidation {
+  // Int32 constraints
+  int32 age = 1 [(validate.rules).int32.gte = 0, (validate.rules).int32.lte = 150];
+  int32 score = 2 [(validate.rules).int32.gt = 0];
+  
+  // Int64 constraints
+  int64 user_id = 3 [(validate.rules).int64.gt = 0];
+  int64 timestamp = 4 [(validate.rules).int64.gte = 0];
+  
+  // UInt32 constraints
+  uint32 count = 5 [(validate.rules).uint32.lte = 1000];
+  uint32 size = 6 [(validate.rules).uint32.gte = 10, (validate.rules).uint32.lte = 100];
+  
+  // UInt64 constraints
+  optional uint64 total_bytes = 7 [(validate.rules).uint64.lt = 1000000000];
+  uint64 sequence_num = 8 [(validate.rules).uint64.gte = 1];
+  
+  // String constraints
+  string username = 9 [(validate.rules).string.min_len = 3, (validate.rules).string.max_len = 20];
+  string email = 10 [(validate.rules).string.min_len = 5, (validate.rules).string.contains = "@"];
+  string password = 11 [(validate.rules).string.min_len = 8, (validate.rules).string.max_len = 100];
+  string prefix_field = 12 [(validate.rules).string.prefix = "PREFIX_"];
+  string suffix_field = 13 [(validate.rules).string.suffix = "_SUFFIX"];
+}
+
+// Enable validation for the entire file
+option (validate.validate) = true; 
