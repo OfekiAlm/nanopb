@@ -661,8 +661,8 @@ class ValidatorGenerator:
                 is_optional = False
             if not is_optional:
                 return code
-            # Indent code by 8 spaces for readability
-            indented = ''.join(('        ' + line) if line.strip() else line for line in code.splitlines(True))
+            # Indent code by 4 spaces for readability
+            indented = ''.join(('    ' + line) if line.strip() else line for line in code.splitlines(True))
             return '        if (msg->has_%s) {\n%s        }\n' % (field_name, indented)
         
         if rule.rule_type == RULE_REQUIRED:
