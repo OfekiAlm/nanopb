@@ -299,70 +299,63 @@ class FieldValidator:
     
     def parse_rules(self, rules_option):
         """Parse validation rules from the FieldRules option."""
-        if not rules_option:
-            # Fallback: parse from serialized FieldOptions to extract the validate.rules payload
-            if self.proto_file and self.message_desc and hasattr(self.message_desc, 'desc'):
-                # Find the field descriptor for this field
-                for field_desc in self.message_desc.desc.field:
-                    if field_desc.name == self.field.name:
-                        parsed_rules = parse_validation_rules_from_serialized_options(field_desc.options)
+        # Strategy: Prefer canonical parsing from serialized descriptor, because
+        # extension presence and python-protobuf version differences can mask
+        # submessage presence. Only if descriptor path unavailable do we fall
+        # back to direct rules_option inspection.
+
+        parsed_from_serialized = False
+        if self.proto_file and self.message_desc and hasattr(self.message_desc, 'desc'):
+            for field_desc in self.message_desc.desc.field:
+                if field_desc.name == self.field.name:
+                    parsed_rules = parse_validation_rules_from_serialized_options(field_desc.options)
+                    if parsed_rules:
                         self._add_parsed_rules(parsed_rules)
-                        break
-            return
-            
-        # Handle proper FieldRules when extensions are working
-        # If the validate_pb2 module is not available, we still try to parse the
-        # fields present in rules_option; lack of the module shouldn't prevent that.
-        # Keeping the call for side-effects in environments that require it.
-        _ = load_validate_pb2()
-            
-        # Parse rules based on field type - check all possible types
-        if rules_option.HasField('string'):
-            self._parse_string_rules(rules_option.string)
-        if rules_option.HasField('int32'):
-            self._parse_numeric_rules(rules_option.int32, 'int32')
-        if rules_option.HasField('int64'):
-            self._parse_numeric_rules(rules_option.int64, 'int64')
-        if rules_option.HasField('uint32'):
-            self._parse_numeric_rules(rules_option.uint32, 'uint32')
-        if rules_option.HasField('uint64'):
-            self._parse_numeric_rules(rules_option.uint64, 'uint64')
-        if rules_option.HasField('sint32'):
-            self._parse_numeric_rules(rules_option.sint32, 'sint32')
-        if rules_option.HasField('sint64'):
-            self._parse_numeric_rules(rules_option.sint64, 'sint64')
-        if rules_option.HasField('fixed32'):
-            self._parse_numeric_rules(rules_option.fixed32, 'fixed32')
-        if rules_option.HasField('fixed64'):
-            self._parse_numeric_rules(rules_option.fixed64, 'fixed64')
-        if rules_option.HasField('sfixed32'):
-            self._parse_numeric_rules(rules_option.sfixed32, 'sfixed32')
-        if rules_option.HasField('sfixed64'):
-            self._parse_numeric_rules(rules_option.sfixed64, 'sfixed64')
-        if rules_option.HasField('double'):
-            self._parse_numeric_rules(rules_option.double, 'double')
-        if rules_option.HasField('float'):
-            self._parse_numeric_rules(rules_option.float, 'float')
-        if rules_option.HasField('bool'):
-            self._parse_bool_rules(rules_option.bool)
-        if rules_option.HasField('bytes'):
-            self._parse_bytes_rules(rules_option.bytes)
-        if rules_option.HasField('enum'):
-            self._parse_enum_rules(rules_option.enum)
-        if rules_option.HasField('repeated'):
-            self._parse_repeated_rules(rules_option.repeated)
-        if rules_option.HasField('map'):
-            self._parse_map_rules(rules_option.map)
-        
-        # If no specific type rules were found, continue silently. Validation is optional.
-        
-        # Check for required constraint
-        if rules_option.HasField('required') and rules_option.required:
-            self.rules.append(ValidationRule(RULE_REQUIRED, 'required'))
-        
-        # Check for oneof_required constraint
-        if rules_option.HasField('oneof_required') and rules_option.oneof_required:
-            self.rules.append(ValidationRule(RULE_ONEOF_REQUIRED, 'oneof_required'))
+                        parsed_from_serialized = True
+                    break
+
+        if not parsed_from_serialized and rules_option:
+            _ = load_validate_pb2()
+            if rules_option.HasField('string'):
+                self._parse_string_rules(rules_option.string)
+            if rules_option.HasField('int32'):
+                self._parse_numeric_rules(rules_option.int32, 'int32')
+            if rules_option.HasField('int64'):
+                self._parse_numeric_rules(rules_option.int64, 'int64')
+            if rules_option.HasField('uint32'):
+                self._parse_numeric_rules(rules_option.uint32, 'uint32')
+            if rules_option.HasField('uint64'):
+                self._parse_numeric_rules(rules_option.uint64, 'uint64')
+            if rules_option.HasField('sint32'):
+                self._parse_numeric_rules(rules_option.sint32, 'sint32')
+            if rules_option.HasField('sint64'):
+                self._parse_numeric_rules(rules_option.sint64, 'sint64')
+            if rules_option.HasField('fixed32'):
+                self._parse_numeric_rules(rules_option.fixed32, 'fixed32')
+            if rules_option.HasField('fixed64'):
+                self._parse_numeric_rules(rules_option.fixed64, 'fixed64')
+            if rules_option.HasField('sfixed32'):
+                self._parse_numeric_rules(rules_option.sfixed32, 'sfixed32')
+            if rules_option.HasField('sfixed64'):
+                self._parse_numeric_rules(rules_option.sfixed64, 'sfixed64')
+            if rules_option.HasField('double'):
+                self._parse_numeric_rules(rules_option.double, 'double')
+            if rules_option.HasField('float'):
+                self._parse_numeric_rules(rules_option.float, 'float')
+            if rules_option.HasField('bool'):
+                self._parse_bool_rules(rules_option.bool)
+            if rules_option.HasField('bytes'):
+                self._parse_bytes_rules(rules_option.bytes)
+            if rules_option.HasField('enum'):
+                self._parse_enum_rules(rules_option.enum)
+            if rules_option.HasField('repeated'):
+                self._parse_repeated_rules(rules_option.repeated)
+            if rules_option.HasField('map'):
+                self._parse_map_rules(rules_option.map)
+            if rules_option.HasField('required') and rules_option.required:
+                self.rules.append(ValidationRule(RULE_REQUIRED, 'required'))
+            if rules_option.HasField('oneof_required') and rules_option.oneof_required:
+                self.rules.append(ValidationRule(RULE_ONEOF_REQUIRED, 'oneof_required'))
     
     def _add_parsed_rules(self, parsed_rules: Dict[str, Dict[str, Any]]):
         """Add parsed rules to the validator."""
@@ -388,6 +381,10 @@ class FieldValidator:
                         self.rules.append(ValidationRule(RULE_EQ, f'{rule_type}.const', {'value': value}))
             elif rule_type == 'required':
                 self.rules.append(ValidationRule(RULE_REQUIRED, 'required', {'required': rule_data}))
+            elif rule_type == 'oneof_required':
+                # Record oneof-required; enforcement emitted similarly to REQUIRED but semantic differs.
+                if rule_data:
+                    self.rules.append(ValidationRule(RULE_ONEOF_REQUIRED, 'oneof_required', {'required': rule_data}))
     
     def _parse_numeric_rules(self, rules, type_name):
         """Parse numeric validation rules."""
@@ -664,6 +661,26 @@ class ValidatorGenerator:
             # Indent code by 4 spaces for readability
             indented = ''.join(('    ' + line) if line.strip() else line for line in code.splitlines(True))
             return '        if (msg->has_%s) {\n%s        }\n' % (field_name, indented)
+
+        # Helper: map rule constraint prefix to C validator function & C type
+        type_map_func = {
+            'int32': ('pb_validate_int32', 'int32_t'),
+            'sint32': ('pb_validate_int32', 'int32_t'),
+            'sfixed32': ('pb_validate_int32', 'int32_t'),
+            'int64': ('pb_validate_int64', 'int64_t'),
+            'sint64': ('pb_validate_int64', 'int64_t'),
+            'sfixed64': ('pb_validate_int64', 'int64_t'),
+            'uint32': ('pb_validate_uint32', 'uint32_t'),
+            'fixed32': ('pb_validate_uint32', 'uint32_t'),
+            'uint64': ('pb_validate_uint64', 'uint64_t'),
+            'fixed64': ('pb_validate_uint64', 'uint64_t'),
+            'float': ('pb_validate_float', 'float'),
+            'double': ('pb_validate_double', 'double'),
+            'bool': ('pb_validate_bool', 'bool'),
+            'enum': ('pb_validate_enum', 'int')
+        }
+        constraint_prefix = rule.constraint_id.split('.', 1)[0]
+        validator_func, ctype = type_map_func.get(constraint_prefix, (None, None))
         
         if rule.rule_type == RULE_REQUIRED:
             if field.rules == 'OPTIONAL':
@@ -672,57 +689,54 @@ class ValidatorGenerator:
                        '            if (ctx.early_exit) return false;\n' \
                        '        }\n' % (field_name, rule.constraint_id)
         
-        # Numeric constraint implementations (GT, LT, GTE, LTE, EQ)
-        elif rule.rule_type == RULE_GT:
+        # Numeric / enum primitive constraints via runtime helpers
+        elif rule.rule_type in (RULE_GT, RULE_GTE, RULE_LT, RULE_LTE, RULE_EQ) and validator_func:
             value = rule.params.get('value', 0)
-            return wrap_optional('        if (!(msg->%s > %s)) {\n' \
-                   '            pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be greater than %s");\n' \
-                   '            if (ctx.early_exit) return false;\n' \
-                   '        }\n' % (field_name, value, rule.constraint_id, value))
-        
-        elif rule.rule_type == RULE_LT:
-            value = rule.params.get('value', 0)
-            return wrap_optional('        if (!(msg->%s < %s)) {\n' \
-                   '            pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be less than %s");\n' \
-                   '            if (ctx.early_exit) return false;\n' \
-                   '        }\n' % (field_name, value, rule.constraint_id, value))
-        
-        elif rule.rule_type == RULE_GTE:
-            value = rule.params.get('value', 0)
-            return wrap_optional('        if (!(msg->%s >= %s)) {\n' \
-                   '            pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be greater than or equal to %s");\n' \
-                   '            if (ctx.early_exit) return false;\n' \
-                   '        }\n' % (field_name, value, rule.constraint_id, value))
-        
-        elif rule.rule_type == RULE_LTE:
-            value = rule.params.get('value', 0)
-            return wrap_optional('        if (!(msg->%s <= %s)) {\n' \
-                   '            pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be less than or equal to %s");\n' \
-                   '            if (ctx.early_exit) return false;\n' \
-                   '        }\n' % (field_name, value, rule.constraint_id, value))
-        
-        elif rule.rule_type == RULE_EQ:
-            value = rule.params.get('value', 0)
-            if 'string' in rule.constraint_id:
-                return '        if (strcmp(msg->%s, "%s") != 0) {\n' \
-                       '            pb_violations_add(violations, ctx.path_buffer, "%s", "Value must equal \'%s\'");\n' \
-                       '            if (ctx.early_exit) return false;\n' \
-                       '        }\n' % (field_name, value, rule.constraint_id, value)
-            elif 'bool' in rule.constraint_id:
-                bool_val = 'true' if value else 'false'
-                return '        if (msg->%s != %s) {\n' \
-                       '            pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be %s");\n' \
-                       '            if (ctx.early_exit) return false;\n' \
-                       '        }\n' % (field_name, bool_val, rule.constraint_id, bool_val)
-            else:
-                return wrap_optional('        if (msg->%s != %s) {\n' \
-                       '            pb_violations_add(violations, ctx.path_buffer, "%s", "Value must equal %s");\n' \
-                       '            if (ctx.early_exit) return false;\n' \
-                       '        }\n' % (field_name, value, rule.constraint_id, value))
+            enum_map = {
+                RULE_GT: 'PB_VALIDATE_RULE_GT',
+                RULE_GTE: 'PB_VALIDATE_RULE_GTE',
+                RULE_LT: 'PB_VALIDATE_RULE_LT',
+                RULE_LTE: 'PB_VALIDATE_RULE_LTE',
+                RULE_EQ: 'PB_VALIDATE_RULE_EQ'
+            }
+            rule_enum = enum_map[rule.rule_type]
+            # Special handling for string & bytes delegated later
+            if constraint_prefix not in ('string', 'bytes'):
+                # bool types: use bool literal; others: typed variable
+                if constraint_prefix == 'bool':
+                    init_line = '%s expected = %s;' % (ctype, 'true' if bool(value) else 'false')
+                else:
+                    init_line = '%s expected = (%s)%s;' % (ctype, ctype, value)
+                body = (
+                    '        {\n'
+                    '            %s\n'
+                    '            if (!%s(msg->%s, &expected, %s)) {\n'
+                    '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value constraint failed");\n'
+                    '                if (ctx.early_exit) return false;\n'
+                    '            }\n'
+                    '        }\n'
+                ) % (init_line, validator_func, field_name, rule_enum, rule.constraint_id)
+                return wrap_optional(body)
         
         elif rule.rule_type == RULE_IN:
             values = rule.params.get('values', [])
             if 'string' in rule.constraint_id:
+                if getattr(field, 'allocation', None) == 'CALLBACK':
+                    values_array = ', '.join('"%s"' % v for v in values)
+                    return ('        {\n'
+                            '            const char *s = NULL; pb_size_t l = 0; (void)l;\n'
+                            '            const char *allowed[] = { %s };\n'
+                            '            if (pb_read_callback_string(&msg->%s, &s, &l)) {\n'
+                            '                bool match = false;\n'
+                            '                for (size_t i = 0; i < sizeof(allowed)/sizeof(allowed[0]); i++) {\n'
+                            '                    if (strcmp(s, allowed[i]) == 0) { match = true; break; }\n'
+                            '                }\n'
+                            '                if (!match) {\n'
+                            '                    pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of allowed set");\n'
+                            '                    if (ctx.early_exit) return false;\n'
+                            '                }\n'
+                            '            }\n'
+                            '        }\n') % (values_array, field_name, rule.constraint_id)
                 conditions = ['strcmp(msg->%s, "%s") == 0' % (field_name, v) for v in values]
                 condition_str = ' || '.join(conditions)
                 values_str = ', '.join('"%s"' % v for v in values)
@@ -742,6 +756,22 @@ class ValidatorGenerator:
         elif rule.rule_type == RULE_NOT_IN:
             values = rule.params.get('values', [])
             if 'string' in rule.constraint_id:
+                if getattr(field, 'allocation', None) == 'CALLBACK':
+                    values_array = ', '.join('"%s"' % v for v in values)
+                    return ('        {\n'
+                            '            const char *s = NULL; pb_size_t l = 0; (void)l;\n'
+                            '            const char *blocked[] = { %s };\n'
+                            '            if (pb_read_callback_string(&msg->%s, &s, &l)) {\n'
+                            '                bool forbidden = false;\n'
+                            '                for (size_t i = 0; i < sizeof(blocked)/sizeof(blocked[0]); i++) {\n'
+                            '                    if (strcmp(s, blocked[i]) == 0) { forbidden = true; break; }\n'
+                            '                }\n'
+                            '                if (forbidden) {\n'
+                            '                    pb_violations_add(violations, ctx.path_buffer, "%s", "Value is in forbidden set");\n'
+                            '                    if (ctx.early_exit) return false;\n'
+                            '                }\n'
+                            '            }\n'
+                            '        }\n') % (values_array, field_name, rule.constraint_id)
                 conditions = ['strcmp(msg->%s, "%s") != 0' % (field_name, v) for v in values]
                 condition_str = ' && '.join(conditions)
                 values_str = ', '.join('"%s"' % v for v in values)
@@ -762,43 +792,94 @@ class ValidatorGenerator:
         elif rule.rule_type == RULE_MIN_LEN:
             min_len = rule.params.get('value', 0)
             if 'string' in rule.constraint_id:
-                # Skip generation for callback-allocated strings (no direct access)
                 if getattr(field, 'allocation', None) == 'CALLBACK':
-                    return '        /* TODO: String MIN_LEN validation for callback field not supported yet */\n'
-                return wrap_optional('        if (strlen(msg->%s) < %d) {\n' \
-                       '            pb_violations_add(violations, ctx.path_buffer, "%s", "String too short");\n' \
-                       '            if (ctx.early_exit) return false;\n' \
-              '        }\n' % (field_name, min_len, rule.constraint_id))
-            else:  # bytes
-                return wrap_optional('        if (msg->%s.size < %d) {\n' \
-                       '            pb_violations_add(violations, ctx.path_buffer, "%s", "Bytes too short");\n' \
-                       '            if (ctx.early_exit) return false;\n' \
-              '        }\n' % (field_name, min_len, rule.constraint_id))
+                    return (
+                        '        {\n'
+                        '            const char *s = NULL; pb_size_t l = 0;\n'
+                        '            if (pb_read_callback_string(&msg->%s, &s, &l)) {\n'
+                        '                uint32_t min_len = %d;\n'
+                        '                if (!pb_validate_string(s, l, &min_len, PB_VALIDATE_RULE_MIN_LEN)) {\n'
+                        '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String too short");\n'
+                        '                    if (ctx.early_exit) return false;\n'
+                        '                }\n'
+                        '            }\n'
+                        '        }\n'
+                    ) % (field_name, min_len, rule.constraint_id)
+                return wrap_optional(
+                    '        {\n'
+                    '            uint32_t min_len_v = %d;\n'
+                    '            if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), &min_len_v, PB_VALIDATE_RULE_MIN_LEN)) {\n'
+                    '                pb_violations_add(violations, ctx.path_buffer, "%s", "String too short");\n'
+                    '                if (ctx.early_exit) return false;\n'
+                    '            }\n'
+                    '        }\n' % (min_len, field_name, field_name, rule.constraint_id)
+                )
+            else:  # bytes (still inline for now – future: pb_validate_bytes)
+                return wrap_optional(
+                    '        if (msg->%s.size < %d) {\n'
+                    '            pb_violations_add(violations, ctx.path_buffer, "%s", "Bytes too short");\n'
+                    '            if (ctx.early_exit) return false;\n'
+                    '        }\n' % (field_name, min_len, rule.constraint_id)
+                )
         
         elif rule.rule_type == RULE_MAX_LEN:
             max_len = rule.params.get('value', 0)
             if 'string' in rule.constraint_id:
                 if getattr(field, 'allocation', None) == 'CALLBACK':
-                    return '        /* TODO: String MAX_LEN validation for callback field not supported yet */\n'
-                return wrap_optional('        if (strlen(msg->%s) > %d) {\n' \
-                       '            pb_violations_add(violations, ctx.path_buffer, "%s", "String too long");\n' \
-                       '            if (ctx.early_exit) return false;\n' \
-              '        }\n' % (field_name, max_len, rule.constraint_id))
+                    return (
+                        '        {\n'
+                        '            const char *s = NULL; pb_size_t l = 0;\n'
+                        '            if (pb_read_callback_string(&msg->%s, &s, &l)) {\n'
+                        '                uint32_t max_len_v = %d;\n'
+                        '                if (!pb_validate_string(s, l, &max_len_v, PB_VALIDATE_RULE_MAX_LEN)) {\n'
+                        '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String too long");\n'
+                        '                    if (ctx.early_exit) return false;\n'
+                        '                }\n'
+                        '            }\n'
+                        '        }\n'
+                    ) % (field_name, max_len, rule.constraint_id)
+                return wrap_optional(
+                    '        {\n'
+                    '            uint32_t max_len_v = %d;\n'
+                    '            if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), &max_len_v, PB_VALIDATE_RULE_MAX_LEN)) {\n'
+                    '                pb_violations_add(violations, ctx.path_buffer, "%s", "String too long");\n'
+                    '                if (ctx.early_exit) return false;\n'
+                    '            }\n'
+                    '        }\n' % (max_len, field_name, field_name, rule.constraint_id)
+                )
             else:  # bytes
-                return wrap_optional('        if (msg->%s.size > %d) {\n' \
-                       '            pb_violations_add(violations, ctx.path_buffer, "%s", "Bytes too long");\n' \
-                       '            if (ctx.early_exit) return false;\n' \
-              '        }\n' % (field_name, max_len, rule.constraint_id))
+                return wrap_optional(
+                    '        if (msg->%s.size > %d) {\n'
+                    '            pb_violations_add(violations, ctx.path_buffer, "%s", "Bytes too long");\n'
+                    '            if (ctx.early_exit) return false;\n'
+                    '        }\n' % (field_name, max_len, rule.constraint_id)
+                )
         
         elif rule.rule_type == RULE_PREFIX:
             prefix = rule.params.get('value', '')
             if 'string' in rule.constraint_id:
                 if getattr(field, 'allocation', None) == 'CALLBACK':
-                    return '        /* TODO: String PREFIX validation for callback field not supported yet */\n'
-                return wrap_optional('        if (strncmp(msg->%s, "%s", %d) != 0) {\n' \
-                       '            pb_violations_add(violations, ctx.path_buffer, "%s", "String must start with \'%s\'");\n' \
-                       '            if (ctx.early_exit) return false;\n' \
-              '        }\n' % (field_name, prefix, len(prefix), rule.constraint_id, prefix))
+                    return (
+                        '        {\n'
+                        '            const char *s = NULL; pb_size_t l = 0;\n'
+                        '            if (pb_read_callback_string(&msg->%s, &s, &l)) {\n'
+                        '                const char *prefix = "%s";\n'
+                        '                if (!pb_validate_string(s, l, prefix, PB_VALIDATE_RULE_PREFIX)) {\n'
+                        '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must start with \'%s\'");\n'
+                        '                    if (ctx.early_exit) return false;\n'
+                        '                }\n'
+                        '            }\n'
+                        '        }\n'
+                    ) % (field_name, prefix, rule.constraint_id, prefix)
+                return wrap_optional(
+                    '        {\n'
+                    '            const char *prefix = "%s";\n'
+                    '            if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), prefix, PB_VALIDATE_RULE_PREFIX)) {\n'
+                    '                pb_violations_add(violations, ctx.path_buffer, "%s", "String must start with \'%s\'");\n'
+                    '                if (ctx.early_exit) return false;\n'
+                    '            }\n'
+                    '        }\n' % (prefix, field_name, field_name, rule.constraint_id, prefix)
+                )
             else:  # bytes
                 return wrap_optional('        if (msg->%s.size < %d || memcmp(msg->%s.bytes, "%s", %d) != 0) {\n' \
                        '            pb_violations_add(violations, ctx.path_buffer, "%s", "Bytes must start with specified prefix");\n' \
@@ -809,14 +890,27 @@ class ValidatorGenerator:
             suffix = rule.params.get('value', '')
             if 'string' in rule.constraint_id:
                 if getattr(field, 'allocation', None) == 'CALLBACK':
-                    return '        /* TODO: String SUFFIX validation for callback field not supported yet */\n'
-                return wrap_optional('        {\n' \
-                       '            size_t len = strlen(msg->%s);\n' \
-                       '            if (len < %d || strcmp(msg->%s + len - %d, "%s") != 0) {\n' \
-                       '                pb_violations_add(violations, ctx.path_buffer, "%s", "String must end with \'%s\'");\n' \
-                       '                if (ctx.early_exit) return false;\n' \
-                        '            }\n' \
-                        '        }\n' % (field_name, len(suffix), field_name, len(suffix), suffix, rule.constraint_id, suffix))
+                    return (
+                        '        {\n'
+                        '            const char *s = NULL; pb_size_t l = 0;\n'
+                        '            if (pb_read_callback_string(&msg->%s, &s, &l)) {\n'
+                        '                const char *suffix = "%s";\n'
+                        '                if (!pb_validate_string(s, l, suffix, PB_VALIDATE_RULE_SUFFIX)) {\n'
+                        '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must end with \'%s\'");\n'
+                        '                    if (ctx.early_exit) return false;\n'
+                        '                }\n'
+                        '            }\n'
+                        '        }\n'
+                    ) % (field_name, suffix, rule.constraint_id, suffix)
+                return wrap_optional(
+                    '        {\n'
+                    '            const char *suffix = "%s";\n'
+                    '            if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), suffix, PB_VALIDATE_RULE_SUFFIX)) {\n'
+                    '                pb_violations_add(violations, ctx.path_buffer, "%s", "String must end with \'%s\'");\n'
+                    '                if (ctx.early_exit) return false;\n'
+                    '            }\n'
+                    '        }\n' % (suffix, field_name, field_name, rule.constraint_id, suffix)
+                )
             else:  # bytes
                 return wrap_optional('        if (msg->%s.size < %d || memcmp(msg->%s.bytes + msg->%s.size - %d, "%s", %d) != 0) {\n' \
                        '            pb_violations_add(violations, ctx.path_buffer, "%s", "Bytes must end with specified suffix");\n' \
@@ -827,11 +921,27 @@ class ValidatorGenerator:
             contains = rule.params.get('value', '')
             if 'string' in rule.constraint_id:
                 if getattr(field, 'allocation', None) == 'CALLBACK':
-                    return '        /* TODO: String CONTAINS validation for callback field not supported yet */\n'
-                return wrap_optional('        if (strstr(msg->%s, "%s") == NULL) {\n' \
-                       '            pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain \'%s\'");\n' \
-                       '            if (ctx.early_exit) return false;\n' \
-              '        }\n' % (field_name, contains, rule.constraint_id, contains))
+                    return (
+                        '        {\n'
+                        '            const char *s = NULL; pb_size_t l = 0;\n'
+                        '            if (pb_read_callback_string(&msg->%s, &s, &l)) {\n'
+                        '                const char *needle = "%s";\n'
+                        '                if (!pb_validate_string(s, l, needle, PB_VALIDATE_RULE_CONTAINS)) {\n'
+                        '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain \'%s\'");\n'
+                        '                    if (ctx.early_exit) return false;\n'
+                        '                }\n'
+                        '            }\n'
+                        '        }\n'
+                    ) % (field_name, contains, rule.constraint_id, contains)
+                return wrap_optional(
+                    '        {\n'
+                    '            const char *needle = "%s";\n'
+                    '            if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), needle, PB_VALIDATE_RULE_CONTAINS)) {\n'
+                    '                pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain \'%s\'");\n'
+                    '                if (ctx.early_exit) return false;\n'
+                    '            }\n'
+                    '        }\n' % (contains, field_name, field_name, rule.constraint_id, contains)
+                )
             else:  # bytes  
                 return wrap_optional('        {\n' \
                        '            bool found = false;\n' \
@@ -848,15 +958,27 @@ class ValidatorGenerator:
                         '        }\n' % (field_name, len(contains), field_name, contains, len(contains), rule.constraint_id))
         
         elif rule.rule_type == RULE_ASCII:
-            return wrap_optional('        {\n' \
-                   '            for (size_t i = 0; msg->%s[i] != \'\\0\'; i++) {\n' \
-                   '                if ((unsigned char)msg->%s[i] > 127) {\n' \
-                   '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain only ASCII characters");\n' \
-                   '                    if (ctx.early_exit) return false;\n' \
-                   '                    break;\n' \
-                   '                }\n' \
-                   '            }\n' \
-                    '        }\n' % (field_name, field_name, rule.constraint_id))
+            if 'string' in rule.constraint_id:
+                if getattr(field, 'allocation', None) == 'CALLBACK':
+                    return (
+                        '        {\n'
+                        '            const char *s = NULL; pb_size_t l = 0;\n'
+                        '            if (pb_read_callback_string(&msg->%s, &s, &l)) {\n'
+                        '                if (!pb_validate_string(s, l, NULL, PB_VALIDATE_RULE_ASCII)) {\n'
+                        '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain only ASCII characters");\n'
+                        '                    if (ctx.early_exit) return false;\n'
+                        '                }\n'
+                        '            }\n'
+                        '        }\n'
+                    ) % (field_name, rule.constraint_id)
+                return wrap_optional(
+                    '        {\n'
+                    '            if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), NULL, PB_VALIDATE_RULE_ASCII)) {\n'
+                    '                pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain only ASCII characters");\n'
+                    '                if (ctx.early_exit) return false;\n'
+                    '            }\n'
+                    '        }\n' % (field_name, field_name, rule.constraint_id)
+                )
         
         # Enum constraints
         elif rule.rule_type == RULE_ENUM_DEFINED:
