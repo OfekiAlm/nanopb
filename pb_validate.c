@@ -543,3 +543,35 @@ bool pb_validate_enum(int value, const void *rule_data, pb_validate_rule_type_t 
         return true;
     }
 }
+
+/* Helper: read NUL-terminated string pointer from pb_callback_t.
+ * Assumptions:
+ * - For decoded messages, user provided a decode callback that stores pointer
+ *   to buffer in callback->arg OR uses default callback where arg is the buffer.
+ * - We do not invoke the function pointer; this is a lightweight accessor.
+ * - If pointer unavailable, we return false.
+ */
+bool pb_read_callback_string(const struct pb_callback_s *callback, const char **out_str, pb_size_t *out_len)
+{
+    if (!callback || !out_str || !out_len)
+        return false;
+    /* pb_callback_t defined in pb.h as struct pb_callback_s { bool (*func)(pb_istream_t*, pb_ostream_t*, const pb_field_t*, void**); void *arg; } (typical).
+       We rely only on arg. */
+    const char *p = (const char *)callback->arg;
+    if (!p)
+        return false;
+    /* Ensure NUL-termination within reasonable bounds: scan up to PB_VALIDATE_MAX_MESSAGE_LENGTH */
+    size_t len = 0;
+    while (p[len] != '\0')
+    {
+        if (len >= PB_VALIDATE_MAX_MESSAGE_LENGTH)
+        {
+            /* Treat overly long as failure */
+            return false;
+        }
+        len++;
+    }
+    *out_str = p;
+    *out_len = (pb_size_t)len;
+    return true;
+}
