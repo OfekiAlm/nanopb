@@ -2,7 +2,8 @@ syntax = "proto3";
 
 package test;
 
-import "generator/proto/validate.proto";
+import "validate.proto";
+import "nanopb.proto";
 
 // Test basic validation for required types
 message BasicValidation {
@@ -28,6 +29,25 @@ message BasicValidation {
   string password = 11 [(validate.rules).string.min_len = 8, (validate.rules).string.max_len = 100];
   string prefix_field = 12 [(validate.rules).string.prefix = "PREFIX_"];
   string suffix_field = 13 [(validate.rules).string.suffix = "_SUFFIX"];
+
+  // Additional string validations for callback tests
+  string ascii_field = 16 [(validate.rules).string.ascii = true, (validate.rules).string.min_len = 1];
+  // Accept only listed colors
+  string color_field = 17 [(validate.rules).string.in = "red", (validate.rules).string.in = "green", (validate.rules).string.in = "blue"];
+  // Must not be any of the forbidden keywords
+  string forbidden_field = 18 [(validate.rules).string.not_in = "DROP", (validate.rules).string.not_in = "DELETE", (validate.rules).string.not_in = "TRUNCATE"];
+
+  // Float & Double constraints (new)
+  float temperature = 14 [(validate.rules).float.gte = -50, (validate.rules).float.lte = 150];
+  double ratio = 15 [(validate.rules).double.gt = 0.0, (validate.rules).double.lt = 1.0];
+
+  // Repeated constraints
+  // numbers must have between 1 and 5 items (inclusive)
+  repeated int32 numbers = 19 [
+    (nanopb).max_count = 5,
+    (validate.rules).repeated.min_items = 1,
+    (validate.rules).repeated.max_items = 5
+  ];
 }
 
 // Enable validation for the entire file

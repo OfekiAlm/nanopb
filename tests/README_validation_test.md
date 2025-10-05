@@ -39,3 +39,7 @@ cc -std=c11 -O2 \
 
 - String validation for callback-allocated fields is intentionally not generated yet (left as TODO in generated C). Numeric validations (gt/gte/lt/lte/eq) are in place.
 - If you regenerate code (`generator/nanopb_generator.py --validate ...`), ensure the output `gengen/test_basic_validation_validate.*` exists before building this test.
+
+## Command generation
+```bash
+/workspace/.venv/bin/python workspace/generator/nanopb_generator.py --validate -I /workspace -D /workspace/gengen -x generator/proto/nanopb.proto -x generator/proto/validate.proto /workspace/test_basic_validation.proto```
