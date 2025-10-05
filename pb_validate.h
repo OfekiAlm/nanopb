@@ -133,6 +133,17 @@ extern "C"
     bool pb_validate_context_push_index(pb_validate_context_t *ctx, pb_size_t index);
     void pb_validate_context_pop_index(pb_validate_context_t *ctx);
 
+    /* Repeated field count helpers */
+    static inline bool pb_validate_min_items(pb_size_t count, pb_size_t min_required)
+    {
+        return count >= min_required;
+    }
+
+    static inline bool pb_validate_max_items(pb_size_t count, pb_size_t max_allowed)
+    {
+        return count <= max_allowed;
+    }
+
 /* Encode/decode hook macros (optional) */
 #ifdef PB_VALIDATE_BEFORE_ENCODE
 #define pb_validate_encode(stream, msg_type, msg) \

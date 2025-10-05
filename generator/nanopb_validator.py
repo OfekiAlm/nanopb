@@ -267,6 +267,32 @@ def parse_field_rules_from_protobuf_message(field_rules_msg: Any) -> Dict[str, D
             if b:
                 rules['bytes'] = b
 
+        # repeated rules
+        if hasattr(field_rules_msg, 'repeated') and field_rules_msg.HasField('repeated'):
+            rep_rules = field_rules_msg.repeated
+            r: Dict[str, Any] = {}
+            if rep_rules.HasField('min_items'):
+                r['min_items'] = rep_rules.min_items
+            if rep_rules.HasField('max_items'):
+                r['max_items'] = rep_rules.max_items
+            if rep_rules.HasField('unique'):
+                r['unique'] = rep_rules.unique
+            if r:
+                rules['repeated'] = r
+
+        # map rules
+        if hasattr(field_rules_msg, 'map') and field_rules_msg.HasField('map'):
+            map_rules = field_rules_msg.map
+            m: Dict[str, Any] = {}
+            if map_rules.HasField('min_pairs'):
+                m['min_pairs'] = map_rules.min_pairs
+            if map_rules.HasField('max_pairs'):
+                m['max_pairs'] = map_rules.max_pairs
+            if map_rules.HasField('no_sparse'):
+                m['no_sparse'] = map_rules.no_sparse
+            if m:
+                rules['map'] = m
+
         # flags
         if hasattr(field_rules_msg, 'required') and field_rules_msg.HasField('required'):
             rules['required'] = field_rules_msg.required
@@ -379,6 +405,20 @@ class FieldValidator:
                         self.rules.append(ValidationRule(cname, f'{rule_type}.{constraint}', {'value': value}))
                     elif constraint == 'const':
                         self.rules.append(ValidationRule(RULE_EQ, f'{rule_type}.const', {'value': value}))
+            elif rule_type == 'repeated' and isinstance(rule_data, dict):
+                if 'min_items' in rule_data:
+                    self.rules.append(ValidationRule(RULE_MIN_ITEMS, 'repeated.min_items', {'value': rule_data['min_items']}))
+                if 'max_items' in rule_data:
+                    self.rules.append(ValidationRule(RULE_MAX_ITEMS, 'repeated.max_items', {'value': rule_data['max_items']}))
+                if rule_data.get('unique'):
+                    self.rules.append(ValidationRule(RULE_UNIQUE, 'repeated.unique', {}))
+            elif rule_type == 'map' and isinstance(rule_data, dict):
+                if 'min_pairs' in rule_data:
+                    self.rules.append(ValidationRule(RULE_MIN_ITEMS, 'map.min_pairs', {'value': rule_data['min_pairs']}))
+                if 'max_pairs' in rule_data:
+                    self.rules.append(ValidationRule(RULE_MAX_ITEMS, 'map.max_pairs', {'value': rule_data['max_pairs']}))
+                if rule_data.get('no_sparse'):
+                    self.rules.append(ValidationRule(RULE_NO_SPARSE, 'map.no_sparse', {}))
             elif rule_type == 'required':
                 self.rules.append(ValidationRule(RULE_REQUIRED, 'required', {'required': rule_data}))
             elif rule_type == 'oneof_required':
@@ -988,17 +1028,21 @@ class ValidatorGenerator:
         # Repeated field constraints
         elif rule.rule_type == RULE_MIN_ITEMS:
             min_items = rule.params.get('value', 0)
-            return '        if (msg->%s_count < %d) {\n' \
-                   '            pb_violations_add(violations, ctx.path_buffer, "%s", "Too few items");\n' \
-                   '            if (ctx.early_exit) return false;\n' \
-                   '        }\n' % (field_name, min_items, rule.constraint_id)
+            return (
+                '        if (!pb_validate_min_items(msg->%s_count, %d)) {\n'
+                '            pb_violations_add(violations, ctx.path_buffer, "%s", "Too few items");\n'
+                '            if (ctx.early_exit) return false;\n'
+                '        }\n'
+            ) % (field_name, min_items, rule.constraint_id)
         
         elif rule.rule_type == RULE_MAX_ITEMS:
             max_items = rule.params.get('value', 0)
-            return '        if (msg->%s_count > %d) {\n' \
-                   '            pb_violations_add(violations, ctx.path_buffer, "%s", "Too many items");\n' \
-                   '            if (ctx.early_exit) return false;\n' \
-                   '        }\n' % (field_name, max_items, rule.constraint_id)
+            return (
+                '        if (!pb_validate_max_items(msg->%s_count, %d)) {\n'
+                '            pb_violations_add(violations, ctx.path_buffer, "%s", "Too many items");\n'
+                '            if (ctx.early_exit) return false;\n'
+                '        }\n'
+            ) % (field_name, max_items, rule.constraint_id)
         
         elif rule.rule_type == RULE_UNIQUE:
             # Simplified unique check - would need type-specific implementation
