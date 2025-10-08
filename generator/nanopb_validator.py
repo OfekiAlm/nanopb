@@ -40,6 +40,11 @@ STRING_CONSTRAINT_MAP: Dict[str, str] = {
     'ascii': 'ASCII',
     'in': 'IN',
     'not_in': 'NOT_IN',
+    'email': 'EMAIL', 
+    'hostname': 'HOSTNAME', 
+    'ip': 'IP', 
+    'ipv4': 'IPV4', 
+    'ipv6': 'IPV6', 
 }
 
 # Rule identifiers used throughout codegen
@@ -58,6 +63,11 @@ RULE_PREFIX = 'PREFIX'
 RULE_SUFFIX = 'SUFFIX'
 RULE_CONTAINS = 'CONTAINS'
 RULE_ASCII = 'ASCII'
+RULE_EMAIL = 'EMAIL'
+RULE_HOSTNAME = 'HOSTNAME'
+RULE_IP = 'IP'
+RULE_IPV4 = 'IPV4'
+RULE_IPV6 = 'IPV6'
 RULE_ENUM_DEFINED = 'ENUM_DEFINED'
 RULE_MIN_ITEMS = 'MIN_ITEMS'
 RULE_MAX_ITEMS = 'MAX_ITEMS'
@@ -90,35 +100,69 @@ def load_validate_pb2():
     1. Relative import from generator/proto (".proto.validate_pb2")
     2. Absolute-ish import when run from generator/ ("proto.validate_pb2")
     3. Top-level module ("validate_pb2")
+    
+    If imports fail due to protobuf version mismatch, tries setting
+    PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python as a workaround.
     """
     global _validate_pb2_module
     if _validate_pb2_module is not None:
         return _validate_pb2_module
 
+    import os
+    
+    # Helper to try import with optional protobuf workaround
+    def try_import_with_workaround(import_func):
+        try:
+            return import_func()
+        except (TypeError, AttributeError) as e:
+            error_msg = str(e)
+            if "Descriptors cannot be created directly" in error_msg or "module has no attribute" in error_msg:
+                # Protobuf version mismatch - try pure Python implementation
+                old_impl = os.environ.get('PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION')
+                try:
+                    os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python'
+                    return import_func()
+                finally:
+                    if old_impl is None:
+                        os.environ.pop('PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION', None)
+                    else:
+                        os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = old_impl
+            raise
+        except Exception:
+            return None
+    
     # Try relative import from generator/proto first
-    try:
+    def try_relative():
         from .proto import validate_pb2 as _vp
-        _validate_pb2_module = _vp
+        return _vp
+    
+    result = try_import_with_workaround(try_relative)
+    if result:
+        _validate_pb2_module = result
         return _validate_pb2_module
-    except Exception:
-        pass
 
     # Try plain "proto.validate_pb2" (when run as script from generator/)
-    try:
+    def try_proto():
         from proto import validate_pb2 as _vp
-        _validate_pb2_module = _vp
+        return _vp
+    
+    result = try_import_with_workaround(try_proto)
+    if result:
+        _validate_pb2_module = result
         return _validate_pb2_module
-    except Exception:
-        pass
 
     # As a last resort, try importing a top-level validate_pb2
-    try:
+    def try_toplevel():
         import validate_pb2 as _vp
-        _validate_pb2_module = _vp
+        return _vp
+    
+    result = try_import_with_workaround(try_toplevel)
+    if result:
+        _validate_pb2_module = result
         return _validate_pb2_module
-    except Exception:
-        # Keep quiet: validation is optional and we have a fallback parser
-        return None
+    
+    # Keep quiet: validation is optional and we have a fallback parser
+    return None
 
 # Note: We used to inspect private unknown_fields to extract rules. That is brittle
 # across protobuf versions. Instead, we now rely on scanning serialized options to
@@ -208,9 +252,16 @@ def parse_field_rules_from_protobuf_message(field_rules_msg: Any) -> Dict[str, D
         if hasattr(field_rules_msg, 'string') and field_rules_msg.HasField('string'):
             string_rules = field_rules_msg.string
             s: Dict[str, Any] = {}
-            for attr in ('min_len', 'max_len', 'const', 'prefix', 'suffix', 'contains', 'ascii'):
+            # For non-boolean fields, use HasField
+            for attr in ('min_len', 'max_len', 'const', 'prefix', 'suffix', 'contains'):
                 if string_rules.HasField(attr):
                     s[attr] = getattr(string_rules, attr)
+            # For boolean fields, check the value directly (HasField doesn't work for primitives)
+            for attr in ('ascii', 'email', 'hostname', 'ip', 'ipv4', 'ipv6'):
+                if hasattr(string_rules, attr):
+                    val = getattr(string_rules, attr)
+                    if val:  # Only include if True
+                        s[attr] = val
             # repeated constraints
             if _has_attr_and_truthy(string_rules, 'in'):
                 s['in'] = _get_repeated_values(string_rules, 'in')
@@ -397,6 +448,10 @@ class FieldValidator:
                         params['value'] = value
                     elif constraint in ('in','not_in'):
                         params['values'] = list(value)
+                    # Boolean flags: email, hostname, ip, ipv4, ipv6, ascii - only add if True
+                    elif constraint in ('email', 'hostname', 'ip', 'ipv4', 'ipv6', 'ascii'):
+                        if not value:  # Skip if False
+                            continue
                     self.rules.append(ValidationRule(rtype, f'string.{constraint}', params))
             elif rule_type in (('int32',) + NUMERIC_TYPES) and isinstance(rule_data, dict):
                 for constraint, value in rule_data.items():
@@ -464,6 +519,16 @@ class FieldValidator:
             self.rules.append(ValidationRule(RULE_CONTAINS, 'string.contains', {'value': rules.contains}))
         if rules.HasField('ascii') and rules.ascii:
             self.rules.append(ValidationRule(RULE_ASCII, 'string.ascii'))
+        if getattr(rules, 'email', False):
+            self.rules.append(ValidationRule(RULE_EMAIL, 'string.email'))
+        if getattr(rules, 'hostname', False):
+            self.rules.append(ValidationRule(RULE_HOSTNAME, 'string.hostname'))
+        if getattr(rules, 'ip', False):
+            self.rules.append(ValidationRule(RULE_IP, 'string.ip'))
+        if getattr(rules, 'ipv4', False):
+            self.rules.append(ValidationRule(RULE_IPV4, 'string.ipv4'))
+        if getattr(rules, 'ipv6', False):
+            self.rules.append(ValidationRule(RULE_IPV6, 'string.ipv6'))
         if hasattr(rules, 'in') and getattr(rules, 'in'):
             self.rules.append(ValidationRule(RULE_IN, 'string.in', {'values': list(getattr(rules, 'in'))}))
         if rules.not_in:
@@ -1018,6 +1083,36 @@ class ValidatorGenerator:
                     '                if (ctx.early_exit) return false;\n'
                     '            }\n'
                     '        }\n' % (field_name, field_name, rule.constraint_id)
+                )
+        elif rule.rule_type in (RULE_EMAIL, RULE_HOSTNAME, RULE_IP, RULE_IPV4, RULE_IPV6):
+            if 'string' in rule.constraint_id:
+                enum_map = {
+                    RULE_EMAIL: 'PB_VALIDATE_RULE_EMAIL',
+                    RULE_HOSTNAME: 'PB_VALIDATE_RULE_HOSTNAME',
+                    RULE_IP: 'PB_VALIDATE_RULE_IP',
+                    RULE_IPV4: 'PB_VALIDATE_RULE_IPV4',
+                    RULE_IPV6: 'PB_VALIDATE_RULE_IPV6',
+                }
+                rule_enum = enum_map[rule.rule_type]
+                if getattr(field, 'allocation', None) == 'CALLBACK':
+                    return (
+                        '        {\n'
+                        '            const char *s = NULL; pb_size_t l = 0;\n'
+                        '            if (pb_read_callback_string(&msg->%s, &s, &l)) {\n'
+                        '                if (!pb_validate_string(s, l, NULL, %s)) {\n'
+                        '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String format validation failed");\n'
+                        '                    if (ctx.early_exit) return false;\n'
+                        '                }\n'
+                        '            }\n'
+                        '        }\n'
+                    ) % (field_name, rule_enum, rule.constraint_id)
+                return wrap_optional(
+                    '        {\n'
+                    '            if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), NULL, %s)) {\n'
+                    '                pb_violations_add(violations, ctx.path_buffer, "%s", "String format validation failed");\n'
+                    '                if (ctx.early_exit) return false;\n'
+                    '            }\n'
+                    '        }\n' % (field_name, field_name, rule_enum, rule.constraint_id)
                 )
         
         # Enum constraints

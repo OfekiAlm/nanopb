@@ -405,6 +405,86 @@ bool pb_validate_test_BasicValidation(const test_BasicValidation *msg, pb_violat
     }
     pb_validate_context_pop_field(&ctx);
     
+    /* Validate field: email_fmt */
+    if (!pb_validate_context_push_field(&ctx, "email_fmt")) return false;
+    {
+        /* Rule: string.email */
+        {
+            const char *s = NULL; pb_size_t l = 0;
+            if (pb_read_callback_string(&msg->email_fmt, &s, &l)) {
+                if (!pb_validate_string(s, l, NULL, PB_VALIDATE_RULE_EMAIL)) {
+                    pb_violations_add(violations, ctx.path_buffer, "string.email", "String format validation failed");
+                    if (ctx.early_exit) return false;
+                }
+            }
+        }
+    }
+    pb_validate_context_pop_field(&ctx);
+    
+    /* Validate field: hostname_fmt */
+    if (!pb_validate_context_push_field(&ctx, "hostname_fmt")) return false;
+    {
+        /* Rule: string.hostname */
+        {
+            const char *s = NULL; pb_size_t l = 0;
+            if (pb_read_callback_string(&msg->hostname_fmt, &s, &l)) {
+                if (!pb_validate_string(s, l, NULL, PB_VALIDATE_RULE_HOSTNAME)) {
+                    pb_violations_add(violations, ctx.path_buffer, "string.hostname", "String format validation failed");
+                    if (ctx.early_exit) return false;
+                }
+            }
+        }
+    }
+    pb_validate_context_pop_field(&ctx);
+    
+    /* Validate field: ip_any */
+    if (!pb_validate_context_push_field(&ctx, "ip_any")) return false;
+    {
+        /* Rule: string.ip */
+        {
+            const char *s = NULL; pb_size_t l = 0;
+            if (pb_read_callback_string(&msg->ip_any, &s, &l)) {
+                if (!pb_validate_string(s, l, NULL, PB_VALIDATE_RULE_IP)) {
+                    pb_violations_add(violations, ctx.path_buffer, "string.ip", "String format validation failed");
+                    if (ctx.early_exit) return false;
+                }
+            }
+        }
+    }
+    pb_validate_context_pop_field(&ctx);
+    
+    /* Validate field: ip_v4 */
+    if (!pb_validate_context_push_field(&ctx, "ip_v4")) return false;
+    {
+        /* Rule: string.ipv4 */
+        {
+            const char *s = NULL; pb_size_t l = 0;
+            if (pb_read_callback_string(&msg->ip_v4, &s, &l)) {
+                if (!pb_validate_string(s, l, NULL, PB_VALIDATE_RULE_IPV4)) {
+                    pb_violations_add(violations, ctx.path_buffer, "string.ipv4", "String format validation failed");
+                    if (ctx.early_exit) return false;
+                }
+            }
+        }
+    }
+    pb_validate_context_pop_field(&ctx);
+    
+    /* Validate field: ip_v6 */
+    if (!pb_validate_context_push_field(&ctx, "ip_v6")) return false;
+    {
+        /* Rule: string.ipv6 */
+        {
+            const char *s = NULL; pb_size_t l = 0;
+            if (pb_read_callback_string(&msg->ip_v6, &s, &l)) {
+                if (!pb_validate_string(s, l, NULL, PB_VALIDATE_RULE_IPV6)) {
+                    pb_violations_add(violations, ctx.path_buffer, "string.ipv6", "String format validation failed");
+                    if (ctx.early_exit) return false;
+                }
+            }
+        }
+    }
+    pb_validate_context_pop_field(&ctx);
+    
     return !pb_violations_has_any(violations);
 }
 

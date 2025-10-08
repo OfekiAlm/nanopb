@@ -2,8 +2,9 @@ syntax = "proto3";
 
 package test;
 
-import "validate.proto";
-import "nanopb.proto";
+// import "validate.proto";
+import "generator/proto/validate.proto";
+import "generator/proto/nanopb.proto";
 
 // Test basic validation for required types
 message BasicValidation {
@@ -29,6 +30,11 @@ message BasicValidation {
   string password = 11 [(validate.rules).string.min_len = 8, (validate.rules).string.max_len = 100];
   string prefix_field = 12 [(validate.rules).string.prefix = "PREFIX_"];
   string suffix_field = 13 [(validate.rules).string.suffix = "_SUFFIX"];
+  string email_fmt = 20 [(validate.rules).string.email = true];
+  string hostname_fmt = 21 [(validate.rules).string.hostname = true];
+  string ip_any = 22 [(validate.rules).string.ip = true];
+  string ip_v4 = 23 [(validate.rules).string.ipv4 = true];
+  string ip_v6 = 24 [(validate.rules).string.ipv6 = true];
 
   // Additional string validations for callback tests
   string ascii_field = 16 [(validate.rules).string.ascii = true, (validate.rules).string.min_len = 1];

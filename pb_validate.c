@@ -3,6 +3,12 @@
 #include "pb_validate.h"
 #include <string.h>
 #include <stdio.h>
+#include <ctype.h>
+
+static bool is_valid_email(const char *s, size_t len);
+static bool is_valid_hostname(const char *s, size_t len);
+static bool is_valid_ipv4(const char *s, size_t len);
+static bool is_valid_ipv6(const char *s, size_t len);
 
 /* Initialize a violations structure */
 void pb_violations_init(pb_violations_t *violations)
@@ -424,6 +430,16 @@ bool pb_validate_string(const char *value, pb_size_t length, const void *rule_da
         }
         return true;
     }
+    case PB_VALIDATE_RULE_EMAIL:
+        return is_valid_email(value, length);
+    case PB_VALIDATE_RULE_HOSTNAME:
+        return is_valid_hostname(value, length);
+    case PB_VALIDATE_RULE_IPV4:
+        return is_valid_ipv4(value, length);
+    case PB_VALIDATE_RULE_IPV6:
+        return is_valid_ipv6(value, length);
+    case PB_VALIDATE_RULE_IP:
+        return is_valid_ipv4(value, length) || is_valid_ipv6(value, length);
     case PB_VALIDATE_RULE_IN:
     {
         const struct
@@ -574,4 +590,210 @@ bool pb_read_callback_string(const struct pb_callback_s *callback, const char **
     *out_str = p;
     *out_len = (pb_size_t)len;
     return true;
+}
+
+/* --- Additional string constraint helpers --------------------------------- */
+
+static bool is_valid_hostname_label(const char *s, size_t len)
+{
+    if (len == 0 || len > 63)
+        return false;
+    /* First and last cannot be '-' */
+    if (s[0] == '-' || s[len - 1] == '-')
+        return false;
+    for (size_t i = 0; i < len; i++)
+    {
+        unsigned char c = (unsigned char)s[i];
+        if (c > 127)
+            return false; /* ASCII only */
+        if (!(isalnum(c) || c == '-'))
+            return false;
+    }
+    return true;
+}
+
+static bool is_valid_hostname(const char *s, size_t len)
+{
+    if (!s || len == 0 || len > 253)
+        return false;
+    /* Cannot start or end with '.' and no consecutive dots */
+    if (s[0] == '.' || s[len - 1] == '.')
+        return false;
+    size_t start = 0;
+    for (size_t i = 0; i <= len; i++)
+    {
+        if (i == len || s[i] == '.')
+        {
+            if (i == start) /* empty label => consecutive dots */
+                return false;
+            if (!is_valid_hostname_label(&s[start], i - start))
+                return false;
+            start = i + 1;
+        }
+        else if ((unsigned char)s[i] <= 32 || (unsigned char)s[i] == 127)
+        {
+            return false; /* no spaces or control chars */
+        }
+    }
+    return true;
+}
+
+static bool is_valid_email(const char *s, size_t len)
+{
+    if (!s || len < 3) /* a@b minimal */
+        return false;
+    /* Basic checks: single '@', non-empty local & domain, no spaces */
+    size_t at_pos = (size_t)-1;
+    for (size_t i = 0; i < len; i++)
+    {
+        unsigned char c = (unsigned char)s[i];
+        if (c <= 32 || c == 127)
+            return false; /* space/control not allowed */
+        if (s[i] == '@')
+        {
+            if (at_pos != (size_t)-1)
+                return false; /* multiple @ */
+            at_pos = i;
+        }
+    }
+    if (at_pos == (size_t)-1 || at_pos == 0 || at_pos == len - 1)
+        return false;
+    /* Local part basic validity: cannot start/end with '.', no consecutive '..' */
+    size_t lstart = 0, lend = at_pos;
+    if (s[lstart] == '.' || s[lend - 1] == '.')
+        return false;
+    for (size_t i = lstart + 1; i < lend; i++)
+    {
+        if (s[i] == '.' && s[i - 1] == '.')
+            return false;
+    }
+    /* Domain part must be a valid hostname */
+    return is_valid_hostname(&s[at_pos + 1], len - at_pos - 1);
+}
+
+static bool parse_uint_dotted_segment(const char *s, size_t len, int *out)
+{
+    if (len == 0)
+        return false;
+    int value = 0;
+    for (size_t i = 0; i < len; i++)
+    {
+        if (!isdigit((unsigned char)s[i]))
+            return false;
+        value = value * 10 + (s[i] - '0');
+        if (value > 255)
+            return false;
+    }
+    *out = value;
+    return true;
+}
+
+static bool is_valid_ipv4(const char *s, size_t len)
+{
+    if (!s || len < 7 || len > 15)
+        return false;
+    size_t start = 0;
+    int parts = 0;
+    for (size_t i = 0; i <= len; i++)
+    {
+        if (i == len || s[i] == '.')
+        {
+            if (parts > 3)
+                return false;
+            if (i == start)
+                return false; /* empty */
+            int v;
+            if (!parse_uint_dotted_segment(&s[start], i - start, &v))
+                return false;
+            parts++;
+            start = i + 1;
+        }
+        else if (!isdigit((unsigned char)s[i]))
+        {
+            return false;
+        }
+    }
+    return parts == 4;
+}
+
+static bool is_hex_digit(char c)
+{
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
+static bool is_valid_ipv6(const char *s, size_t len)
+{
+    if (!s || len < 2)
+        return false;
+    size_t i = 0, start = 0;
+    int hextets = 0;
+    bool compress = false;
+
+    if (s[i] == ':')
+    {
+        if (i + 1 >= len || s[i + 1] != ':')
+            return false;
+        i += 2;
+        start = i;
+        compress = true; /* leading :: */
+        if (i == len)
+            return true; /* "::" only (all zeros) */
+    }
+
+    while (i <= len)
+    {
+        if (i == len || s[i] == ':')
+        {
+            if (i == start)
+            {
+                /* empty, must be '::' */
+                if (compress)
+                    return false; /* second '::' not allowed */
+                compress = true;
+                i++;
+                start = i; /* skip second ':' */
+                continue;
+            }
+
+            /* Check if this segment is IPv4 tail */
+            bool has_dot = false;
+            for (size_t k = start; k < i; k++)
+            {
+                if (s[k] == '.')
+                {
+                    has_dot = true;
+                    break;
+                }
+            }
+            if (has_dot)
+            {
+                if (!is_valid_ipv4(&s[start], i - start))
+                    return false;
+                hextets += 2; /* IPv4 part equals two hextets */
+                start = i + 1;
+                break; /* IPv4 must be the last part */
+            }
+
+            size_t seglen = i - start;
+            if (seglen == 0 || seglen > 4)
+                return false;
+            for (size_t k = start; k < i; k++)
+            {
+                if (!is_hex_digit(s[k]))
+                    return false;
+            }
+            hextets++;
+            start = i + 1;
+        }
+        i++;
+    }
+
+    if (start <= len)
+    {
+        /* If there is trailing part after last ':' already processed above */
+    }
+
+    if (compress)
+        return hextets < 8; /* at least one compressed */
+    return hextets == 8;
 }

@@ -65,6 +65,17 @@ int main(void)
     msg.ascii_field.arg = (void *)ascii_ok;
     msg.color_field.arg = (void *)color_ok;
     msg.forbidden_field.arg = (void *)forbidden_ok;
+    /* New fields for semantic validation */
+    const char email_fmt_ok[] = "alice@example.com";
+    const char host_ok[] = "sub.example.org";
+    const char ip_any_ok[] = "2001:db8::1";
+    const char ipv4_ok[] = "192.168.1.10";
+    const char ipv6_ok[] = "::1";
+    msg.email_fmt.arg = (void *)email_fmt_ok;
+    msg.hostname_fmt.arg = (void *)host_ok;
+    msg.ip_any.arg = (void *)ip_any_ok;
+    msg.ip_v4.arg = (void *)ipv4_ok;
+    msg.ip_v6.arg = (void *)ipv6_ok;
 
     pb_violations_t viol;
     pb_violations_init(&viol);
@@ -96,6 +107,10 @@ int main(void)
     varname.sequence_num = 1;                                      \
     varname.temperature = 25.0f;                                   \
     varname.ratio = 0.5;                                           \
+    varname.numbers_count = 3;                                     \
+    varname.numbers[0] = 1;                                        \
+    varname.numbers[1] = 2;                                        \
+    varname.numbers[2] = 3;                                        \
     varname.username.arg = (void *)username_str;                   \
     varname.email.arg = (void *)email_str;                         \
     varname.password.arg = (void *)password_str;                   \
@@ -103,7 +118,12 @@ int main(void)
     varname.suffix_field.arg = (void *)suffix_str;                 \
     varname.ascii_field.arg = (void *)ascii_ok;                    \
     varname.color_field.arg = (void *)color_ok;                    \
-    varname.forbidden_field.arg = (void *)forbidden_ok;
+    varname.forbidden_field.arg = (void *)forbidden_ok;            \
+    varname.email_fmt.arg = (void *)email_fmt_ok;                  \
+    varname.hostname_fmt.arg = (void *)host_ok;                    \
+    varname.ip_any.arg = (void *)ip_any_ok;                        \
+    varname.ip_v4.arg = (void *)ipv4_ok;                           \
+    varname.ip_v6.arg = (void *)ipv6_ok;
 
     /* Negative test 1: numeric (float/double) violations (demonstrates early-exit or multi) */
     {
@@ -178,14 +198,30 @@ int main(void)
         printf("  -> PASS\n");
     }
 
-    /* Email contains '@' violation */
+    /* Username max_len violation */
     {
         INIT_BASELINE(b2);
+        static const char too_long[] = "this_username_is_way_too_long_for_validation"; /* >20 */
+        b2.username.arg = (void *)too_long;
+        pb_violations_init(&viol);
+        print_check("username too long -> expect string.max_len");
+        ok = pb_validate_test_BasicValidation(&b2, &viol);
+        if (ok || !pb_violations_has_any(&viol) || strcmp(viol.violations[0].constraint_id, "string.max_len") != 0)
+        {
+            printf("FAIL: expected string.max_len (got %s)\n", pb_violations_has_any(&viol) ? viol.violations[0].constraint_id : "none");
+            return 1;
+        }
+        printf("  -> PASS\n");
+    }
+
+    /* Email contains '@' violation */
+    {
+        INIT_BASELINE(b3);
         static const char no_at[] = "userexample.com"; /* missing '@' */
-        b2.email.arg = (void *)no_at;
+        b3.email.arg = (void *)no_at;
         pb_violations_init(&viol);
         print_check("email missing '@' -> expect string.contains");
-        ok = pb_validate_test_BasicValidation(&b2, &viol);
+        ok = pb_validate_test_BasicValidation(&b3, &viol);
         if (ok || !pb_violations_has_any(&viol) || strcmp(viol.violations[0].constraint_id, "string.contains") != 0)
         {
             printf("FAIL: expected string.contains (got %s)\n", pb_violations_has_any(&viol) ? viol.violations[0].constraint_id : "none");
@@ -194,14 +230,30 @@ int main(void)
         printf("  -> PASS\n");
     }
 
+    /* Email min_len violation */
+    {
+        INIT_BASELINE(b4);
+        static const char too_short_email[] = "a@b"; /* <5 */
+        b4.email.arg = (void *)too_short_email;
+        pb_violations_init(&viol);
+        print_check("email too short -> expect string.min_len");
+        ok = pb_validate_test_BasicValidation(&b4, &viol);
+        if (ok || !pb_violations_has_any(&viol) || strcmp(viol.violations[0].constraint_id, "string.min_len") != 0)
+        {
+            printf("FAIL: expected string.min_len (got %s)\n", pb_violations_has_any(&viol) ? viol.violations[0].constraint_id : "none");
+            return 1;
+        }
+        printf("  -> PASS\n");
+    }
+
     /* Password min_len violation */
     {
-        INIT_BASELINE(b3);
+        INIT_BASELINE(b5);
         static const char pw_short[] = "short"; /* <8 */
-        b3.password.arg = (void *)pw_short;
+        b5.password.arg = (void *)pw_short;
         pb_violations_init(&viol);
         print_check("password too short -> expect string.min_len");
-        ok = pb_validate_test_BasicValidation(&b3, &viol);
+        ok = pb_validate_test_BasicValidation(&b5, &viol);
         if (ok || !pb_violations_has_any(&viol) || strcmp(viol.violations[0].constraint_id, "string.min_len") != 0)
         {
             printf("FAIL: expected string.min_len (got %s)\n", pb_violations_has_any(&viol) ? viol.violations[0].constraint_id : "none");
@@ -212,12 +264,12 @@ int main(void)
 
     /* Prefix violation */
     {
-        INIT_BASELINE(b4);
+        INIT_BASELINE(b6);
         static const char wrong_prefix[] = "PRE_value"; /* does not start with PREFIX_ */
-        b4.prefix_field.arg = (void *)wrong_prefix;
+        b6.prefix_field.arg = (void *)wrong_prefix;
         pb_violations_init(&viol);
         print_check("wrong prefix -> expect string.prefix");
-        ok = pb_validate_test_BasicValidation(&b4, &viol);
+        ok = pb_validate_test_BasicValidation(&b6, &viol);
         if (ok || !pb_violations_has_any(&viol) || strcmp(viol.violations[0].constraint_id, "string.prefix") != 0)
         {
             printf("FAIL: expected string.prefix (got %s)\n", pb_violations_has_any(&viol) ? viol.violations[0].constraint_id : "none");
@@ -228,12 +280,12 @@ int main(void)
 
     /* Suffix violation */
     {
-        INIT_BASELINE(b5);
+        INIT_BASELINE(b7);
         static const char wrong_suffix[] = "value_SUFF"; /* missing IX */
-        b5.suffix_field.arg = (void *)wrong_suffix;
+        b7.suffix_field.arg = (void *)wrong_suffix;
         pb_violations_init(&viol);
         print_check("wrong suffix -> expect string.suffix");
-        ok = pb_validate_test_BasicValidation(&b5, &viol);
+        ok = pb_validate_test_BasicValidation(&b7, &viol);
         if (ok || !pb_violations_has_any(&viol) || strcmp(viol.violations[0].constraint_id, "string.suffix") != 0)
         {
             printf("FAIL: expected string.suffix (got %s)\n", pb_violations_has_any(&viol) ? viol.violations[0].constraint_id : "none");
@@ -242,14 +294,14 @@ int main(void)
         printf("  -> PASS\n");
     }
 
-    /* ASCII violation (introduce non-ascii char 0xC3 0xA9 'é') */
+    /* ASCII violation */
     {
-        INIT_BASELINE(b6);
+        INIT_BASELINE(b8);
         static const char non_ascii[] = "caf\xC3\xA9"; /* contains UTF-8 bytes >127 */
-        b6.ascii_field.arg = (void *)non_ascii;
+        b8.ascii_field.arg = (void *)non_ascii;
         pb_violations_init(&viol);
         print_check("non-ASCII bytes -> expect string.ascii");
-        ok = pb_validate_test_BasicValidation(&b6, &viol);
+        ok = pb_validate_test_BasicValidation(&b8, &viol);
         if (ok || !pb_violations_has_any(&viol) || strcmp(viol.violations[0].constraint_id, "string.ascii") != 0)
         {
             printf("FAIL: expected string.ascii (got %s)\n", pb_violations_has_any(&viol) ? viol.violations[0].constraint_id : "none");
@@ -258,14 +310,14 @@ int main(void)
         printf("  -> PASS\n");
     }
 
-    /* IN set violation (color_field) */
+    /* IN set violation */
     {
-        INIT_BASELINE(b7);
+        INIT_BASELINE(b9);
         static const char wrong_color[] = "purple"; /* not in {red,green,blue} */
-        b7.color_field.arg = (void *)wrong_color;
+        b9.color_field.arg = (void *)wrong_color;
         pb_violations_init(&viol);
         print_check("color not in allowed set -> expect string.in");
-        ok = pb_validate_test_BasicValidation(&b7, &viol);
+        ok = pb_validate_test_BasicValidation(&b9, &viol);
         if (ok || !pb_violations_has_any(&viol) || strcmp(viol.violations[0].constraint_id, "string.in") != 0)
         {
             printf("FAIL: expected string.in (got %s)\n", pb_violations_has_any(&viol) ? viol.violations[0].constraint_id : "none");
@@ -274,17 +326,97 @@ int main(void)
         printf("  -> PASS\n");
     }
 
-    /* NOT_IN violation (forbidden_field) */
+    /* NOT_IN violation */
     {
-        INIT_BASELINE(b8);
+        INIT_BASELINE(b10);
         static const char blocked_word[] = "DELETE"; /* forbidden */
-        b8.forbidden_field.arg = (void *)blocked_word;
+        b10.forbidden_field.arg = (void *)blocked_word;
         pb_violations_init(&viol);
         print_check("forbidden word -> expect string.not_in");
-        ok = pb_validate_test_BasicValidation(&b8, &viol);
+        ok = pb_validate_test_BasicValidation(&b10, &viol);
         if (ok || !pb_violations_has_any(&viol) || strcmp(viol.violations[0].constraint_id, "string.not_in") != 0)
         {
             printf("FAIL: expected string.not_in (got %s)\n", pb_violations_has_any(&viol) ? viol.violations[0].constraint_id : "none");
+            return 1;
+        }
+        printf("  -> PASS\n");
+    }
+
+    /* Email format violation */
+    {
+        INIT_BASELINE(b11);
+        static const char bad_email[] = "invalid-at-domain";
+        b11.email_fmt.arg = (void *)bad_email;
+        pb_violations_init(&viol);
+        print_check("email_fmt invalid -> expect string.email");
+        ok = pb_validate_test_BasicValidation(&b11, &viol);
+        if (ok || !pb_violations_has_any(&viol) || strcmp(viol.violations[0].constraint_id, "string.email") != 0)
+        {
+            printf("FAIL: expected string.email (got %s)\n", pb_violations_has_any(&viol) ? viol.violations[0].constraint_id : "none");
+            return 1;
+        }
+        printf("  -> PASS\n");
+    }
+
+    /* Hostname format violation */
+    {
+        INIT_BASELINE(b12);
+        static const char bad_host[] = "-bad.example";
+        b12.hostname_fmt.arg = (void *)bad_host;
+        pb_violations_init(&viol);
+        print_check("hostname_fmt invalid -> expect string.hostname");
+        ok = pb_validate_test_BasicValidation(&b12, &viol);
+        if (ok || !pb_violations_has_any(&viol) || strcmp(viol.violations[0].constraint_id, "string.hostname") != 0)
+        {
+            printf("FAIL: expected string.hostname (got %s)\n", pb_violations_has_any(&viol) ? viol.violations[0].constraint_id : "none");
+            return 1;
+        }
+        printf("  -> PASS\n");
+    }
+
+    /* IP (any) format violation */
+    {
+        INIT_BASELINE(b13);
+        static const char bad_ip_any[] = "300.0.0.1";
+        b13.ip_any.arg = (void *)bad_ip_any;
+        pb_violations_init(&viol);
+        print_check("ip_any invalid -> expect string.ip");
+        ok = pb_validate_test_BasicValidation(&b13, &viol);
+        if (ok || !pb_violations_has_any(&viol) || strcmp(viol.violations[0].constraint_id, "string.ip") != 0)
+        {
+            printf("FAIL: expected string.ip (got %s)\n", pb_violations_has_any(&viol) ? viol.violations[0].constraint_id : "none");
+            return 1;
+        }
+        printf("  -> PASS\n");
+    }
+
+    /* IPv4 format violation */
+    {
+        INIT_BASELINE(b14);
+        static const char bad_v4[] = "1.2.3";
+        b14.ip_v4.arg = (void *)bad_v4;
+        pb_violations_init(&viol);
+        print_check("ip_v4 invalid -> expect string.ipv4");
+        ok = pb_validate_test_BasicValidation(&b14, &viol);
+        if (ok || !pb_violations_has_any(&viol) || strcmp(viol.violations[0].constraint_id, "string.ipv4") != 0)
+        {
+            printf("FAIL: expected string.ipv4 (got %s)\n", pb_violations_has_any(&viol) ? viol.violations[0].constraint_id : "none");
+            return 1;
+        }
+        printf("  -> PASS\n");
+    }
+
+    /* IPv6 format violation */
+    {
+        INIT_BASELINE(b15);
+        static const char bad_v6[] = "2001:::1";
+        b15.ip_v6.arg = (void *)bad_v6;
+        pb_violations_init(&viol);
+        print_check("ip_v6 invalid -> expect string.ipv6");
+        ok = pb_validate_test_BasicValidation(&b15, &viol);
+        if (ok || !pb_violations_has_any(&viol) || strcmp(viol.violations[0].constraint_id, "string.ipv6") != 0)
+        {
+            printf("FAIL: expected string.ipv6 (got %s)\n", pb_violations_has_any(&viol) ? viol.violations[0].constraint_id : "none");
             return 1;
         }
         printf("  -> PASS\n");
