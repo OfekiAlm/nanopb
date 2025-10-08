@@ -27,6 +27,10 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from dataclasses import dataclass
 from enum import Enum
 
+# Prefer pure-Python protobuf runtime to support loading generated *_pb2
+# files built with older protoc versions (avoids descriptor runtime errors).
+os.environ.setdefault('PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION', 'python')
+
 # Import protobuf libraries
 try:
     from google.protobuf import descriptor_pb2
@@ -143,6 +147,9 @@ class DataGenerator:
     
     def _load_proto(self):
         """Load and compile the proto file."""
+        # Ensure validate.proto is compiled for Python so we can parse rules
+        self._ensure_validate_pb2()
+
         # Get absolute path of proto file
         proto_abs_path = os.path.abspath(self.proto_file)
         proto_dir = os.path.dirname(proto_abs_path)
@@ -203,6 +210,45 @@ class DataGenerator:
         
         # Parse message descriptors
         self._parse_messages()
+
+    def _ensure_validate_pb2(self) -> None:
+        """Ensure generator/proto/validate_pb2.py exists by building it if missing.
+
+        This allows nanopb_validator to import validate_pb2 and parse
+        (validate.rules) options from FieldOptions.
+        """
+        try:
+            # Resolve generator/proto directory and target file
+            gen_dir = os.path.dirname(os.path.abspath(__file__))
+            proto_dir = os.path.join(gen_dir, 'proto')
+            target_py = os.path.join(proto_dir, 'validate_pb2.py')
+
+            # Fast path: already built
+            if os.path.isfile(target_py):
+                return
+
+            # Build validate.proto into Python module in-place
+            validate_proto = os.path.join(proto_dir, 'validate.proto')
+            if not os.path.isfile(validate_proto):
+                return  # Nothing we can do; parsing will gracefully degrade
+
+            protoc_args = [
+                'protoc',
+                f'--python_out={proto_dir}',
+                f'-I{proto_dir}',
+                os.path.basename(validate_proto),
+            ]
+
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(proto_dir)
+                # Use the same invoke_protoc helper used elsewhere to get builtin includes
+                invoke_protoc(protoc_args)
+            finally:
+                os.chdir(old_cwd)
+        except Exception:
+            # Soft-fail: if building fails, rule parsing will be skipped
+            pass
     
     def _parse_messages(self):
         """Parse message descriptors from file descriptor."""
@@ -264,8 +310,8 @@ class DataGenerator:
     def generate_invalid(
         self,
         message_name: str,
-        violate_field: Optional[str] = None,
-        violate_rule: Optional[str] = None,
+        violate_field: Optional[Union[str, List[str]]] = None,
+        violate_rule: Optional[Union[str, List[str]]] = None,
         seed: Optional[int] = None
     ) -> Dict[str, Any]:
         """
@@ -273,8 +319,13 @@ class DataGenerator:
         
         Args:
             message_name: Name of the message type
-            violate_field: Specific field to make invalid (random if None)
-            violate_rule: Specific rule to violate (random if None)
+            violate_field: Specific field(s) to make invalid. Can be a string,
+                a comma-separated string, or a list of field names. If None,
+                a random constrained field will be selected.
+            violate_rule: Specific rule(s) to violate. Can be a string, a
+                comma-separated string, or a list of rule names. If multiple
+                are provided, one matching rule will be selected. If None,
+                a random rule for the field will be selected.
             seed: Random seed for reproducibility
         
         Returns:
@@ -287,41 +338,63 @@ class DataGenerator:
         data = self.generate_valid(message_name, seed=None)  # Don't reuse seed
         
         fields = self.message_descriptors[message_name]['fields']
-        
-        # Find fields with constraints
-        constrained_fields = [
-            (name, info) for name, info in fields.items()
-            if info.constraints
-        ]
-        
+
+        # Collect all fields with constraints
+        constrained_fields = {
+            name: info for name, info in fields.items() if info.constraints
+        }
         if not constrained_fields:
             raise ValueError(f"No validation constraints found for {message_name}")
-        
-        # Choose field to violate
-        if violate_field:
-            field_info = fields.get(violate_field)
-            if not field_info or not field_info.constraints:
-                raise ValueError(f"Field {violate_field} has no constraints")
+
+        # Normalize violate_field into a list of field names
+        if violate_field is None:
+            # Default behavior: pick one random constrained field
+            selected_fields = [random.choice(list(constrained_fields.keys()))]
+        elif isinstance(violate_field, str):
+            selected_fields = [f.strip() for f in violate_field.split(',') if f.strip()]
         else:
-            violate_field, field_info = random.choice(constrained_fields)
-        
-        # Choose constraint to violate
+            selected_fields = []
+            for f in violate_field:
+                if isinstance(f, str):
+                    selected_fields.extend([p.strip() for p in f.split(',') if p.strip()])
+
+        # Validate fields exist and have constraints
+        for fname in selected_fields:
+            if fname not in constrained_fields:
+                if fname not in fields:
+                    raise ValueError(f"Field {fname} does not exist in message {message_name}")
+                else:
+                    raise ValueError(f"Field {fname} has no constraints to violate")
+
+        # Normalize violate_rule into a list of rule names (may be empty)
         if violate_rule:
-            constraint = next(
-                (c for c in field_info.constraints if c.rule_type == violate_rule),
-                None
-            )
-            if not constraint:
-                raise ValueError(
-                    f"Field {violate_field} has no {violate_rule} constraint"
-                )
+            if isinstance(violate_rule, str):
+                candidate_rules = [r.strip() for r in violate_rule.split(',') if r.strip()]
+            else:
+                candidate_rules = []
+                for r in violate_rule:
+                    if isinstance(r, str):
+                        candidate_rules.extend([p.strip() for p in r.split(',') if p.strip()])
         else:
-            constraint = random.choice(field_info.constraints)
-        
-        # Generate invalid value
-        invalid_value = self._generate_invalid_value(field_info, constraint)
-        data[violate_field] = invalid_value
-        
+            candidate_rules = []
+
+        # For each selected field, choose a constraint and apply invalid value
+        for fname in selected_fields:
+            finfo = constrained_fields[fname]
+
+            if candidate_rules:
+                matching_constraints = [c for c in finfo.constraints if c.rule_type in set(candidate_rules)]
+                if matching_constraints:
+                    chosen = random.choice(matching_constraints)
+                else:
+                    # Fallback: choose any available constraint for this field
+                    chosen = random.choice(finfo.constraints)
+            else:
+                chosen = random.choice(finfo.constraints)
+
+            invalid_value = self._generate_invalid_value(finfo, chosen)
+            data[fname] = invalid_value
+
         return data
     
     def _generate_valid_value(self, field_info: ProtoFieldInfo) -> Any:
@@ -933,8 +1006,16 @@ def main():
     parser.add_argument('message', help='Message name to generate data for')
     parser.add_argument('--invalid', action='store_true',
                         help='Generate invalid data instead of valid')
-    parser.add_argument('--field', help='Field to violate (for invalid data)')
-    parser.add_argument('--rule', help='Rule to violate (for invalid data)')
+    # Allow multiple --field entries or comma-separated values
+    parser.add_argument(
+        '--field', dest='fields', action='append', default=None,
+        help='Field(s) to violate (can be given multiple times or comma-separated)'
+    )
+    # Allow multiple --rule entries or comma-separated values
+    parser.add_argument(
+        '--rule', dest='rules', action='append', default=None,
+        help='Rule(s) to violate (can be given multiple times or comma-separated)'
+    )
     parser.add_argument('--format', choices=['binary', 'c_array', 'hex', 'dict'],
                         default='c_array', help='Output format')
     parser.add_argument('--output', '-o', help='Output file (default: stdout)')
@@ -956,8 +1037,8 @@ def main():
         if args.invalid:
             data_dict = generator.generate_invalid(
                 args.message,
-                violate_field=args.field,
-                violate_rule=args.rule,
+                violate_field=args.fields,
+                violate_rule=args.rules,
                 seed=args.seed
             )
         else:
