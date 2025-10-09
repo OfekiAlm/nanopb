@@ -76,6 +76,12 @@ int main(void)
     msg.ip_any.arg = (void *)ip_any_ok;
     msg.ip_v4.arg = (void *)ipv4_ok;
     msg.ip_v6.arg = (void *)ipv6_ok;
+    /* Address submessage (valid) */
+    const char addr_city_ok[] = "Helsinki";
+    const char addr_ip_ok[] = "10.0.0.5";
+    msg.has_address = true;
+    msg.address.city.arg = (void *)addr_city_ok;
+    msg.address.ip.arg = (void *)addr_ip_ok;
 
     pb_violations_t viol;
     pb_violations_init(&viol);
@@ -123,7 +129,10 @@ int main(void)
     varname.hostname_fmt.arg = (void *)host_ok;                    \
     varname.ip_any.arg = (void *)ip_any_ok;                        \
     varname.ip_v4.arg = (void *)ipv4_ok;                           \
-    varname.ip_v6.arg = (void *)ipv6_ok;
+    varname.ip_v6.arg = (void *)ipv6_ok;                           \
+    varname.has_address = true;                                    \
+    varname.address.city.arg = (void *)addr_city_ok;               \
+    varname.address.ip.arg = (void *)addr_ip_ok;
 
     /* Negative test 1: numeric (float/double) violations (demonstrates early-exit or multi) */
     {
@@ -417,6 +426,22 @@ int main(void)
         if (ok || !pb_violations_has_any(&viol) || strcmp(viol.violations[0].constraint_id, "string.ipv6") != 0)
         {
             printf("FAIL: expected string.ipv6 (got %s)\n", pb_violations_has_any(&viol) ? viol.violations[0].constraint_id : "none");
+            return 1;
+        }
+        printf("  -> PASS\n");
+    }
+
+    /* Address submessage: invalid IP */
+    {
+        INIT_BASELINE(b_addr);
+        static const char bad_addr_ip[] = "999.999.999.999";
+        b_addr.address.ip.arg = (void *)bad_addr_ip;
+        pb_violations_init(&viol);
+        print_check("address.ip invalid -> expect string.ip");
+        ok = pb_validate_test_BasicValidation(&b_addr, &viol);
+        if (ok || !pb_violations_has_any(&viol) || strcmp(viol.violations[0].constraint_id, "string.ip") != 0)
+        {
+            printf("FAIL: expected string.ip (got %s)\n", pb_violations_has_any(&viol) ? viol.violations[0].constraint_id : "none");
             return 1;
         }
         printf("  -> PASS\n");

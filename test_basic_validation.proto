@@ -54,7 +54,16 @@ message BasicValidation {
     (validate.rules).repeated.min_items = 1,
     (validate.rules).repeated.max_items = 5
   ];
+
+  // Submessage field to test nested validation
+  Address address = 25;
 }
 
 // Enable validation for the entire file
 option (validate.validate) = true; 
+
+// Nested message type with its own validations
+message Address {
+  string city = 1 [(validate.rules).string.min_len = 1];
+  string ip = 2 [(validate.rules).string.ip = true];
+}

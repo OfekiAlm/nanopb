@@ -485,6 +485,65 @@ bool pb_validate_test_BasicValidation(const test_BasicValidation *msg, pb_violat
     }
     pb_validate_context_pop_field(&ctx);
     
+    /* AUTO_RECURSE: begin */
+    /* Validate field: address */
+    if (!pb_validate_context_push_field(&ctx, "address")) return false;
+    {
+        /* Recurse into submessage (optional) */
+        if (msg->has_address) {
+            bool ok_nested = pb_validate_test_Address(&msg->address, violations);
+            if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }
+        }
+    }
+    pb_validate_context_pop_field(&ctx);
+    
+    /* AUTO_RECURSE: end */
+    return !pb_violations_has_any(violations);
+}
+
+bool pb_validate_test_Address(const test_Address *msg, pb_violations_t *violations)
+{
+    if (!msg) return false;
+    
+    pb_validate_context_t ctx = {0};
+    ctx.violations = violations;
+    ctx.early_exit = PB_VALIDATE_EARLY_EXIT;
+    
+    /* Validate field: city */
+    if (!pb_validate_context_push_field(&ctx, "city")) return false;
+    {
+        /* Rule: string.min_len */
+        {
+            const char *s = NULL; pb_size_t l = 0;
+            if (pb_read_callback_string(&msg->city, &s, &l)) {
+                uint32_t min_len = 1;
+                if (!pb_validate_string(s, l, &min_len, PB_VALIDATE_RULE_MIN_LEN)) {
+                    pb_violations_add(violations, ctx.path_buffer, "string.min_len", "String too short");
+                    if (ctx.early_exit) return false;
+                }
+            }
+        }
+    }
+    pb_validate_context_pop_field(&ctx);
+    
+    /* Validate field: ip */
+    if (!pb_validate_context_push_field(&ctx, "ip")) return false;
+    {
+        /* Rule: string.ip */
+        {
+            const char *s = NULL; pb_size_t l = 0;
+            if (pb_read_callback_string(&msg->ip, &s, &l)) {
+                if (!pb_validate_string(s, l, NULL, PB_VALIDATE_RULE_IP)) {
+                    pb_violations_add(violations, ctx.path_buffer, "string.ip", "String format validation failed");
+                    if (ctx.early_exit) return false;
+                }
+            }
+        }
+    }
+    pb_validate_context_pop_field(&ctx);
+    
+    /* AUTO_RECURSE: begin */
+    /* AUTO_RECURSE: end */
     return !pb_violations_has_any(violations);
 }
 

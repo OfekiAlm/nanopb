@@ -575,69 +575,122 @@ class DataGenerator:
         """Generate valid string value."""
         min_len = constraints.get('min_len', 1)
         max_len = constraints.get('max_len', 20)
-        
+
+        # Constants and enumerations take precedence
         if 'const' in constraints:
             return constraints['const']
-        
+
         if 'in' in constraints:
             return random.choice(constraints['in'])
-        
-        # Generate base string
-        length = random.randint(min_len, max_len)
-        
+
+        # Specialized string constraints (PGV-style)
+        # When these are present, prefer generating a compliant value directly
+        try:
+            if constraints.get('email'):
+                return self._generate_valid_email()
+            if constraints.get('hostname'):
+                return self._generate_valid_hostname()
+            if constraints.get('ipv4'):
+                return self._generate_valid_ipv4()
+            if constraints.get('ipv6'):
+                return self._generate_valid_ipv6()
+            if constraints.get('ip'):
+                # Randomly choose either IPv4 or IPv6
+                return self._generate_valid_ipv4() if random.choice([True, False]) else self._generate_valid_ipv6()
+        except Exception:
+            # Fallback to generic generation if specialized fails for any reason
+            pass
+
+        # Generic string generation path
+        length = max(min_len, min(max_len, random.randint(min_len, max_len)))
+
         # Check for ASCII constraint
         if constraints.get('ascii', False):
             chars = string.ascii_letters + string.digits
         else:
             chars = string.ascii_letters + string.digits + string.punctuation
-        
-        base_str = ''.join(random.choice(chars) for _ in range(length))
-        
+
+        base_str = ''.join(random.choice(chars) for _ in range(max(1, length)))
+
         # Apply prefix
         if 'prefix' in constraints:
             prefix = constraints['prefix']
-            remaining = max_len - len(prefix)
-            if remaining > 0:
-                base_str = prefix + base_str[:remaining]
-            else:
-                base_str = prefix
-        
+            remaining = max(0, max_len - len(prefix))
+            base_str = (prefix + base_str[:remaining]) if remaining > 0 else prefix
+
         # Apply suffix
         if 'suffix' in constraints:
             suffix = constraints['suffix']
-            available = max_len - len(suffix)
-            if available > 0:
-                base_str = base_str[:available] + suffix
-            else:
-                base_str = suffix
-        
+            available = max(0, max_len - len(suffix))
+            base_str = (base_str[:available] + suffix) if available > 0 else suffix
+
         # Apply contains
         if 'contains' in constraints:
             contains = constraints['contains']
             if contains not in base_str:
-                # Insert the required substring
                 if len(base_str) + len(contains) <= max_len:
                     pos = random.randint(0, len(base_str))
                     base_str = base_str[:pos] + contains + base_str[pos:]
                 else:
-                    # Replace part of string
                     pos = random.randint(0, max(0, len(base_str) - len(contains)))
                     base_str = base_str[:pos] + contains + base_str[pos + len(contains):]
-        
+
         # Check not_in constraint
         if 'not_in' in constraints:
-            forbidden = constraints['not_in']
-            while base_str in forbidden:
-                # Regenerate
-                base_str = ''.join(random.choice(chars) for _ in range(length))
-        
+            forbidden = set(constraints['not_in']) if isinstance(constraints['not_in'], list) else {constraints['not_in']}
+            attempts = 0
+            while base_str in forbidden and attempts < 10:
+                base_str = ''.join(random.choice(chars) for _ in range(max(1, length)))
+                attempts += 1
+
         # Ensure length constraints
         if len(base_str) < min_len:
             base_str += ''.join(random.choice(chars) for _ in range(min_len - len(base_str)))
         if len(base_str) > max_len:
             base_str = base_str[:max_len]
-        
+
         return base_str
+
+    # ----- Specialized string generators -----
+    def _generate_valid_email(self) -> str:
+        """Generate a simple valid email address."""
+        # Local part: letters/digits/dot/underscore/hyphen, not starting/ending with dot
+        lp_len = random.randint(1, 16)
+        lp_chars = string.ascii_letters + string.digits + '._-'
+        local = ''.join(random.choice(lp_chars) for _ in range(lp_len))
+        local = local.strip('.')
+        if not local:
+            local = 'u'
+        domain = self._generate_valid_hostname()
+        return f"{local}@{domain}"
+
+    def _generate_valid_hostname(self) -> str:
+        """Generate a valid hostname (RFC 1123-ish)."""
+        # 1-3 labels, each 1-63 chars, a-z0-9-, no leading/trailing hyphen
+        labels = []
+        num_labels = random.randint(2, 4)
+        for _ in range(num_labels):
+            length = random.randint(1, min(12, 63))
+            chars = string.ascii_lowercase + string.digits + '-'
+            label = ''.join(random.choice(chars) for _ in range(length))
+            # Fix leading/trailing hyphen
+            if label[0] == '-':
+                label = 'a' + label[1:]
+            if label[-1] == '-':
+                label = label[:-1] + 'z'
+            labels.append(label)
+        hostname = '.'.join(labels)
+        # Ensure total length <= 253
+        return hostname[:253]
+
+    def _generate_valid_ipv4(self) -> str:
+        """Generate a valid IPv4 address in dotted-decimal form."""
+        return '.'.join(str(random.randint(0, 255)) for _ in range(4))
+
+    def _generate_valid_ipv6(self) -> str:
+        """Generate a simple valid IPv6 address (no compression)."""
+        hextet = lambda: ''.join(random.choice('0123456789abcdef') for _ in range(random.randint(1, 4)))
+        return ':'.join(hextet() for _ in range(8))
     
     def _generate_valid_bytes(self, constraints: Dict[str, Any]) -> bytes:
         """Generate valid bytes value."""
@@ -775,6 +828,26 @@ class DataGenerator:
         elif rule_type == 'ascii':
             # Non-ASCII string
             return 'test_中文_invalid'
+        
+        elif rule_type == 'email':
+            # Not a valid email
+            return 'invalid-email-without-at'
+        
+        elif rule_type == 'hostname':
+            # Invalid hostname (illegal chars / formatting)
+            return '-bad_host_name-'
+        
+        elif rule_type == 'ip':
+            # Not an IP format
+            return '999.999.999.999'
+        
+        elif rule_type == 'ipv4':
+            # Invalid IPv4
+            return '256.300.1.2'
+        
+        elif rule_type == 'ipv6':
+            # Invalid IPv6 (non-hex)
+            return 'gggg:gggg:gggg:gggg:gggg:gggg:gggg:gggg'
         
         elif rule_type == 'in':
             # Value not in allowed list

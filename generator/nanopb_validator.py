@@ -735,10 +735,99 @@ class ValidatorGenerator:
                     yield '        /* Rule: %s */\n' % rule.constraint_id
                     yield self._generate_rule_check(field, rule)
                     yield '    }\n'
+
+                # Automatic recursion for submessages
+                try:
+                    is_message_field = getattr(field, 'pbtype', None) in ('MESSAGE', 'MSG_W_CB')
+                    submsg_ctype = getattr(field, 'ctype', None)
+                    if is_message_field and submsg_ctype:
+                        sub_func = 'pb_validate_' + str(submsg_ctype).replace('.', '_')
+                        allocation = getattr(field, 'allocation', None)
+                        rules = getattr(field, 'rules', None)
+                        if allocation == 'POINTER':
+                            # Pointer to submessage
+                            yield '    {\n'
+                            yield '        /* Recurse into submessage */\n'
+                            yield '        if (msg->%s) {\n' % field_name
+                            yield '            bool ok_nested = %s(msg->%s, violations);\n' % (sub_func, field_name)
+                            yield '            if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }\n'
+                            yield '        }\n'
+                            yield '    }\n'
+                        else:
+                            # Inline submessage struct
+                            if rules == 'OPTIONAL':
+                                yield '    {\n'
+                                yield '        /* Recurse into submessage (optional) */\n'
+                                yield '        if (msg->has_%s) {\n' % field_name
+                                yield '            bool ok_nested = %s(&msg->%s, violations);\n' % (sub_func, field_name)
+                                yield '            if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }\n'
+                                yield '        }\n'
+                                yield '    }\n'
+                            else:
+                                yield '    {\n'
+                                yield '        /* Recurse into submessage (singular) */\n'
+                                yield '        bool ok_nested = %s(&msg->%s, violations);\n' % (sub_func, field_name)
+                                yield '        if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }\n'
+                                yield '    }\n'
+                except Exception:
+                    # If field shape is unexpected, skip recursion silently
+                    pass
                 
                 yield '    pb_validate_context_pop_field(&ctx);\n'
                 yield '    \n'
             
+            # Also recurse into message-typed fields that have no field-level rules
+            yield '    /* AUTO_RECURSE: begin */\n'
+            try:
+                field_names_with_rules = set(validator.field_validators.keys())
+            except Exception:
+                field_names_with_rules = set()
+            for f in getattr(validator.message, 'fields', []):
+                try:
+                    if getattr(f, 'name', None) in field_names_with_rules:
+                        continue
+                    if getattr(f, 'pbtype', None) not in ('MESSAGE', 'MSG_W_CB'):
+                        continue
+                    fname = getattr(f, 'name')
+                    submsg_ctype = getattr(f, 'ctype', None)
+                    if not submsg_ctype:
+                        continue
+                    sub_func = 'pb_validate_' + str(submsg_ctype).replace('.', '_')
+                    allocation = getattr(f, 'allocation', None)
+                    rules = getattr(f, 'rules', None)
+                    # Open path context
+                    yield '    /* Validate field: %s */\n' % fname
+                    yield '    if (!pb_validate_context_push_field(&ctx, "%s")) return false;\n' % fname
+                    if allocation == 'POINTER':
+                        yield '    {\n'
+                        yield '        /* Recurse into submessage */\n'
+                        yield '        if (msg->%s) {\n' % fname
+                        yield '            bool ok_nested = %s(msg->%s, violations);\n' % (sub_func, fname)
+                        yield '            if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }\n'
+                        yield '        }\n'
+                        yield '    }\n'
+                    else:
+                        if rules == 'OPTIONAL':
+                            yield '    {\n'
+                            yield '        /* Recurse into submessage (optional) */\n'
+                            yield '        if (msg->has_%s) {\n' % fname
+                            yield '            bool ok_nested = %s(&msg->%s, violations);\n' % (sub_func, fname)
+                            yield '            if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }\n'
+                            yield '        }\n'
+                            yield '    }\n'
+                        else:
+                            yield '    {\n'
+                            yield '        /* Recurse into submessage (singular) */\n'
+                            yield '        bool ok_nested = %s(&msg->%s, violations);\n' % (sub_func, fname)
+                            yield '        if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }\n'
+                            yield '    }\n'
+                    yield '    pb_validate_context_pop_field(&ctx);\n'
+                    yield '    \n'
+                except Exception:
+                    # Skip if field metadata is unexpected
+                    pass
+            yield '    /* AUTO_RECURSE: end */\n'
+
             # Generate message-level validations
             for rule in validator.message_rules:
                 yield '    /* Message rule: %s */\n' % rule.constraint_id
