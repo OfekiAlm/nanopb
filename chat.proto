@@ -1,0 +1,84 @@
+syntax = "proto3";
+
+package chat;
+
+import "generator/proto/validate.proto";
+
+// Message sent from client to server
+message ClientMessage {
+    string user = 1 [(validate.rules).string.min_len = 3, (validate.rules).string.max_len = 20];
+    string text = 2 [(validate.rules).string.min_len = 1, (validate.rules).string.max_len = 500];
+}
+
+// Message sent from server to client
+message ServerMessage {
+    string user = 1 [(validate.rules).string.min_len = 3, (validate.rules).string.max_len = 20];
+    string text = 2 [(validate.rules).string.min_len = 1, (validate.rules).string.max_len = 500];
+    int64 timestamp = 3 [(validate.rules).int64.gte = 0];
+}
+// Notification message for SendNotification RPC
+message Notification {
+    string title = 1 [(validate.rules).string.min_len = 1, (validate.rules).string.max_len = 100];
+    string body = 2 [(validate.rules).string.min_len = 1, (validate.rules).string.max_len = 1000];
+}
+
+// Request for server status
+message StatusRequest {
+}
+
+// Response for server status
+message StatusResponse {
+    string status = 1 [(validate.rules).string.in = "OK", (validate.rules).string.in = "ERROR", (validate.rules).string.in = "WARN"];
+    string message = 2 [(validate.rules).string.max_len = 200];
+}
+
+// Request for chat history
+message HistoryRequest {
+    string user = 1 [(validate.rules).string.min_len = 3, (validate.rules).string.max_len = 20]; // Optional: filter history by user
+    int64 since_timestamp = 2 [(validate.rules).int64.gte = 0]; // Optional: get messages since this timestamp
+}
+
+// Response for chat history
+message HistoryResponse {
+    repeated ServerMessage messages = 1 [(validate.rules).repeated.max_items = 1000];
+}
+
+// Response for SendNotification RPC
+message NotificationResponse {
+    string result = 1 [(validate.rules).string.in = "SUCCESS", (validate.rules).string.in = "FAILURE"];
+    string message = 2 [(validate.rules).string.max_len = 200];
+}
+
+
+message LoginRequest {
+    string username = 1 [(validate.rules).string.min_len = 3, (validate.rules).string.max_len = 20];
+    string password = 2 [(validate.rules).string.min_len = 6, (validate.rules).string.max_len = 100];
+}
+
+message LoginResponse {
+    bool success = 1;
+    string message = 2 [(validate.rules).string.max_len = 200];
+}
+
+// Chat service definition
+service ChatService {
+    // Bidirectional streaming for chat messages
+    rpc Chat(stream ClientMessage) returns (stream ServerMessage);
+
+    // Unary RPC to get chat history
+    rpc GetChatHistory(HistoryRequest) returns (HistoryResponse);
+
+    // Unary RPC to send a notification
+    rpc SendNotification(Notification) returns (NotificationResponse);
+
+    // Unary RPC to get server status
+    rpc GetServerStatus(StatusRequest) returns (StatusResponse);
+}
+
+// Authentication service definition
+service AuthService {
+  rpc Login(LoginRequest) returns (LoginResponse);
+}
+
+// Enable validation for the entire file
+option (validate.validate) = true;
