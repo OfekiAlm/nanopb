@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package test;
+
+// Simple request message
+message SimpleRequest {
+    int32 id = 1;
+    int32 value = 2;
+}
+
+// Simple response message
+message SimpleResponse {
+    bool success = 1;
+    int32 result = 2;
+}
+
+// Test service
+service TestService {
+    rpc Process(SimpleRequest) returns (SimpleResponse);
+}
