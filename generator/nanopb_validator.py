@@ -777,7 +777,6 @@ class ValidatorGenerator:
                 yield '    \n'
             
             # Also recurse into message-typed fields that have no field-level rules
-            yield '    /* AUTO_RECURSE: begin */\n'
             try:
                 field_names_with_rules = set(validator.field_validators.keys())
             except Exception:
@@ -826,7 +825,6 @@ class ValidatorGenerator:
                 except Exception:
                     # Skip if field metadata is unexpected
                     pass
-            yield '    /* AUTO_RECURSE: end */\n'
 
             # Generate message-level validations
             for rule in validator.message_rules:
@@ -1206,8 +1204,36 @@ class ValidatorGenerator:
         
         # Enum constraints
         elif rule.rule_type == RULE_ENUM_DEFINED:
-            # This would require enum definition lookup, simplified for now
-            return '        /* TODO: Implement enum defined_only validation */\n'
+            # Only enforce when defined_only is true
+            if not rule.params.get('value', True):
+                return ''
+            # Collect enum numeric values for this field's enum type
+            try:
+                enum_vals = []
+                ctype = getattr(field, 'ctype', None)
+                for e in getattr(self.proto_file, 'enums', []) or []:
+                    try:
+                        if e.names == ctype or str(e.names) == str(ctype):
+                            enum_vals = [int(v) for (_, v) in getattr(e, 'values', [])]
+                            break
+                    except Exception:
+                        continue
+                if enum_vals:
+                    arr_values = ', '.join(str(v) for v in enum_vals)
+                    body = (
+                        '        {\n'
+                        '            static const int __pb_defined_vals[] = { %s };\n'
+                        '            if (!pb_validate_enum_defined_only((int)msg->%s, __pb_defined_vals, (pb_size_t)(sizeof(__pb_defined_vals)/sizeof(__pb_defined_vals[0])))) {\n'
+                        '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be a defined enum value");\n'
+                        '                if (ctx.early_exit) return false;\n'
+                        '            }\n'
+                        '        }\n'
+                    ) % (arr_values, field_name, rule.constraint_id)
+                    return wrap_optional(body)
+            except Exception:
+                # Fallback: no-op if enum definition not found
+                pass
+            return ''
         
         # Repeated field constraints
         elif rule.rule_type == RULE_MIN_ITEMS:

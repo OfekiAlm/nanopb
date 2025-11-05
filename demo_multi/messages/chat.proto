@@ -1,0 +1,38 @@
+syntax = "proto3";
+package demo.messages;
+
+import "generator/proto/validate.proto";
+import "structures/geometry.proto";
+import "enums/colors.proto";
+import "google/protobuf/timestamp.proto";
+
+// File-level options (should be dropped by flattener)
+option java_package = "com.example.demo";
+option go_package = "example.com/demo/messages";
+option csharp_namespace = "Demo.Messages";
+option php_namespace = "Demo\\Messages";
+option swift_prefix = "DM";
+option objc_class_prefix = "DM";
+option ruby_package = "Demo::Messages";
+option cc_enable_arenas = true;
+option optimize_for = SPEED;
+
+option (validate.validate) = true;
+
+message User {
+  string id = 1 [(validate.rules).string.min_len = 1, (validate.rules).string.max_len = 36];
+  string name = 2 [(validate.rules).string.min_len = 1, (validate.rules).string.max_len = 50];
+}
+
+message ChatMessage {
+  User from = 1;
+  User to = 2;
+  string text = 3 [
+    (validate.rules).string.min_len = 1,
+    (validate.rules).string.max_len = 256
+  ];
+  demo.structures.ColoredPoint location = 4; // where it was sent from
+  demo.enums.Color theme = 5 [(validate.rules).enum.defined_only = true];
+  // Use a well-known type to test import handling in flattener
+  google.protobuf.Timestamp sent_at = 6;
+}
