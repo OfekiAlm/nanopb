@@ -4,6 +4,8 @@
 
 bool pb_validate_test_Ping(const test_Ping *msg, pb_violations_t *violations)
 {
+    /* Fields without constraints: sequence */
+    
     if (!msg) return false;
     
     pb_validate_context_t ctx = {0};
@@ -29,6 +31,8 @@ bool pb_validate_test_Ping(const test_Ping *msg, pb_violations_t *violations)
 
 bool pb_validate_test_Pong(const test_Pong *msg, pb_violations_t *violations)
 {
+    /* Fields without constraints: latency_ms, sequence */
+    
     if (!msg) return false;
     
     pb_validate_context_t ctx = {0};
@@ -54,6 +58,8 @@ bool pb_validate_test_Pong(const test_Pong *msg, pb_violations_t *violations)
 
 bool pb_validate_test_Request(const test_Request *msg, pb_violations_t *violations)
 {
+    /* Fields without constraints: request_id */
+    
     if (!msg) return false;
     
     pb_validate_context_t ctx = {0};
@@ -86,6 +92,8 @@ bool pb_validate_test_Request(const test_Request *msg, pb_violations_t *violatio
 
 bool pb_validate_test_Response(const test_Response *msg, pb_violations_t *violations)
 {
+    /* Fields without constraints: request_id */
+    
     if (!msg) return false;
     
     pb_validate_context_t ctx = {0};
@@ -125,6 +133,8 @@ bool pb_validate_test_Response(const test_Response *msg, pb_violations_t *violat
 
 bool pb_validate_test_Error(const test_Error *msg, pb_violations_t *violations)
 {
+    /* Fields without constraints: details */
+    
     if (!msg) return false;
     
     pb_validate_context_t ctx = {0};
@@ -167,6 +177,8 @@ bool pb_validate_test_Error(const test_Error *msg, pb_violations_t *violations)
 
 bool pb_validate_test_Notification(const test_Notification *msg, pb_violations_t *violations)
 {
+    /* Fields without constraints: data, timestamp */
+    
     if (!msg) return false;
     
     pb_validate_context_t ctx = {0};
@@ -195,6 +207,8 @@ bool pb_validate_test_Notification(const test_Notification *msg, pb_violations_t
 
 bool pb_validate_test_Envelope(const test_Envelope *msg, pb_violations_t *violations)
 {
+    /* Fields without constraints: correlation_id, message */
+    
     if (!msg) return false;
     
     pb_validate_context_t ctx = {0};

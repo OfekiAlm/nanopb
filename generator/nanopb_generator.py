@@ -939,7 +939,7 @@ class Field(ProtoElement):
         '''Return the #define for the tag number of this field.'''
         if self.rules == "ONEOF" and self.union_name:
             # For oneof fields, include the union name in the tag constant
-            identifier = Globals.naming_style.define_name('%s_%s_%s_tag' % (self.struct_name, self.union_name, self.name))
+            identifier = Globals.naming_style.define_name('%s_%s_%s' % (self.struct_name, self.union_name, self.name))
         else:
             identifier = Globals.naming_style.define_name('%s_%s_tag' % (self.struct_name, self.name))
         return '#define %-40s %d\n' % (identifier, self.tag)
@@ -2632,7 +2632,8 @@ class ProtoFile:
         yield '/* Note: These functions decode and validate packets without re-encoding */\n\n'
         
         # Include validation header if validation is enabled
-        if self.validate_enabled or (nanopb_validator and self.messages):
+        validation_enabled = self.validate_enabled or (nanopb_validator and self.messages)
+        if validation_enabled:
             # Get the base filename for the validation header
             basename = self.fdesc.name.rsplit('.', 1)[0]
             yield '#include "%s_validate.h"\n' % basename
@@ -2643,8 +2644,6 @@ class ProtoFile:
         # Check if validation is available
         if self.validate_enabled or (nanopb_validator and self.messages):
             yield '    pb_violations_t violations = {0};\n'
-            yield '    pb_violations_t violations = {0};\n'
-            yield '    /* Validation is enabled for this proto file */\n'
             for msg in self.messages:
                 msg_type_name = Globals.naming_style.type_name(msg.name)
                 # Use pb_validate_ prefix as per the generated validation header

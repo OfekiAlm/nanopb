@@ -714,11 +714,31 @@ class ValidatorGenerator:
             struct_name = str(validator.message.name)
             func_name = 'pb_validate_' + struct_name.replace('.', '_')
             
+            # Generate comment listing fields without constraints
+            fields_without_constraints = []
+            all_field_names = set()
+            for f in getattr(validator.message, 'fields', []):
+                try:
+                    field_name = getattr(f, 'name', None)
+                    if field_name:
+                        all_field_names.add(field_name)
+                except Exception:
+                    pass
+            
+            validated_field_names = set(validator.field_validators.keys())
+            fields_without_constraints = sorted(all_field_names - validated_field_names)
+
             # Generate validation function
             yield 'bool %s(const %s *msg, pb_violations_t *violations)\n' % (func_name, struct_name)
             yield '{\n'
+            if fields_without_constraints:
+                yield '    /* Fields without constraints: %s */\n' % ', '.join(fields_without_constraints)
+                yield '    \n'
             yield '    if (!msg) return false;\n'
             yield '    \n'
+            
+            
+            
             yield '    pb_validate_context_t ctx = {0};\n'
             yield '    ctx.violations = violations;\n'
             yield '    ctx.early_exit = PB_VALIDATE_EARLY_EXIT;\n'
