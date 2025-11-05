@@ -485,7 +485,20 @@ bool pb_validate_test_BasicValidation(const test_BasicValidation *msg, pb_violat
     }
     pb_validate_context_pop_field(&ctx);
     
-    /* AUTO_RECURSE: begin */
+    /* Validate field: color_enum */
+    if (!pb_validate_context_push_field(&ctx, "color_enum")) return false;
+    {
+        /* Rule: enum.defined_only */
+        {
+            static const int __pb_defined_vals[] = { 0, 1, 2, 3 };
+            if (!pb_validate_enum_defined_only((int)msg->color_enum, __pb_defined_vals, (pb_size_t)(sizeof(__pb_defined_vals)/sizeof(__pb_defined_vals[0])))) {
+                pb_violations_add(violations, ctx.path_buffer, "enum.defined_only", "Value must be a defined enum value");
+                if (ctx.early_exit) return false;
+            }
+        }
+    }
+    pb_validate_context_pop_field(&ctx);
+    
     /* Validate field: address */
     if (!pb_validate_context_push_field(&ctx, "address")) return false;
     {
@@ -497,7 +510,6 @@ bool pb_validate_test_BasicValidation(const test_BasicValidation *msg, pb_violat
     }
     pb_validate_context_pop_field(&ctx);
     
-    /* AUTO_RECURSE: end */
     return !pb_violations_has_any(violations);
 }
 
@@ -542,8 +554,6 @@ bool pb_validate_test_Address(const test_Address *msg, pb_violations_t *violatio
     }
     pb_validate_context_pop_field(&ctx);
     
-    /* AUTO_RECURSE: begin */
-    /* AUTO_RECURSE: end */
     return !pb_violations_has_any(violations);
 }
 

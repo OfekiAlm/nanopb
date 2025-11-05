@@ -7,7 +7,7 @@
 #ifndef PB_VALIDATE_H_INCLUDED
 #define PB_VALIDATE_H_INCLUDED
 
-#include <pb.h>
+#include "pb.h"
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -122,6 +122,11 @@ extern "C"
     bool pb_validate_string(const char *value, pb_size_t length, const void *rule_data, pb_validate_rule_type_t rule_type);
     bool pb_validate_bytes(const pb_bytes_array_t *value, const void *rule_data, pb_validate_rule_type_t rule_type);
     bool pb_validate_enum(int value, const void *rule_data, pb_validate_rule_type_t rule_type);
+
+    /* Convenience helper for enum defined_only validation.
+     * Returns true if 'value' is one of the provided enumeration values.
+     */
+    bool pb_validate_enum_defined_only(int value, const int *values, pb_size_t count);
 
     /* Helper to obtain const char* and length from a pb_callback_t string field for validation.
      * Usage model: The application should set the callback's arg pointer to a buffer that

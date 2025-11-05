@@ -560,6 +560,14 @@ bool pb_validate_enum(int value, const void *rule_data, pb_validate_rule_type_t 
     }
 }
 
+/* Public helper for enum defined_only rule */
+bool pb_validate_enum_defined_only(int value, const int *values, pb_size_t count)
+{
+    if (!values || count == 0)
+        return true; /* If no list provided, treat as valid to avoid false negatives */
+    return value_in_list(&value, values, count, sizeof(int));
+}
+
 /* Helper: read NUL-terminated string pointer from pb_callback_t.
  * Assumptions:
  * - For decoded messages, user provided a decode callback that stores pointer

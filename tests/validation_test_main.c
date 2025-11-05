@@ -449,6 +449,60 @@ int main(void)
 
 #undef INIT_BASELINE
 
+    /* Enum defined_only: happy path (valid enum) */
+    {
+        test_BasicValidation eok = test_BasicValidation_init_zero;
+        eok.age = 1;
+        eok.score = 1;
+        eok.user_id = 1;
+        eok.timestamp = 0;
+        eok.count = 1;
+        eok.size = 10;
+        eok.sequence_num = 1;
+        eok.temperature = 0.0f;
+        eok.ratio = 0.5;
+        eok.color_enum = test_Color_RED;
+        eok.numbers_count = 1;
+        eok.numbers[0] = 1;
+        pb_violations_init(&viol);
+        print_check("enum defined_only: valid value -> expect pass");
+        ok = pb_validate_test_BasicValidation(&eok, &viol);
+        if (!ok || pb_violations_has_any(&viol))
+        {
+            printf("FAIL: expected enum defined_only pass\n");
+            print_violations(&viol);
+            return 1;
+        }
+        printf("  -> PASS\n");
+    }
+
+    /* Enum defined_only: negative path (invalid value) */
+    {
+        test_BasicValidation ebad = test_BasicValidation_init_zero;
+        ebad.age = 1;
+        ebad.score = 1;
+        ebad.user_id = 1;
+        ebad.timestamp = 0;
+        ebad.count = 1;
+        ebad.size = 10;
+        ebad.sequence_num = 1;
+        ebad.temperature = 0.0f;
+        ebad.ratio = 0.5;
+        ebad.color_enum = (test_Color)1234; /* not a defined value */
+        ebad.numbers_count = 1;
+        ebad.numbers[0] = 1;
+        pb_violations_init(&viol);
+        print_check("enum defined_only: invalid value -> expect enum.defined_only");
+        ok = pb_validate_test_BasicValidation(&ebad, &viol);
+        if (ok || !pb_violations_has_any(&viol) || strcmp(viol.violations[0].constraint_id, "enum.defined_only") != 0)
+        {
+            printf("FAIL: expected enum.defined_only (got %s)\n", pb_violations_has_any(&viol) ? viol.violations[0].constraint_id : "none");
+            print_violations(&viol);
+            return 1;
+        }
+        printf("  -> PASS\n");
+    }
+
     /* Encode and decode the valid message to test pb functionality */
     uint8_t buffer[256];
     pb_ostream_t ostream = pb_ostream_from_buffer(buffer, sizeof(buffer));

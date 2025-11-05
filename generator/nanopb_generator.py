@@ -937,7 +937,11 @@ class Field(ProtoElement):
 
     def tags(self):
         '''Return the #define for the tag number of this field.'''
-        identifier = Globals.naming_style.define_name('%s_%s_tag' % (self.struct_name, self.name))
+        if self.rules == "ONEOF" and self.union_name:
+            # For oneof fields, include the union name in the tag constant
+            identifier = Globals.naming_style.define_name('%s_%s_%s_tag' % (self.struct_name, self.union_name, self.name))
+        else:
+            identifier = Globals.naming_style.define_name('%s_%s_tag' % (self.struct_name, self.name))
         return '#define %-40s %d\n' % (identifier, self.tag)
 
     def fieldlist(self):
@@ -2539,10 +2543,64 @@ class ProtoFile:
         yield 'int filter_tcp(void *ctx, uint8_t *packet, size_t packet_size, bool is_to_server);\n'
         yield '\n'
     
+    def detect_envelope_pattern(self):
+        '''Detect if there's an Envelope message with enum + oneof payload pattern.
+        Returns (envelope_msg, opcode_field, opcode_enum, oneof_field, opcode_to_msg_map) or None.
+        '''
+        for msg in self.messages:
+            # Look for a message with both an enum field and a oneof
+            enum_field = None
+            oneof_field = None
+            
+            for field in msg.fields:
+                # Check if this is an enum field (potential opcode) - can be ENUM or UENUM
+                if hasattr(field, 'pbtype') and field.pbtype in ('ENUM', 'UENUM'):
+                    enum_field = field
+                # Check if this is a oneof
+                elif isinstance(field, OneOf):
+                    oneof_field = field
+            
+            # If we found both an enum and a oneof, this is likely an envelope
+            if enum_field and oneof_field:
+                # Try to find the enum definition
+                opcode_enum = None
+                for enum in self.enums:
+                    if str(enum.names) == str(enum_field.ctype):
+                        opcode_enum = enum
+                        break
+                
+                if not opcode_enum:
+                    continue
+                
+                # Build mapping from enum values to message types in the oneof
+                # This requires matching enum value names to oneof field names
+                opcode_to_msg_map = {}
+                
+                for enum_name, enum_value in opcode_enum.values:
+                    # Get the last part of the enum name (e.g., "OP_LOGIN" -> "LOGIN")
+                    enum_suffix = str(enum_name).split('_')[-1].lower()
+                    
+                    # Try to match with oneof field names
+                    for oneof_subfield in oneof_field.fields:
+                        field_name_lower = oneof_subfield.name.lower()
+                        if enum_suffix == field_name_lower or enum_suffix in field_name_lower:
+                            # Found a match
+                            opcode_to_msg_map[enum_value] = oneof_subfield
+                            break
+                
+                # If we have at least one mapping, consider this a valid envelope pattern
+                if opcode_to_msg_map:
+                    return (msg, enum_field, opcode_enum, oneof_field, opcode_to_msg_map)
+        
+        return None
+    
     def generate_service_filter_implementations(self, options):
         '''Generate implementation of packet filter functions'''
         if not self.services:
             return
+        
+        # Detect envelope pattern for efficient header-based decoding
+        envelope_info = self.detect_envelope_pattern()
         
         # Collect all message types used in services
         all_msg_types = set()
@@ -2577,16 +2635,14 @@ class ProtoFile:
         if self.validate_enabled or (nanopb_validator and self.messages):
             # Get the base filename for the validation header
             basename = self.fdesc.name.rsplit('.', 1)[0]
-            yield '#ifdef PB_ENABLE_VALIDATION\n'
             yield '#include "%s_validate.h"\n' % basename
-            yield '#endif\n\n'
         
         # Generate helper function to validate a message
         yield 'static int validate_message(const pb_msgdesc_t *fields, const void *msg_struct) {\n'
         
         # Check if validation is available
         if self.validate_enabled or (nanopb_validator and self.messages):
-            yield '#ifdef PB_ENABLE_VALIDATION\n'
+            yield '    pb_violations_t violations = {0};\n'
             yield '    pb_violations_t violations = {0};\n'
             yield '    /* Validation is enabled for this proto file */\n'
             for msg in self.messages:
@@ -2597,7 +2653,6 @@ class ProtoFile:
                 yield '    if (fields == &%s_msg) {\n' % msg_type_name
                 yield '        return %s((const %s *)msg_struct, &violations) ? 1 : 0;\n' % (validate_func_name, msg_type_name)
                 yield '    }\n'
-            yield '#endif\n'
         else:
             yield '    /* Validation disabled, all messages pass */\n'
         
@@ -2605,13 +2660,57 @@ class ProtoFile:
         yield '}\n\n'
         
         # Generate filter_udp function
-        yield '/* Filter UDP packets - decode and validate */\n'
         yield 'int filter_udp(void *ctx, uint8_t *packet, size_t packet_size) {\n'
         yield '    pb_istream_t stream;\n'
         yield '    bool status;\n'
         yield '    (void)ctx; /* Context may be unused */\n\n'
         
-        if all_msg_types:
+        if envelope_info and all_msg_types:
+            # Use efficient envelope-based decoding
+            envelope_msg, opcode_field, opcode_enum, oneof_field, opcode_to_msg_map = envelope_info
+            envelope_type = Globals.naming_style.type_name(envelope_msg.name)
+            opcode_field_name = Globals.naming_style.var_name(opcode_field.name)
+            
+            yield '    /* Efficient envelope-based decoding using opcode header */\n'
+            yield '    %s envelope = %s;\n' % (envelope_type, Globals.naming_style.define_name(str(envelope_msg.name) + '_init_zero'))
+            yield '    stream = pb_istream_from_buffer(packet, packet_size);\n'
+            yield '    status = pb_decode(&stream, &%s_msg, &envelope);\n' % envelope_type
+            yield '    \n'
+            yield '    if (!status) {\n'
+            yield '        return 0; /* Failed to decode envelope */\n'
+            yield '    }\n'
+            yield '    \n'
+            yield '    /* Decode and validate based on opcode */\n'
+            yield '    switch (envelope.%s) {\n' % opcode_field_name
+            
+            for opcode_val, oneof_subfield in sorted(opcode_to_msg_map.items(), key=lambda x: x[0]):
+                submsg_type = Globals.naming_style.type_name(oneof_subfield.ctype)
+                oneof_member_name = Globals.naming_style.var_name(oneof_subfield.name)
+                oneof_name = Globals.naming_style.var_name(oneof_field.name)
+                
+                yield '        case %d: /* %s */\n' % (opcode_val, oneof_subfield.name)
+                yield '            /* Validate the %s message in the oneof payload */\n' % oneof_subfield.name
+                yield '            if (envelope.which_%s == %s_%s_%s) {\n' % (
+                    oneof_name,
+                    Globals.naming_style.define_name(envelope_msg.name),
+                    oneof_name,
+                    oneof_member_name
+                )
+                yield '                if (validate_message(&%s_msg, &envelope.%s.%s)) {\n' % (
+                    submsg_type, oneof_name, oneof_member_name
+                )
+                yield '                    return 1; /* Valid packet */\n'
+                yield '                }\n'
+                yield '            }\n'
+                yield '            break;\n'
+            
+            yield '        default:\n'
+            yield '            return 0; /* Unknown or unsupported opcode */\n'
+            yield '    }\n'
+            yield '    \n'
+            yield '    return 0; /* Validation failed or opcode mismatch */\n'
+        elif all_msg_types:
+            # Fallback to brute-force decoding
             yield '    /* Try to decode as each possible message type used in services */\n'
             for msg_type_name in sorted(all_msg_types):
                 if msg_type_name in msg_map:
@@ -2639,13 +2738,56 @@ class ProtoFile:
         yield '}\n\n'
         
         # Generate filter_tcp function
-        yield '/* Filter TCP packets - decode and validate with direction awareness */\n'
         yield 'int filter_tcp(void *ctx, uint8_t *packet, size_t packet_size, bool is_to_server) {\n'
         yield '    pb_istream_t stream;\n'
         yield '    bool status;\n'
         yield '    (void)ctx; /* Context may be unused */\n\n'
         
-        if self.services and all_msg_types:
+        if envelope_info and self.services and all_msg_types:
+            # Use efficient envelope-based decoding for TCP too
+            envelope_msg, opcode_field, opcode_enum, oneof_field, opcode_to_msg_map = envelope_info
+            envelope_type = Globals.naming_style.type_name(envelope_msg.name)
+            opcode_field_name = Globals.naming_style.var_name(opcode_field.name)
+            
+            yield '    %s envelope = %s;\n' % (envelope_type, Globals.naming_style.define_name(str(envelope_msg.name) + '_init_zero'))
+            yield '    stream = pb_istream_from_buffer(packet, packet_size);\n'
+            yield '    status = pb_decode(&stream, &%s_msg, &envelope);\n' % envelope_type
+            yield '    \n'
+            yield '    if (!status) {\n'
+            yield '        return 0; /* Failed to decode envelope */\n'
+            yield '    }\n'
+            yield '    \n'
+            yield '    /* Decode and validate based on opcode */\n'
+            yield '    switch (envelope.%s) {\n' % opcode_field_name
+            
+            for opcode_val, oneof_subfield in sorted(opcode_to_msg_map.items(), key=lambda x: x[0]):
+                submsg_type = Globals.naming_style.type_name(oneof_subfield.ctype)
+                oneof_member_name = Globals.naming_style.var_name(oneof_subfield.name)
+                oneof_name = Globals.naming_style.var_name(oneof_field.name)
+                
+                yield '        case %d: /* %s */\n' % (opcode_val, oneof_subfield.name)
+                yield '            /* Validate the %s message in the oneof payload */\n' % oneof_subfield.name
+                yield '            if (envelope.which_%s == %s_%s_%s) {\n' % (
+                    oneof_name,
+                    Globals.naming_style.define_name(envelope_msg.name),
+                    oneof_name,
+                    oneof_member_name
+                )
+                yield '                if (validate_message(&%s_msg, &envelope.%s.%s)) {\n' % (
+                    submsg_type, oneof_name, oneof_member_name
+                )
+                yield '                    return 1; /* Valid packet */\n'
+                yield '                }\n'
+                yield '            }\n'
+                yield '            break;\n'
+            
+            yield '        default:\n'
+            yield '            return 0; /* Unknown or unsupported opcode */\n'
+            yield '    }\n'
+            yield '    \n'
+            yield '    return 0; /* Validation failed or opcode mismatch */\n'
+        elif self.services and all_msg_types:
+            # Fallback to brute-force decoding with direction awareness
             yield '    /* Handle based on direction */\n'
             yield '    if (is_to_server) {\n'
             yield '        /* Try client->server message types (RPC inputs) */\n'
