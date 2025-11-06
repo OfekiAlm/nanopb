@@ -654,6 +654,99 @@ class ValidatorGenerator:
         validator = MessageValidator(message, message_rules, self.proto_file)
         self.validators[str(message.name)] = validator
     
+    # ---------------------- Doxygen helpers -------------------------------
+    def _escape_for_comment(self, s: str) -> str:
+        """Escape strings so they are safe inside C comment/Doxygen blocks."""
+        try:
+            if s is None:
+                return ''
+            # Avoid closing comment accidentally and normalize newlines
+            return str(s).replace('*/', '*\/').replace('\r\n', '\n').replace('\r', '\n')
+        except Exception:
+            return str(s)
+
+    def _rule_to_text(self, rule: ValidationRule) -> str:
+        """Convert a single ValidationRule into a human-friendly sentence fragment."""
+        rt = rule.rule_type
+        p = rule.params or {}
+        val = p.get('value')
+        values = p.get('values')
+        def list_render(vals):
+            try:
+                return '{' + ', '.join(str(v) for v in vals) + '}'
+            except Exception:
+                return '{...}'
+        if rt == RULE_REQUIRED:
+            return 'required'
+        if rt == RULE_ONEOF_REQUIRED:
+            return 'one-of group requires a value'
+        if rt == RULE_EQ:
+            return f'== {val}'
+        if rt == RULE_GT:
+            return f'> {val}'
+        if rt == RULE_GTE:
+            return f'>= {val}'
+        if rt == RULE_LT:
+            return f'< {val}'
+        if rt == RULE_LTE:
+            return f'<= {val}'
+        if rt == RULE_IN:
+            return f'in {list_render(values)}'
+        if rt == RULE_NOT_IN:
+            return f'not in {list_render(values)}'
+        if rt == RULE_MIN_LEN:
+            return f'min length {val}'
+        if rt == RULE_MAX_LEN:
+            return f'max length {val}'
+        if rt == RULE_PREFIX:
+            return f'prefix "{self._escape_for_comment(val)}"'
+        if rt == RULE_SUFFIX:
+            return f'suffix "{self._escape_for_comment(val)}"'
+        if rt == RULE_CONTAINS:
+            return f'contains "{self._escape_for_comment(val)}"'
+        if rt == RULE_ASCII:
+            return 'ASCII only'
+        if rt == RULE_EMAIL:
+            return 'valid email address'
+        if rt == RULE_HOSTNAME:
+            return 'valid hostname'
+        if rt == RULE_IP:
+            return 'valid IP address'
+        if rt == RULE_IPV4:
+            return 'valid IPv4 address'
+        if rt == RULE_IPV6:
+            return 'valid IPv6 address'
+        if rt == RULE_ENUM_DEFINED:
+            return 'must be a defined enum value'
+        if rt == RULE_MIN_ITEMS:
+            return f'at least {val} items'
+        if rt == RULE_MAX_ITEMS:
+            return f'at most {val} items'
+        if rt == RULE_UNIQUE:
+            return 'items must be unique'
+        if rt == RULE_NO_SPARSE:
+            return 'no sparse map entries'
+        # Fallback
+        return rt.replace('_', ' ').lower()
+
+    def _format_field_constraints(self, field_name: str, fv: 'FieldValidator') -> str:
+        """Produce a concise, pretty description line for a field and its constraints."""
+        try:
+            # Group multiple fragments with semicolons
+            parts = [self._rule_to_text(r) for r in fv.rules]
+            # Deduplicate while preserving order
+            seen = set()
+            uniq = []
+            for t in parts:
+                if t not in seen:
+                    seen.add(t)
+                    uniq.append(t)
+            if not uniq:
+                return f"- {field_name}: no constraints"
+            return f"- {field_name}: " + '; '.join(uniq)
+        except Exception:
+            return f"- {field_name}: (constraints unavailable)"
+
     def generate_header(self):
         """Generate validation header file content."""
         if not self.validators:
@@ -678,12 +771,59 @@ class ValidatorGenerator:
         yield '#endif\n'
         yield '\n'
         
-        # Generate validation function declarations
+        # Generate validation function declarations with rich Doxygen
         for msg_name, validator in self.validators.items():
             # Use the C struct name from the message
             struct_name = str(validator.message.name)
             func_name = 'pb_validate_' + struct_name.replace('.', '_')
-            yield '/* Validate %s message */\n' % struct_name
+            # Build field description list
+            try:
+                all_field_names = []
+                for f in getattr(validator.message, 'fields', []) or []:
+                    fname = getattr(f, 'name', None)
+                    if fname:
+                        all_field_names.append(fname)
+                validated_field_names = list(validator.field_validators.keys())
+                fields_without = [fn for fn in all_field_names if fn not in validated_field_names]
+            except Exception:
+                all_field_names, fields_without = [], []
+
+            # Doxygen header
+            yield '/**\n'
+            yield ' * @brief Validate %s message.\n' % struct_name
+            yield ' *\n'
+            yield ' * Fields and constraints:\n'
+            # With constraints
+            for fname, fv in validator.field_validators.items():
+                desc = self._escape_for_comment(self._format_field_constraints(fname, fv))
+                yield ' * %s\n' % desc
+            # Without constraints
+            for fname in fields_without:
+                yield ' * - %s: no constraints\n' % self._escape_for_comment(fname)
+            # Message-level rules summary
+            if validator.message_rules:
+                yield ' *\n'
+                yield ' * Message-level rules:\n'
+                for mr in validator.message_rules:
+                    try:
+                        if mr.rule_type == 'REQUIRES':
+                            yield ' * - requires field "%s"\n' % self._escape_for_comment(mr.params.get('field', ''))
+                        elif mr.rule_type == 'MUTEX':
+                            fields = mr.params.get('fields', [])
+                            yield ' * - mutual exclusion among %s\n' % self._escape_for_comment('{'+', '.join(fields)+'}')
+                        elif mr.rule_type == 'AT_LEAST':
+                            n = mr.params.get('n', 1)
+                            fields = mr.params.get('fields', [])
+                            yield ' * - at least %s of %s must be set\n' % (str(n), self._escape_for_comment('{'+', '.join(fields)+'}'))
+                        else:
+                            yield ' * - %s\n' % self._escape_for_comment(mr.rule_type.lower())
+                    except Exception:
+                        yield ' * - (message rule)\n'
+            yield ' *\n'
+            yield ' * @param msg [in] Pointer to %s instance to validate.\n' % struct_name
+            yield ' * @param violations [out] Optional violations accumulator (can be NULL).\n'
+            yield ' * @return true if valid, false otherwise.\n'
+            yield ' */\n'
             yield 'bool %s(const %s *msg, pb_violations_t *violations);\n' % (func_name, struct_name)
             yield '\n'
         
@@ -732,8 +872,11 @@ class ValidatorGenerator:
             yield 'bool %s(const %s *msg, pb_violations_t *violations)\n' % (func_name, struct_name)
             yield '{\n'
             if fields_without_constraints:
-                yield '    /* Fields without constraints: %s */\n' % ', '.join(fields_without_constraints)
-                yield '    \n'
+                    yield '    /* Fields without constraints:\n'
+                    for field in fields_without_constraints:
+                        yield '       - %s\n' % field
+                    yield '    */\n'
+                    yield '\n'
             yield '    if (!msg) return false;\n'
             yield '    \n'
             

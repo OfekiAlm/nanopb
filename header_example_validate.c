@@ -4,6 +4,10 @@
 
 bool pb_validate_my_pkg_Envelope(const my_pkg_Envelope *msg, pb_violations_t *violations)
 {
+    /* Fields without constraints:
+       - payload
+    */
+
     if (!msg) return false;
     
     pb_validate_context_t ctx = {0};
