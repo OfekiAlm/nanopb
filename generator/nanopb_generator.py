@@ -2380,15 +2380,14 @@ class ProtoFile:
             yield '#endif  /* __cplusplus */\n'
             yield '\n'
 
-        # Generate service filter functions if services exist
-        if self.services:
+        # Generate packet filter functions if services exist or an envelope pattern is detected
+        if self.services or self.detect_envelope_pattern():
             yield '\n'
             yield '#ifdef __cplusplus\n'
             yield 'extern "C" {\n'
             yield '#endif\n\n'
-            
-            yield '/* Service packet filter functions */\n'
-            for line in self.generate_service_filter_declarations():
+
+            for line in self.generate_service_filter_declarations(options):
                 yield line
             
             yield '\n#ifdef __cplusplus\n'
@@ -2525,10 +2524,9 @@ class ProtoFile:
         if Globals.protoc_insertion_points:
             yield '/* @@protoc_insertion_point(eof) */\n'
         
-        # Generate service filter function implementations
-        if self.services:
+        # Generate packet filter function implementations
+        if self.services or self.detect_envelope_pattern():
             yield '\n'
-            yield '/* Additional includes needed for service filter functions */\n'
             yield options.libformat % ('pb_encode.h')
             yield '\n'
             yield options.libformat % ('pb_decode.h')
@@ -2536,10 +2534,50 @@ class ProtoFile:
             for line in self.generate_service_filter_implementations(options):
                 yield line
     
-    def generate_service_filter_declarations(self):
-        '''Generate function declarations for UDP and TCP packet filters'''
-        yield '/* Public API for packet filtering and validation */\n'
-        yield 'int filter_udp(void *ctx, uint8_t *packet, size_t packet_size);\n'
+    def generate_service_filter_declarations(self, options):
+        '''Generate function declarations for UDP and TCP packet filters, and an optional Envelope opcode enum alias.'''
+        # If an Envelope pattern is detected, generate a CAPS enum alias that maps to the original opcode enum.
+        envelope_info = self.detect_envelope_pattern()
+        if envelope_info:
+            envelope_msg, opcode_field, opcode_enum, oneof_field, opcode_to_msg_map = envelope_info
+
+            # Type name in ALL CAPS: <ENVELOPE_NAME>_OPCODE
+            alias_type = (str(envelope_msg.name) + '_OPCODE').replace('.', '_').replace('-', '_').upper()
+            yield 'typedef enum %s {\n' % alias_type
+
+            # Map numeric values back to enumerator names and emit alias entries
+            # Format: <ALIAS_TYPE>_<ENUM_ENTRY> = <ENUM_ENTRY>,
+            for (enumname, enumvalue) in opcode_enum.values:
+                original_entry = Globals.naming_style.enum_entry(enumname)
+                alias_entry = original_entry.replace('.', '_').replace('-', '_').upper()
+                yield '    %s_%s = %s,\n' % (alias_type, alias_entry, original_entry)
+
+            yield '} %s;\n\n' % alias_type
+        
+        # Doxygen for filter functions
+        yield "/**\n"
+        yield " * @brief Decode and validate a UDP packet.\n"
+        yield " *\n"
+        yield " * Decodes an incoming datagram and validates the contained message(s).\n"
+        yield " *\n"
+        yield " * @param ctx           Optional user context (implementation-defined).\n"
+        yield " * @param packet        Pointer to packet buffer.\n"
+        yield " * @param packet_size   Length of packet buffer in bytes.\n"
+        yield " * @return 0 on success, -1 on failure.\n"
+        yield " */\n"
+        yield 'int filter_udp(void *ctx, uint8_t *packet, size_t packet_size);\n\n'
+
+        yield "/**\n"
+        yield " * @brief Decode and validate a TCP packet.\n"
+        yield " *\n"
+        yield " * Decodes an incoming stream message and validates the contained message(s).\n"
+        yield " *\n"
+        yield " * @param ctx           Optional user context (implementation-defined).\n"
+        yield " * @param packet        Pointer to packet buffer.\n"
+        yield " * @param packet_size   Length of packet buffer in bytes.\n"
+        yield " * @param is_to_server  True if packet direction is client -> server.\n"
+        yield " * @return 0 on success, -1 on failure.\n"
+        yield " */\n"
         yield 'int filter_tcp(void *ctx, uint8_t *packet, size_t packet_size, bool is_to_server);\n'
         yield '\n'
     
@@ -2595,17 +2633,15 @@ class ProtoFile:
         return None
     
     def generate_service_filter_implementations(self, options):
-        '''Generate implementation of packet filter functions'''
-        if not self.services:
-            return
-        
+        '''Generate implementation of packet filter functions (service- or envelope-driven)'''
         # Detect envelope pattern for efficient header-based decoding
         envelope_info = self.detect_envelope_pattern()
         
-        # Collect all message types used in services
+        # Collect all message types used in services (only if services exist)
         all_msg_types = set()
-        for service in self.services:
-            all_msg_types.update(service.get_all_message_types())
+        if self.services:
+            for service in self.services:
+                all_msg_types.update(service.get_all_message_types())
         
         # Map type names to message objects
         # Service methods reference types like ".chat.ClientMessage"
@@ -2628,8 +2664,7 @@ class ProtoFile:
                 full_type_name = '.' + actual_msg_name
                 msg_map[full_type_name] = msg
         
-        yield '/* Service filter function implementations */\n'
-        yield '/* Note: These functions decode and validate packets without re-encoding */\n\n'
+        # Minimal output: no banner comments
         
         # Include validation header if validation is enabled
         validation_enabled = self.validate_enabled or (nanopb_validator and self.messages)
@@ -2653,42 +2688,51 @@ class ProtoFile:
                 yield '        return %s((const %s *)msg_struct, &violations) ? 1 : 0;\n' % (validate_func_name, msg_type_name)
                 yield '    }\n'
         else:
-            yield '    /* Validation disabled, all messages pass */\n'
+            pass
         
         yield '    return 1; /* Default: message is valid */\n'
         yield '}\n\n'
         
+        # Configure return codes (success/failure)
+        ret_ok = '0'
+        ret_err = '-1'
+
         # Generate filter_udp function
         yield 'int filter_udp(void *ctx, uint8_t *packet, size_t packet_size) {\n'
         yield '    pb_istream_t stream;\n'
         yield '    bool status;\n'
         yield '    (void)ctx; /* Context may be unused */\n\n'
         
-        if envelope_info and all_msg_types:
+        if envelope_info:
             # Use efficient envelope-based decoding
             envelope_msg, opcode_field, opcode_enum, oneof_field, opcode_to_msg_map = envelope_info
             envelope_type = Globals.naming_style.type_name(envelope_msg.name)
             opcode_field_name = Globals.naming_style.var_name(opcode_field.name)
+            # CAPS alias type produced in header
+            alias_type = (str(envelope_msg.name) + '_OPCODE').replace('.', '_').replace('-', '_').upper()
+            # Map numeric opcode values to original enumerator names
+            val_to_name = {v: Globals.naming_style.enum_entry(n).replace('.', '_').replace('-', '_').upper() for (n, v) in opcode_enum.values}
             
-            yield '    /* Efficient envelope-based decoding using opcode header */\n'
             yield '    %s envelope = %s;\n' % (envelope_type, Globals.naming_style.define_name(str(envelope_msg.name) + '_init_zero'))
             yield '    stream = pb_istream_from_buffer(packet, packet_size);\n'
             yield '    status = pb_decode(&stream, &%s_msg, &envelope);\n' % envelope_type
             yield '    \n'
             yield '    if (!status) {\n'
-            yield '        return 0; /* Failed to decode envelope */\n'
+            yield f'        return {ret_err};\n'
             yield '    }\n'
             yield '    \n'
-            yield '    /* Decode and validate based on opcode */\n'
             yield '    switch (envelope.%s) {\n' % opcode_field_name
             
             for opcode_val, oneof_subfield in sorted(opcode_to_msg_map.items(), key=lambda x: x[0]):
                 submsg_type = Globals.naming_style.type_name(oneof_subfield.ctype)
                 oneof_member_name = Globals.naming_style.var_name(oneof_subfield.name)
                 oneof_name = Globals.naming_style.var_name(oneof_field.name)
-                
-                yield '        case %d: /* %s */\n' % (opcode_val, oneof_subfield.name)
-                yield '            /* Validate the %s message in the oneof payload */\n' % oneof_subfield.name
+                enum_suffix = val_to_name.get(opcode_val, None)
+                if enum_suffix is not None:
+                    yield '        case %s_%s:\n' % (alias_type, enum_suffix)
+                else:
+                    # Fallback to numeric value if mapping fails
+                    yield '        case %d:\n' % (opcode_val)
                 yield '            if (envelope.which_%s == %s_%s_%s) {\n' % (
                     oneof_name,
                     Globals.naming_style.define_name(envelope_msg.name),
@@ -2698,74 +2742,76 @@ class ProtoFile:
                 yield '                if (validate_message(&%s_msg, &envelope.%s.%s)) {\n' % (
                     submsg_type, oneof_name, oneof_member_name
                 )
-                yield '                    return 1; /* Valid packet */\n'
+                yield f'                    return {ret_ok};\n'
                 yield '                }\n'
                 yield '            }\n'
                 yield '            break;\n'
             
             yield '        default:\n'
-            yield '            return 0; /* Unknown or unsupported opcode */\n'
+            yield f'            return {ret_err};\n'
             yield '    }\n'
             yield '    \n'
-            yield '    return 0; /* Validation failed or opcode mismatch */\n'
-        elif all_msg_types:
+            yield f'    return {ret_err};\n'
+        elif self.services and all_msg_types:
             # Fallback to brute-force decoding
-            yield '    /* Try to decode as each possible message type used in services */\n'
+            pass
             for msg_type_name in sorted(all_msg_types):
                 if msg_type_name in msg_map:
                     msg = msg_map[msg_type_name]
                     msg_type = Globals.naming_style.type_name(msg.name)
                     
-                    yield '    /* Try decoding as %s */\n' % msg.name
+                    pass
                     yield '    {\n'
                     yield '        %s msg = %s;\n' % (msg_type, Globals.naming_style.define_name(str(msg.name) + '_init_zero'))
                     yield '        stream = pb_istream_from_buffer(packet, packet_size);\n'
                     yield '        status = pb_decode(&stream, &%s_msg, &msg);\n' % msg_type
                     yield '        if (status) {\n'
-                    yield '            /* Successfully decoded, now validate */\n'
+                    pass
                     yield '            if (validate_message(&%s_msg, &msg)) {\n' % msg_type
-                    yield '                return 1; /* Valid packet */\n'
+                    yield f'                return {ret_ok};\n'
                     yield '            }\n'
                     yield '        }\n'
                     yield '    }\n\n'
             
-            yield '    return 0; /* Could not decode or validate packet */\n'
+            yield f'    return {ret_err};\n'
         else:
-            yield '    /* No service message types found */\n'
-            yield '    return 0;\n'
+            yield f'    return {ret_err};\n'
         
         yield '}\n\n'
         
-        # Generate filter_tcp function
+    # Generate filter_tcp function
         yield 'int filter_tcp(void *ctx, uint8_t *packet, size_t packet_size, bool is_to_server) {\n'
         yield '    pb_istream_t stream;\n'
         yield '    bool status;\n'
         yield '    (void)ctx; /* Context may be unused */\n\n'
         
-        if envelope_info and self.services and all_msg_types:
+        if envelope_info:
             # Use efficient envelope-based decoding for TCP too
             envelope_msg, opcode_field, opcode_enum, oneof_field, opcode_to_msg_map = envelope_info
             envelope_type = Globals.naming_style.type_name(envelope_msg.name)
             opcode_field_name = Globals.naming_style.var_name(opcode_field.name)
+            alias_type = (str(envelope_msg.name) + '_OPCODE').replace('.', '_').replace('-', '_').upper()
+            val_to_name = {v: Globals.naming_style.enum_entry(n).replace('.', '_').replace('-', '_').upper() for (n, v) in opcode_enum.values}
             
             yield '    %s envelope = %s;\n' % (envelope_type, Globals.naming_style.define_name(str(envelope_msg.name) + '_init_zero'))
             yield '    stream = pb_istream_from_buffer(packet, packet_size);\n'
             yield '    status = pb_decode(&stream, &%s_msg, &envelope);\n' % envelope_type
             yield '    \n'
             yield '    if (!status) {\n'
-            yield '        return 0; /* Failed to decode envelope */\n'
+            yield f'        return {ret_err};\n'
             yield '    }\n'
             yield '    \n'
-            yield '    /* Decode and validate based on opcode */\n'
             yield '    switch (envelope.%s) {\n' % opcode_field_name
             
             for opcode_val, oneof_subfield in sorted(opcode_to_msg_map.items(), key=lambda x: x[0]):
                 submsg_type = Globals.naming_style.type_name(oneof_subfield.ctype)
                 oneof_member_name = Globals.naming_style.var_name(oneof_subfield.name)
                 oneof_name = Globals.naming_style.var_name(oneof_field.name)
-                
-                yield '        case %d: /* %s */\n' % (opcode_val, oneof_subfield.name)
-                yield '            /* Validate the %s message in the oneof payload */\n' % oneof_subfield.name
+                enum_suffix = val_to_name.get(opcode_val, None)
+                if enum_suffix is not None:
+                    yield '        case %s_%s:\n' % (alias_type, enum_suffix)
+                else:
+                    yield '        case %d:\n' % (opcode_val)
                 yield '            if (envelope.which_%s == %s_%s_%s) {\n' % (
                     oneof_name,
                     Globals.naming_style.define_name(envelope_msg.name),
@@ -2775,21 +2821,21 @@ class ProtoFile:
                 yield '                if (validate_message(&%s_msg, &envelope.%s.%s)) {\n' % (
                     submsg_type, oneof_name, oneof_member_name
                 )
-                yield '                    return 1; /* Valid packet */\n'
+                yield f'                    return {ret_ok};\n'
                 yield '                }\n'
                 yield '            }\n'
                 yield '            break;\n'
             
             yield '        default:\n'
-            yield '            return 0; /* Unknown or unsupported opcode */\n'
+            yield f'            return {ret_err};\n'
             yield '    }\n'
             yield '    \n'
-            yield '    return 0; /* Validation failed or opcode mismatch */\n'
+            yield f'    return {ret_err};\n'
         elif self.services and all_msg_types:
             # Fallback to brute-force decoding with direction awareness
-            yield '    /* Handle based on direction */\n'
+            pass
             yield '    if (is_to_server) {\n'
-            yield '        /* Try client->server message types (RPC inputs) */\n'
+            pass
             
             # Get input types
             input_types = set()
@@ -2801,18 +2847,22 @@ class ProtoFile:
                     msg = msg_map[msg_type_name]
                     msg_type = Globals.naming_style.type_name(msg.name)
                     
-                    yield '        /* Try decoding as %s (request) */\n' % msg.name
+                    pass
                     yield '        {\n'
                     yield '            %s msg = %s;\n' % (msg_type, Globals.naming_style.define_name(str(msg.name) + '_init_zero'))
                     yield '            stream = pb_istream_from_buffer(packet, packet_size);\n'
                     yield '            status = pb_decode(&stream, &%s_msg, &msg);\n' % msg_type
                     yield '            if (status && validate_message(&%s_msg, &msg)) {\n' % msg_type
-                    yield '                return 1; /* Valid request packet */\n'
+                    if options.minimal_comments:
+                        yield f'                return {ret_ok};\n'
+                    else:
+                        yield f'                return {ret_ok}; /* Valid request packet */\n'
                     yield '            }\n'
                     yield '        }\n\n'
             
             yield '    } else {\n'
-            yield '        /* Try server->client message types (RPC outputs) */\n'
+            if not options.minimal_comments:
+                yield '        /* Try server->client message types (RPC outputs) */\n'
             
             # Get output types
             output_types = set()
@@ -2824,21 +2874,23 @@ class ProtoFile:
                     msg = msg_map[msg_type_name]
                     msg_type = Globals.naming_style.type_name(msg.name)
                     
-                    yield '        /* Try decoding as %s (response) */\n' % msg.name
+                    pass
                     yield '        {\n'
                     yield '            %s msg = %s;\n' % (msg_type, Globals.naming_style.define_name(str(msg.name) + '_init_zero'))
                     yield '            stream = pb_istream_from_buffer(packet, packet_size);\n'
                     yield '            status = pb_decode(&stream, &%s_msg, &msg);\n' % msg_type
                     yield '            if (status && validate_message(&%s_msg, &msg)) {\n' % msg_type
-                    yield '                return 1; /* Valid response packet */\n'
+                    if options.minimal_comments:
+                        yield f'                return {ret_ok};\n'
+                    else:
+                        yield f'                return {ret_ok}; /* Valid response packet */\n'
                     yield '            }\n'
                     yield '        }\n\n'
             
             yield '    }\n\n'
-            yield '    return 0; /* Could not decode or validate packet */\n'
+            yield f'    return {ret_err};\n'
         else:
-            yield '    /* No service message types found */\n'
-            yield '    return 0;\n'
+            yield f'    return {ret_err};\n'
         
         yield '}\n'
 
@@ -2978,6 +3030,7 @@ optparser.add_option("-v", "--verbose", dest="verbose", action="store_true", def
     help="Print more information.")
 optparser.add_option("-s", dest="settings", metavar="OPTION:VALUE", action="append", default=[],
     help="Set generator option (max_size, max_count etc.).")
+# Comment/return behavior is now minimal and errno-style by default (no flags)
 optparser.add_option("--protoc-opt", dest="protoc_opts", action="append", default = [], metavar="OPTION",
     help="Pass an option to protoc when compiling .proto files")
 optparser.add_option("--protoc-insertion-points", dest="protoc_insertion_points", action="store_true", default=False,

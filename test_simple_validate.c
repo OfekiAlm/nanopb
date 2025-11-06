@@ -4,6 +4,11 @@
 
 bool pb_validate_test_SimpleRequest(const test_SimpleRequest *msg, pb_violations_t *violations)
 {
+    /* Fields without constraints:
+       - id
+       - value
+    */
+
     if (!msg) return false;
     
     pb_validate_context_t ctx = {0};
@@ -15,6 +20,11 @@ bool pb_validate_test_SimpleRequest(const test_SimpleRequest *msg, pb_violations
 
 bool pb_validate_test_SimpleResponse(const test_SimpleResponse *msg, pb_violations_t *violations)
 {
+    /* Fields without constraints:
+       - result
+       - success
+    */
+
     if (!msg) return false;
     
     pb_validate_context_t ctx = {0};

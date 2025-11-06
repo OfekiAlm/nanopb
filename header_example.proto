@@ -25,11 +25,11 @@ message Envelope {
 }
 
 /* ===== RPC service definitions ===== */
-service AuthService {
-  rpc laLogin (Login) returns (Status);
-}
+// service AuthService {
+//   rpc laLogin (Login) returns (Status);
+// }
 
-service DataService {
-  rpc SendData (Data) returns (Status);
-  rpc GetData  (Status) returns (Data);
-}
+// service DataService {
+//   rpc SendData (Data) returns (Status);
+//   rpc GetData  (Status) returns (Data);
+// }

@@ -9,7 +9,18 @@
 extern "C" {
 #endif
 
-/* Validate my_pkg_Envelope message */
+/**
+ * @brief Validate my_pkg_Envelope message.
+ *
+ * Fields and constraints:
+ * - version: > 0; < 100
+ * - opcode: must be a defined enum value
+ * - payload: no constraints
+ *
+ * @param msg [in] Pointer to my_pkg_Envelope instance to validate.
+ * @param violations [out] Optional violations accumulator (can be NULL).
+ * @return true if valid, false otherwise.
+ */
 bool pb_validate_my_pkg_Envelope(const my_pkg_Envelope *msg, pb_violations_t *violations);
 
 #ifdef __cplusplus

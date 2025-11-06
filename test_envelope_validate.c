@@ -4,70 +4,56 @@
 
 bool pb_validate_test_Ping(const test_Ping *msg, pb_violations_t *violations)
 {
-    /* Fields without constraints: sequence */
-    
+    /* Fields without constraints:
+       - sequence
+    */
+
     if (!msg) return false;
-    
-    pb_validate_context_t ctx = {0};
-    ctx.violations = violations;
-    ctx.early_exit = PB_VALIDATE_EARLY_EXIT;
-    
+    PBV_INIT();
+
     /* Validate field: timestamp */
-    if (!pb_validate_context_push_field(&ctx, "timestamp")) return false;
+    PBV_FIELD("timestamp");
     {
         /* Rule: uint64.gt */
-        {
-            uint64_t expected = (uint64_t)0;
-            if (!pb_validate_uint64(msg->timestamp, &expected, PB_VALIDATE_RULE_GT)) {
-                pb_violations_add(violations, ctx.path_buffer, "uint64.gt", "Value constraint failed");
-                if (ctx.early_exit) return false;
-            }
-        }
+        PBV_CHECK_NUM(pb_validate_uint64, uint64_t, msg->timestamp, 0, PB_VALIDATE_RULE_GT, "uint64.gt");
     }
-    pb_validate_context_pop_field(&ctx);
+    PBV_FIELD_END();
     
     return !pb_violations_has_any(violations);
 }
 
 bool pb_validate_test_Pong(const test_Pong *msg, pb_violations_t *violations)
 {
-    /* Fields without constraints: latency_ms, sequence */
-    
+    /* Fields without constraints:
+       - latency_ms
+       - sequence
+    */
+
     if (!msg) return false;
-    
-    pb_validate_context_t ctx = {0};
-    ctx.violations = violations;
-    ctx.early_exit = PB_VALIDATE_EARLY_EXIT;
-    
+    PBV_INIT();
+
     /* Validate field: timestamp */
-    if (!pb_validate_context_push_field(&ctx, "timestamp")) return false;
+    PBV_FIELD("timestamp");
     {
         /* Rule: uint64.gt */
-        {
-            uint64_t expected = (uint64_t)0;
-            if (!pb_validate_uint64(msg->timestamp, &expected, PB_VALIDATE_RULE_GT)) {
-                pb_violations_add(violations, ctx.path_buffer, "uint64.gt", "Value constraint failed");
-                if (ctx.early_exit) return false;
-            }
-        }
+        PBV_CHECK_NUM(pb_validate_uint64, uint64_t, msg->timestamp, 0, PB_VALIDATE_RULE_GT, "uint64.gt");
     }
-    pb_validate_context_pop_field(&ctx);
+    PBV_FIELD_END();
     
     return !pb_violations_has_any(violations);
 }
 
 bool pb_validate_test_Request(const test_Request *msg, pb_violations_t *violations)
 {
-    /* Fields without constraints: request_id */
-    
+    /* Fields without constraints:
+       - request_id
+    */
+
     if (!msg) return false;
-    
-    pb_validate_context_t ctx = {0};
-    ctx.violations = violations;
-    ctx.early_exit = PB_VALIDATE_EARLY_EXIT;
-    
+    PBV_INIT();
+
     /* Validate field: method */
-    if (!pb_validate_context_push_field(&ctx, "method")) return false;
+    PBV_FIELD("method");
     {
         /* Rule: string.min_len */
         {
@@ -81,82 +67,62 @@ bool pb_validate_test_Request(const test_Request *msg, pb_violations_t *violatio
             }
         }
     }
-    pb_validate_context_pop_field(&ctx);
+    PBV_FIELD_END();
     
     /* Validate field: payload */
-    if (!pb_validate_context_push_field(&ctx, "payload")) return false;
-    pb_validate_context_pop_field(&ctx);
+    PBV_FIELD("payload");
+    PBV_FIELD_END();
     
     return !pb_violations_has_any(violations);
 }
 
 bool pb_validate_test_Response(const test_Response *msg, pb_violations_t *violations)
 {
-    /* Fields without constraints: request_id */
-    
+    /* Fields without constraints:
+       - request_id
+    */
+
     if (!msg) return false;
-    
-    pb_validate_context_t ctx = {0};
-    ctx.violations = violations;
-    ctx.early_exit = PB_VALIDATE_EARLY_EXIT;
-    
+    PBV_INIT();
+
     /* Validate field: status_code */
-    if (!pb_validate_context_push_field(&ctx, "status_code")) return false;
+    PBV_FIELD("status_code");
     {
         /* Rule: int32.gte */
-        {
-            int32_t expected = (int32_t)0;
-            if (!pb_validate_int32(msg->status_code, &expected, PB_VALIDATE_RULE_GTE)) {
-                pb_violations_add(violations, ctx.path_buffer, "int32.gte", "Value constraint failed");
-                if (ctx.early_exit) return false;
-            }
-        }
+        PBV_CHECK_NUM(pb_validate_int32, int32_t, msg->status_code, 0, PB_VALIDATE_RULE_GTE, "int32.gte");
     }
     {
         /* Rule: int32.lt */
-        {
-            int32_t expected = (int32_t)600;
-            if (!pb_validate_int32(msg->status_code, &expected, PB_VALIDATE_RULE_LT)) {
-                pb_violations_add(violations, ctx.path_buffer, "int32.lt", "Value constraint failed");
-                if (ctx.early_exit) return false;
-            }
-        }
+        PBV_CHECK_NUM(pb_validate_int32, int32_t, msg->status_code, 600, PB_VALIDATE_RULE_LT, "int32.lt");
     }
-    pb_validate_context_pop_field(&ctx);
+    PBV_FIELD_END();
     
     /* Validate field: payload */
-    if (!pb_validate_context_push_field(&ctx, "payload")) return false;
-    pb_validate_context_pop_field(&ctx);
+    PBV_FIELD("payload");
+    PBV_FIELD_END();
     
     return !pb_violations_has_any(violations);
 }
 
 bool pb_validate_test_Error(const test_Error *msg, pb_violations_t *violations)
 {
-    /* Fields without constraints: details */
-    
+    /* Fields without constraints:
+       - details
+    */
+
     if (!msg) return false;
-    
-    pb_validate_context_t ctx = {0};
-    ctx.violations = violations;
-    ctx.early_exit = PB_VALIDATE_EARLY_EXIT;
-    
+    PBV_INIT();
+
     /* Validate field: error_code */
-    if (!pb_validate_context_push_field(&ctx, "error_code")) return false;
+    PBV_FIELD("error_code");
     {
         /* Rule: uint32.gt */
-        {
-            uint32_t expected = (uint32_t)0;
-            if (!pb_validate_uint32(msg->error_code, &expected, PB_VALIDATE_RULE_GT)) {
-                pb_violations_add(violations, ctx.path_buffer, "uint32.gt", "Value constraint failed");
-                if (ctx.early_exit) return false;
-            }
-        }
+        PBV_CHECK_NUM(pb_validate_uint32, uint32_t, msg->error_code, 0, PB_VALIDATE_RULE_GT, "uint32.gt");
     }
-    pb_validate_context_pop_field(&ctx);
+    PBV_FIELD_END();
     
     /* Validate field: message */
-    if (!pb_validate_context_push_field(&ctx, "message")) return false;
+    PBV_FIELD("message");
     {
         /* Rule: string.min_len */
         {
@@ -170,23 +136,23 @@ bool pb_validate_test_Error(const test_Error *msg, pb_violations_t *violations)
             }
         }
     }
-    pb_validate_context_pop_field(&ctx);
+    PBV_FIELD_END();
     
     return !pb_violations_has_any(violations);
 }
 
 bool pb_validate_test_Notification(const test_Notification *msg, pb_violations_t *violations)
 {
-    /* Fields without constraints: data, timestamp */
-    
+    /* Fields without constraints:
+       - data
+       - timestamp
+    */
+
     if (!msg) return false;
-    
-    pb_validate_context_t ctx = {0};
-    ctx.violations = violations;
-    ctx.early_exit = PB_VALIDATE_EARLY_EXIT;
-    
+    PBV_INIT();
+
     /* Validate field: event_type */
-    if (!pb_validate_context_push_field(&ctx, "event_type")) return false;
+    PBV_FIELD("event_type");
     {
         /* Rule: string.min_len */
         {
@@ -200,47 +166,35 @@ bool pb_validate_test_Notification(const test_Notification *msg, pb_violations_t
             }
         }
     }
-    pb_validate_context_pop_field(&ctx);
+    PBV_FIELD_END();
     
     return !pb_violations_has_any(violations);
 }
 
 bool pb_validate_test_Envelope(const test_Envelope *msg, pb_violations_t *violations)
 {
-    /* Fields without constraints: correlation_id, message */
-    
+    /* Fields without constraints:
+       - correlation_id
+       - message
+    */
+
     if (!msg) return false;
-    
-    pb_validate_context_t ctx = {0};
-    ctx.violations = violations;
-    ctx.early_exit = PB_VALIDATE_EARLY_EXIT;
-    
+    PBV_INIT();
+
     /* Validate field: version */
-    if (!pb_validate_context_push_field(&ctx, "version")) return false;
+    PBV_FIELD("version");
     {
         /* Rule: uint32.gte */
-        {
-            uint32_t expected = (uint32_t)1;
-            if (!pb_validate_uint32(msg->version, &expected, PB_VALIDATE_RULE_GTE)) {
-                pb_violations_add(violations, ctx.path_buffer, "uint32.gte", "Value constraint failed");
-                if (ctx.early_exit) return false;
-            }
-        }
+        PBV_CHECK_NUM(pb_validate_uint32, uint32_t, msg->version, 1, PB_VALIDATE_RULE_GTE, "uint32.gte");
     }
     {
         /* Rule: uint32.lte */
-        {
-            uint32_t expected = (uint32_t)10;
-            if (!pb_validate_uint32(msg->version, &expected, PB_VALIDATE_RULE_LTE)) {
-                pb_violations_add(violations, ctx.path_buffer, "uint32.lte", "Value constraint failed");
-                if (ctx.early_exit) return false;
-            }
-        }
+        PBV_CHECK_NUM(pb_validate_uint32, uint32_t, msg->version, 10, PB_VALIDATE_RULE_LTE, "uint32.lte");
     }
-    pb_validate_context_pop_field(&ctx);
+    PBV_FIELD_END();
     
     /* Validate field: msg_type */
-    if (!pb_validate_context_push_field(&ctx, "msg_type")) return false;
+    PBV_FIELD("msg_type");
     {
         /* Rule: enum.defined_only */
         {
@@ -251,7 +205,7 @@ bool pb_validate_test_Envelope(const test_Envelope *msg, pb_violations_t *violat
             }
         }
     }
-    pb_validate_context_pop_field(&ctx);
+    PBV_FIELD_END();
     
     return !pb_violations_has_any(violations);
 }
