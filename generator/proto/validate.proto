@@ -39,6 +39,7 @@ message FieldRules {
   optional EnumRules enum = 16;
   optional RepeatedRules repeated = 17;
   optional MapRules map = 18;
+  optional AnyRules any = 19;  // Rules for google.protobuf.Any fields
   
   // Field presence rules
   optional bool required = 22; // Field must be set (for optional fields)
@@ -240,7 +241,13 @@ message MapRules {
   // Note: Per-key/value validation rules are not supported to avoid circular dependencies
 }
 
-// Note: Any, Duration, and Timestamp validation rules are not implemented
+// Rules for google.protobuf.Any fields
+message AnyRules {
+  repeated string in = 1;            // type_url must be in this list
+  repeated string not_in = 2;        // type_url must not be in this list
+}
+
+// Note: Duration and Timestamp validation rules are not implemented
 // in the initial version to keep the implementation simple and avoid
 // complex dependencies.
 
