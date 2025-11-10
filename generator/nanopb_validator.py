@@ -73,6 +73,8 @@ RULE_MIN_ITEMS = 'MIN_ITEMS'
 RULE_MAX_ITEMS = 'MAX_ITEMS'
 RULE_UNIQUE = 'UNIQUE'
 RULE_NO_SPARSE = 'NO_SPARSE'
+RULE_ANY_IN = 'ANY_IN'
+RULE_ANY_NOT_IN = 'ANY_NOT_IN'
 
 
 # --- Small helpers --------------------------------------------------------
@@ -344,6 +346,17 @@ def parse_field_rules_from_protobuf_message(field_rules_msg: Any) -> Dict[str, D
             if m:
                 rules['map'] = m
 
+        # any rules (google.protobuf.Any)
+        if hasattr(field_rules_msg, 'any') and field_rules_msg.HasField('any'):
+            any_rules = field_rules_msg.any
+            a: Dict[str, Any] = {}
+            if _has_attr_and_truthy(any_rules, 'in'):
+                a['in'] = _get_repeated_values(any_rules, 'in')
+            if _has_attr_and_truthy(any_rules, 'not_in'):
+                a['not_in'] = _get_repeated_values(any_rules, 'not_in')
+            if a:
+                rules['any'] = a
+
         # flags
         if hasattr(field_rules_msg, 'required') and field_rules_msg.HasField('required'):
             rules['required'] = field_rules_msg.required
@@ -429,6 +442,8 @@ class FieldValidator:
                 self._parse_repeated_rules(rules_option.repeated)
             if rules_option.HasField('map'):
                 self._parse_map_rules(rules_option.map)
+            if rules_option.HasField('any'):
+                self._parse_any_rules(rules_option.any)
             if rules_option.HasField('required') and rules_option.required:
                 self.rules.append(ValidationRule(RULE_REQUIRED, 'required'))
             if rules_option.HasField('oneof_required') and rules_option.oneof_required:
@@ -474,6 +489,11 @@ class FieldValidator:
                     self.rules.append(ValidationRule(RULE_MAX_ITEMS, 'map.max_pairs', {'value': rule_data['max_pairs']}))
                 if rule_data.get('no_sparse'):
                     self.rules.append(ValidationRule(RULE_NO_SPARSE, 'map.no_sparse', {}))
+            elif rule_type == 'any' and isinstance(rule_data, dict):
+                if 'in' in rule_data:
+                    self.rules.append(ValidationRule(RULE_ANY_IN, 'any.in', {'values': list(rule_data['in'])}))
+                if 'not_in' in rule_data:
+                    self.rules.append(ValidationRule(RULE_ANY_NOT_IN, 'any.not_in', {'values': list(rule_data['not_in'])}))
             elif rule_type == 'required':
                 self.rules.append(ValidationRule(RULE_REQUIRED, 'required', {'required': rule_data}))
             elif rule_type == 'oneof_required':
@@ -585,6 +605,13 @@ class FieldValidator:
         if rules.HasField('no_sparse') and rules.no_sparse:
             self.rules.append(ValidationRule(RULE_NO_SPARSE, 'map.no_sparse'))
         # TODO: Handle key/value validation rules
+    
+    def _parse_any_rules(self, rules: Any):
+        """Parse google.protobuf.Any field validation rules."""
+        if hasattr(rules, 'in') and getattr(rules, 'in'):
+            self.rules.append(ValidationRule(RULE_ANY_IN, 'any.in', {'values': list(getattr(rules, 'in'))}))
+        if hasattr(rules, 'not_in') and getattr(rules, 'not_in'):
+            self.rules.append(ValidationRule(RULE_ANY_NOT_IN, 'any.not_in', {'values': list(getattr(rules, 'not_in'))}))
 
 class MessageValidator:
     """Handles validation for a message."""
@@ -661,7 +688,7 @@ class ValidatorGenerator:
             if s is None:
                 return ''
             # Avoid closing comment accidentally and normalize newlines
-            return str(s).replace('*/', '*\/').replace('\r\n', '\n').replace('\r', '\n')
+            return str(s).replace('*/', '* /').replace('\r\n', '\n').replace('\r', '\n')
         except Exception:
             return str(s)
 
@@ -904,34 +931,37 @@ class ValidatorGenerator:
                     is_message_field = getattr(field, 'pbtype', None) in ('MESSAGE', 'MSG_W_CB')
                     submsg_ctype = getattr(field, 'ctype', None)
                     if is_message_field and submsg_ctype:
-                        sub_func = 'pb_validate_' + str(submsg_ctype).replace('.', '_')
-                        allocation = getattr(field, 'allocation', None)
-                        rules = getattr(field, 'rules', None)
-                        if allocation == 'POINTER':
-                            # Pointer to submessage
-                            yield '    {\n'
-                            yield '        /* Recurse into submessage */\n'
-                            yield '        if (msg->%s) {\n' % field_name
-                            yield '            bool ok_nested = %s(msg->%s, violations);\n' % (sub_func, field_name)
-                            yield '            if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }\n'
-                            yield '        }\n'
-                            yield '    }\n'
-                        else:
-                            # Inline submessage struct
-                            if rules == 'OPTIONAL':
+                        # Skip google.protobuf.Any - no validation function exists for it
+                        submsg_ctype_str = str(submsg_ctype).lower()
+                        if not ('google' in submsg_ctype_str and 'protobuf' in submsg_ctype_str and 'any' in submsg_ctype_str):
+                            sub_func = 'pb_validate_' + str(submsg_ctype).replace('.', '_')
+                            allocation = getattr(field, 'allocation', None)
+                            rules = getattr(field, 'rules', None)
+                            if allocation == 'POINTER':
+                                # Pointer to submessage
                                 yield '    {\n'
-                                yield '        /* Recurse into submessage (optional) */\n'
-                                yield '        if (msg->has_%s) {\n' % field_name
-                                yield '            bool ok_nested = %s(&msg->%s, violations);\n' % (sub_func, field_name)
+                                yield '        /* Recurse into submessage */\n'
+                                yield '        if (msg->%s) {\n' % field_name
+                                yield '            bool ok_nested = %s(msg->%s, violations);\n' % (sub_func, field_name)
                                 yield '            if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }\n'
                                 yield '        }\n'
                                 yield '    }\n'
                             else:
-                                yield '    {\n'
-                                yield '        /* Recurse into submessage (singular) */\n'
-                                yield '        bool ok_nested = %s(&msg->%s, violations);\n' % (sub_func, field_name)
-                                yield '        if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }\n'
-                                yield '    }\n'
+                                # Inline submessage struct
+                                if rules == 'OPTIONAL':
+                                    yield '    {\n'
+                                    yield '        /* Recurse into submessage (optional) */\n'
+                                    yield '        if (msg->has_%s) {\n' % field_name
+                                    yield '            bool ok_nested = %s(&msg->%s, violations);\n' % (sub_func, field_name)
+                                    yield '            if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }\n'
+                                    yield '        }\n'
+                                    yield '    }\n'
+                                else:
+                                    yield '    {\n'
+                                    yield '        /* Recurse into submessage (singular) */\n'
+                                    yield '        bool ok_nested = %s(&msg->%s, violations);\n' % (sub_func, field_name)
+                                    yield '        if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }\n'
+                                    yield '    }\n'
                 except Exception:
                     # If field shape is unexpected, skip recursion silently
                     pass
@@ -953,6 +983,10 @@ class ValidatorGenerator:
                     fname = getattr(f, 'name')
                     submsg_ctype = getattr(f, 'ctype', None)
                     if not submsg_ctype:
+                        continue
+                    # Skip google.protobuf.Any - no validation function exists for it
+                    submsg_ctype_str = str(submsg_ctype).lower()
+                    if 'google' in submsg_ctype_str and 'protobuf' in submsg_ctype_str and 'any' in submsg_ctype_str:
                         continue
                     sub_func = 'pb_validate_' + str(submsg_ctype).replace('.', '_')
                     allocation = getattr(f, 'allocation', None)
@@ -1423,6 +1457,43 @@ class ValidatorGenerator:
         
         elif rule.rule_type == RULE_NO_SPARSE:
             return '        /* TODO: Implement no_sparse constraint for map field */\n'
+        
+        # google.protobuf.Any type_url constraints
+        elif rule.rule_type == RULE_ANY_IN:
+            values = rule.params.get('values', [])
+            if not values:
+                return ''
+            
+            # Generate code to check if type_url is in the allowed list
+            code = '        /* Validate Any type_url is in allowed list */\n'
+            code += '        if (msg->has_%s) {\n' % field_name
+            code += '            const char *type_url = (const char *)msg->%s.type_url;\n' % field_name
+            code += '            bool type_url_valid = false;\n'
+            for url in values:
+                code += '            if (type_url && strcmp(type_url, "%s") == 0) type_url_valid = true;\n' % url
+            code += '            if (!type_url_valid) {\n'
+            code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "type_url not in allowed list");\n' % rule.constraint_id
+            code += '                if (ctx.early_exit) return false;\n'
+            code += '            }\n'
+            code += '        }\n'
+            return code
+        
+        elif rule.rule_type == RULE_ANY_NOT_IN:
+            values = rule.params.get('values', [])
+            if not values:
+                return ''
+            
+            # Generate code to check if type_url is NOT in the disallowed list
+            code = '        /* Validate Any type_url is not in disallowed list */\n'
+            code += '        if (msg->has_%s) {\n' % field_name
+            code += '            const char *type_url = (const char *)msg->%s.type_url;\n' % field_name
+            for url in values:
+                code += '            if (type_url && strcmp(type_url, "%s") == 0) {\n' % url
+                code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "type_url in disallowed list");\n' % rule.constraint_id
+                code += '                if (ctx.early_exit) return false;\n'
+                code += '            }\n'
+            code += '        }\n'
+            return code
         
         # Default fallback
         return '        /* TODO: Implement rule type %s */\n' % rule.rule_type

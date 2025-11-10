@@ -1,0 +1,44 @@
+syntax = "proto3";
+import "generator/proto/nanopb.proto";
+import "generator/proto/google/protobuf/any.proto";
+import "generator/proto/validate.proto";
+
+package test;
+
+// Example messages that can be payloads
+message LoginRequest {
+    string username = 1 [(nanopb).max_length = 32];
+    string password = 2 [(nanopb).max_length = 64];
+}
+
+message LogoutRequest {
+    string session_id = 1 [(nanopb).max_length = 64];
+}
+
+message ChatMessage {
+    string content = 1 [(nanopb).max_length = 256];
+    uint32 timestamp = 2;
+}
+
+// Envelope message with Any validation - only allow specific type URLs
+message BaseMessage {
+    uint32 message_id = 1;
+    google.protobuf.Any payload = 2 [(validate.rules).any = {
+        in: [
+            "type.googleapis.com/test.LoginRequest",
+            "type.googleapis.com/test.LogoutRequest",
+            "type.googleapis.com/test.ChatMessage"
+        ]
+    }];
+    uint64 timestamp = 3;
+}
+
+// Alternative: Envelope with not_in (blacklist)
+message RestrictedMessage {
+    uint32 message_id = 1;
+    google.protobuf.Any payload = 2 [(validate.rules).any = {
+        not_in: [
+            "type.googleapis.com/test.SensitiveData"
+        ]
+    }];
+}

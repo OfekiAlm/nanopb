@@ -2381,7 +2381,15 @@ class ProtoFile:
             yield '\n'
 
         # Generate packet filter functions if services exist or an envelope pattern is detected
-        if self.services or self.detect_envelope_pattern():
+        envelope_mode = getattr(options, 'envelope_mode', 'oneof')
+        envelope_name = getattr(options, 'envelope_name', None)
+        has_envelope = False
+        if envelope_mode == 'any':
+            has_envelope = self.detect_any_envelope_pattern(envelope_name) is not None
+        else:
+            has_envelope = self.detect_envelope_pattern(envelope_name) is not None
+        
+        if self.services or has_envelope:
             yield '\n'
             yield '#ifdef __cplusplus\n'
             yield 'extern "C" {\n'
@@ -2525,7 +2533,15 @@ class ProtoFile:
             yield '/* @@protoc_insertion_point(eof) */\n'
         
         # Generate packet filter function implementations
-        if self.services or self.detect_envelope_pattern():
+        envelope_mode = getattr(options, 'envelope_mode', 'oneof')
+        envelope_name = getattr(options, 'envelope_name', None)
+        has_envelope = False
+        if envelope_mode == 'any':
+            has_envelope = self.detect_any_envelope_pattern(envelope_name) is not None
+        else:
+            has_envelope = self.detect_envelope_pattern(envelope_name) is not None
+        
+        if self.services or has_envelope:
             yield '\n'
             yield options.libformat % ('pb_encode.h')
             yield '\n'
@@ -2581,11 +2597,20 @@ class ProtoFile:
         yield 'int filter_tcp(void *ctx, uint8_t *packet, size_t packet_size, bool is_to_server);\n'
         yield '\n'
     
-    def detect_envelope_pattern(self):
+    def detect_envelope_pattern(self, envelope_name=None):
         '''Detect if there's an Envelope message with enum + oneof payload pattern.
         Returns (envelope_msg, opcode_field, opcode_enum, oneof_field, opcode_to_msg_map) or None.
+        
+        Args:
+            envelope_name: Optional name of the envelope message to use. If provided, only that message is checked.
         '''
-        for msg in self.messages:
+        messages_to_check = self.messages
+        
+        # If envelope_name is specified, filter to just that message
+        if envelope_name:
+            messages_to_check = [msg for msg in self.messages if str(msg.name).split('_')[-1].lower() == envelope_name.lower()]
+        
+        for msg in messages_to_check:
             # Look for a message with both an enum field and a oneof
             enum_field = None
             oneof_field = None
@@ -2632,10 +2657,59 @@ class ProtoFile:
         
         return None
     
+    def detect_any_envelope_pattern(self, envelope_name=None):
+        '''Detect if there's an Envelope message with google.protobuf.Any payload pattern.
+        Returns (envelope_msg, any_field, all_msg_types) or None.
+        
+        Args:
+            envelope_name: Optional name of the envelope message to use. If provided, only that message is checked.
+        '''
+        messages_to_check = self.messages
+        
+        # If envelope_name is specified, filter to just that message
+        if envelope_name:
+            messages_to_check = [msg for msg in self.messages if str(msg.name).split('_')[-1].lower() == envelope_name.lower()]
+        
+        for msg in messages_to_check:
+            # Look for a message with a google.protobuf.Any field
+            any_field = None
+            
+            for field in msg.fields:
+                # Check if this is an Any field
+                # The ctype for Any fields will be 'google_protobuf_Any' or similar
+                if hasattr(field, 'ctype'):
+                    ctype_str = str(field.ctype).lower()
+                    if 'any' in ctype_str and 'google' in ctype_str:
+                        any_field = field
+                        break
+            
+            # If we found an Any field, this is an Any-based envelope
+            if any_field:
+                # Collect all message types that could be payloads
+                # (exclude the envelope itself)
+                all_msg_types = []
+                for other_msg in self.messages:
+                    if other_msg != msg:
+                        all_msg_types.append(other_msg)
+                
+                return (msg, any_field, all_msg_types)
+        
+        return None
+    
     def generate_service_filter_implementations(self, options):
         '''Generate implementation of packet filter functions (service- or envelope-driven)'''
-        # Detect envelope pattern for efficient header-based decoding
-        envelope_info = self.detect_envelope_pattern()
+        # Determine envelope detection mode and name from options
+        envelope_mode = getattr(options, 'envelope_mode', 'oneof')
+        envelope_name = getattr(options, 'envelope_name', None)
+        
+        # Detect envelope pattern based on mode
+        envelope_info = None
+        any_envelope_info = None
+        
+        if envelope_mode == 'any':
+            any_envelope_info = self.detect_any_envelope_pattern(envelope_name)
+        else:  # Default to 'oneof' mode
+            envelope_info = self.detect_envelope_pattern(envelope_name)
         
         # Collect all message types used in services (only if services exist)
         all_msg_types = set()
@@ -2703,7 +2777,70 @@ class ProtoFile:
         yield '    bool status;\n'
         yield '    (void)ctx; /* Context may be unused */\n\n'
         
-        if envelope_info:
+        if any_envelope_info:
+            # Use Any-based envelope decoding
+            envelope_msg, any_field, all_msg_types = any_envelope_info
+            envelope_type = Globals.naming_style.type_name(envelope_msg.name)
+            any_field_name = Globals.naming_style.var_name(any_field.name)
+            
+            yield '    %s envelope = %s;\n' % (envelope_type, Globals.naming_style.define_name(str(envelope_msg.name) + '_init_zero'))
+            yield '    stream = pb_istream_from_buffer(packet, packet_size);\n'
+            yield '    status = pb_decode(&stream, &%s_msg, &envelope);\n' % envelope_type
+            yield '    \n'
+            yield '    if (!status) {\n'
+            yield f'        return {ret_err};\n'
+            yield '    }\n'
+            yield '    \n'
+            yield '    /* Extract type_url from Any field */\n'
+            yield '    const char *type_url = (const char *)envelope.%s.type_url;\n' % any_field_name
+            yield '    if (!type_url) {\n'
+            yield f'        return {ret_err};\n'
+            yield '    }\n'
+            yield '    \n'
+            yield '    /* Compute hash of type_url for efficient switching */\n'
+            yield '    uint32_t type_hash = 0;\n'
+            yield '    for (const char *p = type_url; *p; p++) {\n'
+            yield '        type_hash = type_hash * 31 + (uint8_t)*p;\n'
+            yield '    }\n'
+            yield '    \n'
+            yield '    /* Switch on type_url hash to determine payload type */\n'
+            yield '    switch (type_hash) {\n'
+            
+            # Generate switch cases using hash values
+            for msg in all_msg_types:
+                msg_type = Globals.naming_style.type_name(msg.name)
+                # Extract the simple message name for type URL
+                msg_simple_name = str(msg.name).split('_')[-1]
+                
+                # Build the expected type_url (typically "type.googleapis.com/package.MessageName")
+                if self.fdesc.package:
+                    expected_type_url = 'type.googleapis.com/%s.%s' % (self.fdesc.package, msg_simple_name)
+                else:
+                    expected_type_url = 'type.googleapis.com/%s' % msg_simple_name
+                
+                # Calculate hash for the case label
+                type_hash = 0
+                for c in expected_type_url:
+                    type_hash = (type_hash * 31 + ord(c)) & 0xFFFFFFFF
+                
+                yield '        case 0x%08XU: /* %s */\n' % (type_hash, expected_type_url)
+                yield '            if (strcmp(type_url, "%s") == 0) {\n' % expected_type_url
+                yield '                %s payload_msg = %s;\n' % (msg_type, Globals.naming_style.define_name(str(msg.name) + '_init_zero'))
+                yield '                pb_istream_t payload_stream = pb_istream_from_buffer(envelope.%s.value.bytes, envelope.%s.value.size);\n' % (any_field_name, any_field_name)
+                yield '                if (pb_decode(&payload_stream, &%s_msg, &payload_msg)) {\n' % msg_type
+                yield '                    if (validate_message(&%s_msg, &payload_msg)) {\n' % msg_type
+                yield f'                        return {ret_ok};\n'
+                yield '                    }\n'
+                yield '                }\n'
+                yield '            }\n'
+                yield '            break;\n'
+            
+            yield '        default:\n'
+            yield '            break;\n'
+            yield '    }\n'
+            yield '    \n'
+            yield f'    return {ret_err};\n'
+        elif envelope_info:
             # Use efficient envelope-based decoding
             envelope_msg, opcode_field, opcode_enum, oneof_field, opcode_to_msg_map = envelope_info
             envelope_type = Globals.naming_style.type_name(envelope_msg.name)
@@ -2785,7 +2922,70 @@ class ProtoFile:
         yield '    bool status;\n'
         yield '    (void)ctx; /* Context may be unused */\n\n'
         
-        if envelope_info:
+        if any_envelope_info:
+            # Use Any-based envelope decoding for TCP
+            envelope_msg, any_field, all_msg_types = any_envelope_info
+            envelope_type = Globals.naming_style.type_name(envelope_msg.name)
+            any_field_name = Globals.naming_style.var_name(any_field.name)
+            
+            yield '    %s envelope = %s;\n' % (envelope_type, Globals.naming_style.define_name(str(envelope_msg.name) + '_init_zero'))
+            yield '    stream = pb_istream_from_buffer(packet, packet_size);\n'
+            yield '    status = pb_decode(&stream, &%s_msg, &envelope);\n' % envelope_type
+            yield '    \n'
+            yield '    if (!status) {\n'
+            yield f'        return {ret_err};\n'
+            yield '    }\n'
+            yield '    \n'
+            yield '    /* Extract type_url from Any field */\n'
+            yield '    const char *type_url = (const char *)envelope.%s.type_url;\n' % any_field_name
+            yield '    if (!type_url) {\n'
+            yield f'        return {ret_err};\n'
+            yield '    }\n'
+            yield '    \n'
+            yield '    /* Compute hash of type_url for efficient switching */\n'
+            yield '    uint32_t type_hash = 0;\n'
+            yield '    for (const char *p = type_url; *p; p++) {\n'
+            yield '        type_hash = type_hash * 31 + (uint8_t)*p;\n'
+            yield '    }\n'
+            yield '    \n'
+            yield '    /* Switch on type_url hash to determine payload type */\n'
+            yield '    switch (type_hash) {\n'
+            
+            # Generate switch cases using hash values
+            for msg in all_msg_types:
+                msg_type = Globals.naming_style.type_name(msg.name)
+                # Extract the simple message name for type URL
+                msg_simple_name = str(msg.name).split('_')[-1]
+                
+                # Build the expected type_url (typically "type.googleapis.com/package.MessageName")
+                if self.fdesc.package:
+                    expected_type_url = 'type.googleapis.com/%s.%s' % (self.fdesc.package, msg_simple_name)
+                else:
+                    expected_type_url = 'type.googleapis.com/%s' % msg_simple_name
+                
+                # Calculate hash for the case label
+                type_hash = 0
+                for c in expected_type_url:
+                    type_hash = (type_hash * 31 + ord(c)) & 0xFFFFFFFF
+                
+                yield '        case 0x%08XU: /* %s */\n' % (type_hash, expected_type_url)
+                yield '            if (strcmp(type_url, "%s") == 0) {\n' % expected_type_url
+                yield '                %s payload_msg = %s;\n' % (msg_type, Globals.naming_style.define_name(str(msg.name) + '_init_zero'))
+                yield '                pb_istream_t payload_stream = pb_istream_from_buffer(envelope.%s.value.bytes, envelope.%s.value.size);\n' % (any_field_name, any_field_name)
+                yield '                if (pb_decode(&payload_stream, &%s_msg, &payload_msg)) {\n' % msg_type
+                yield '                    if (validate_message(&%s_msg, &payload_msg)) {\n' % msg_type
+                yield f'                        return {ret_ok};\n'
+                yield '                    }\n'
+                yield '                }\n'
+                yield '            }\n'
+                yield '            break;\n'
+            
+            yield '        default:\n'
+            yield '            break;\n'
+            yield '    }\n'
+            yield '    \n'
+            yield f'    return {ret_err};\n'
+        elif envelope_info:
             # Use efficient envelope-based decoding for TCP too
             envelope_msg, opcode_field, opcode_enum, oneof_field, opcode_to_msg_map = envelope_info
             envelope_type = Globals.naming_style.type_name(envelope_msg.name)
@@ -3041,6 +3241,10 @@ optparser.add_option("--validate", dest="validate", action="store_true", default
     help="Generate validation code for messages.")
 optparser.add_option("--validate-consolidated", dest="validate_consolidated", action="store_true", default=False,
     help="Generate consolidated validation files instead of per-proto files.")
+optparser.add_option("--envelope-mode", dest="envelope_mode", metavar="MODE", default="oneof",
+    help="Envelope detection mode: 'oneof' (enum+oneof pattern) or 'any' (google.protobuf.Any field). [default: %default]")
+optparser.add_option("--envelope-name", dest="envelope_name", metavar="NAME", default=None,
+    help="Name of the envelope/base message to use for filter generation. If not specified, auto-detection will be used.")
 
 
 def parse_custom_style(option, opt_str, value, parser):
@@ -3103,6 +3307,11 @@ def process_cmdline(args, is_plugin):
         Globals.naming_style = NamingStyleC()
 
     Globals.verbose_options = options.verbose
+
+    # Validate envelope_mode option
+    if options.envelope_mode not in ('oneof', 'any'):
+        sys.stderr.write("Error: --envelope-mode must be either 'oneof' or 'any', got: '%s'\n" % options.envelope_mode)
+        sys.exit(1)
 
     if options.verbose:
         sys.stderr.write("Nanopb version %s\n" % nanopb_version)
