@@ -41,24 +41,12 @@ except:
     ''' + '\n')
     raise
 
-# Import validation support if available (simplified - direct import only)
-try:
-    import nanopb_validator
-except ImportError:
-    nanopb_validator = None
+# (Moved) nanopb_validator import will be performed after proto/nanopb_pb2 import
+# to ensure validate.proto has been generated when needed.
+nanopb_validator = None
 
-try:
-    from proto import validate_pb2  # Generated from validate.proto
-except ImportError:
-    validate_pb2 = None
-    sys.stderr.write('''
-         **********************************************************************
-         *** Could not import the nanopb_validator Python library           ***
-         ***                                                                ***
-         *** Install it or disable the --validate option                    ***
-         **********************************************************************
-    ''' + '\n')
-    raise
+# (Moved) validate_pb2 import will occur after nanopb_pb2 has been built.
+validate_pb2 = None
 
 # GetMessageClass() is used by modern python-protobuf (around 5.x onwards)
 # Retain compatibility with older python-protobuf versions.
@@ -87,6 +75,25 @@ else:
     # Import nanopb_pb2.py, rebuilds if necessary and not disabled
     # by env variable NANOPB_PB2_NO_REBUILD
     nanopb_pb2 = proto.load_nanopb_pb2()
+
+# Import validation support now that proto generation helper ran
+try:
+    # Prefer relative import through package layout
+    from proto import nanopb_validator as nanopb_validator
+except ImportError:
+    try:
+        import nanopb_validator  # fallback to global module
+    except ImportError:
+        nanopb_validator = None
+
+# Import validate_pb2 now (generated alongside nanopb.proto)
+try:
+    from proto import validate_pb2  # Generated from validate.proto
+except ImportError:
+    try:
+        import validate_pb2  # fallback if PYTHONPATH already contains it
+    except ImportError:
+        validate_pb2 = None  # Leave as None; validation features will be disabled gracefully
 
 # ---------------------------------------------------------------------------
 #                     Generation of single fields
