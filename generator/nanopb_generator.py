@@ -41,18 +41,24 @@ except:
     ''' + '\n')
     raise
 
-# Import validation module if available
+# Import validation support if available (simplified - direct import only)
 try:
-    from . import nanopb_validator
-    validate_pb2 = nanopb_validator.load_validate_pb2()
+    import nanopb_validator
 except ImportError:
-    try:
-        # Try absolute import for when running as script
-        import nanopb_validator
-        validate_pb2 = nanopb_validator.load_validate_pb2()
-    except ImportError:
-        nanopb_validator = None
-        validate_pb2 = None
+    nanopb_validator = None
+
+try:
+    from proto import validate_pb2  # Generated from validate.proto
+except ImportError:
+    validate_pb2 = None
+    sys.stderr.write('''
+         **********************************************************************
+         *** Could not import the nanopb_validator Python library           ***
+         ***                                                                ***
+         *** Install it or disable the --validate option                    ***
+         **********************************************************************
+    ''' + '\n')
+    raise
 
 # GetMessageClass() is used by modern python-protobuf (around 5.x onwards)
 # Retain compatibility with older python-protobuf versions.
@@ -937,11 +943,7 @@ class Field(ProtoElement):
 
     def tags(self):
         '''Return the #define for the tag number of this field.'''
-        if self.rules == "ONEOF" and self.union_name:
-            # For oneof fields, include the union name in the tag constant
-            identifier = Globals.naming_style.define_name('%s_%s_%s' % (self.struct_name, self.union_name, self.name))
-        else:
-            identifier = Globals.naming_style.define_name('%s_%s_tag' % (self.struct_name, self.name))
+        identifier = Globals.naming_style.define_name('%s_%s_tag' % (self.struct_name, self.name))
         return '#define %-40s %d\n' % (identifier, self.tag)
 
     def fieldlist(self):
@@ -1374,7 +1376,7 @@ class Message(ProtoElement):
                 self.descriptorsize = field_options.descriptorsize
 
             field = Field(self.name, f, field_options, self.element_path + (ProtoElement.FIELD, index), self.comments)
-            
+
             # Parse validation rules if available
             if validate_pb2:
                 try:
@@ -2002,14 +2004,6 @@ class ProtoFile:
         self.math_include_required = False
         self.validate_enabled = False  # Whether validation is enabled for this file
         
-        # Check if validation is enabled via file options
-        if validate_pb2:
-            try:
-                if fdesc.options.HasExtension(validate_pb2.validate):
-                    self.validate_enabled = fdesc.options.Extensions[validate_pb2.validate]
-            except (KeyError, AttributeError) as e:
-                # Extension not available or not properly registered
-                pass
         
         self.parse()
         self.discard_unused_automatic_types()
@@ -2066,14 +2060,6 @@ class ProtoFile:
                                  % (msgobject.name, nanopb_pb2.FieldType.Name(message_options.type)))
                 msgobject = Message(name, message, message_options, comment_path, self.comment_locations)
             
-            # Parse message-level validation rules if available
-            if validate_pb2:
-                try:
-                    if message.options.HasExtension(validate_pb2.message):
-                        msgobject.message_validate_rules = message.options.Extensions[validate_pb2.message]
-                except (KeyError, AttributeError):
-                    # Extension not available or not properly registered
-                    pass
             
             self.messages.append(msgobject)
 
@@ -2392,7 +2378,8 @@ class ProtoFile:
         else:
             has_envelope = self.detect_envelope_pattern(envelope_name) is not None
         
-        if self.services or has_envelope:
+        # Packet filter declarations are only generated when --validate is explicitly enabled.
+        if options.validate and (self.services or has_envelope):
             yield '\n'
             yield '#ifdef __cplusplus\n'
             yield 'extern "C" {\n'
@@ -2544,7 +2531,8 @@ class ProtoFile:
         else:
             has_envelope = self.detect_envelope_pattern(envelope_name) is not None
         
-        if self.services or has_envelope:
+        # Packet filter implementations are only generated when --validate flag is provided.
+        if options.validate and (self.services or has_envelope):
             yield '\n'
             yield options.libformat % ('pb_encode.h')
             yield '\n'
@@ -2741,32 +2729,24 @@ class ProtoFile:
                 full_type_name = '.' + actual_msg_name
                 msg_map[full_type_name] = msg
         
-        # Minimal output: no banner comments
         
-        # Include validation header if validation is enabled
-        validation_enabled = self.validate_enabled or (nanopb_validator and self.messages)
-        if validation_enabled:
-            # Get the base filename for the validation header
-            basename = self.fdesc.name.rsplit('.', 1)[0]
-            yield '#include "%s_validate.h"\n' % basename
-        
-        # Generate helper function to validate a message
+        # Stop immediately if --validate not set: no validation helpers or filters.
+        if not options.validate:
+            return
+
+        # Include validation header only when --validate flag is given.
+        basename = self.fdesc.name.rsplit('.', 1)[0]
+        yield '#include "%s_validate.h"\n' % basename
+
+        # Generate helper function to validate a message (only when --validate)
         yield 'static int validate_message(const pb_msgdesc_t *fields, const void *msg_struct) {\n'
-        
-        # Check if validation is available
-        if self.validate_enabled or (nanopb_validator and self.messages):
-            yield '    pb_violations_t violations = {0};\n'
-            for msg in self.messages:
-                msg_type_name = Globals.naming_style.type_name(msg.name)
-                # Use pb_validate_ prefix as per the generated validation header
-                validate_func_name = 'pb_validate_' + msg_type_name
-                
-                yield '    if (fields == &%s_msg) {\n' % msg_type_name
-                yield '        return %s((const %s *)msg_struct, &violations) ? 1 : 0;\n' % (validate_func_name, msg_type_name)
-                yield '    }\n'
-        else:
-            pass
-        
+        yield '    pb_violations_t violations = {0};\n'
+        for msg in self.messages:
+            msg_type_name = Globals.naming_style.type_name(msg.name)
+            validate_func_name = 'pb_validate_' + msg_type_name
+            yield '    if (fields == &%s_msg) {\n' % msg_type_name
+            yield '        return %s((const %s *)msg_struct, &violations) ? 1 : 0;\n' % (validate_func_name, msg_type_name)
+            yield '    }\n'
         yield '    return 1; /* Default: message is valid */\n'
         yield '}\n\n'
         

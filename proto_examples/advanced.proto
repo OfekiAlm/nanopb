@@ -1,0 +1,19 @@
+syntax = "proto3";
+package test;
+import "generator/proto/validate.proto";
+
+message AdvancedMessage {
+    //repeated int32 limited_repeated = 1 [(validate.rules).repeated.min_items = 1, (validate.rules).repeated.max_items = 10];
+    string email = 2 [(validate.rules).string.email = true];
+    oneof test_oneof {
+        int32 positive_int = 3 [(validate.rules).int32.gt = 0];
+        string non_empty_string = 4 [(validate.rules).string.min_len = 1];
+    }
+}
+
+message SimpleMessage {
+    float bounded_float = 2 [(validate.rules).float.gte = 0, (validate.rules).float.lte = 100];
+    string optional_string = 3 [(validate.rules).string.min_len = 5, (validate.rules).string.max_len = 20];
+    AdvancedMessage advanced_message = 4;
+}
+
