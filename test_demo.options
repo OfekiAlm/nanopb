@@ -1,0 +1,3 @@
+# Options file
+TestMessage.name max_size:51
+TestMessage.description max_size:200

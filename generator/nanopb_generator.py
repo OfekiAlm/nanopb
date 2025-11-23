@@ -1376,7 +1376,6 @@ class Message(ProtoElement):
                 self.descriptorsize = field_options.descriptorsize
 
             field = Field(self.name, f, field_options, self.element_path + (ProtoElement.FIELD, index), self.comments)
-
             # Parse validation rules if available
             if validate_pb2:
                 try:

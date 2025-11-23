@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+import "nanopb.proto";
+import "validate.proto";
+
+// Enable validation for this file
+option (validate.validate) = true;
+
+// Test message with various field-level validation rules
+message Person {
+    // String validation
+    string name = 1 [
+        (validate.rules).string.min_len = 1,
+        (validate.rules).string.max_len = 50,
+        (validate.rules).required = true
+    ];
+    
+    string email = 2 [
+        (validate.rules).string.min_len = 3,
+        (validate.rules).string.max_len = 100,
+        (validate.rules).string.contains = "@"
+    ];
+    
+    // Numeric validation
+    int32 age = 3 [
+        (validate.rules).int32.gte = 0,
+        (validate.rules).int32.lte = 150
+    ];
+    
+    // Enum validation
+    enum Gender {
+        UNKNOWN = 0;
+        MALE = 1;
+        FEMALE = 2;
+        OTHER = 3;
+    }
+    Gender gender = 4 [(validate.rules).enum.defined_only = true];
+    
+    // Repeated field validation
+    repeated string tags = 5 [
+        (nanopb).max_count = 10,
+        (validate.rules).repeated.min_items = 0,
+        (validate.rules).repeated.max_items = 10
+    ];
+    
+    // Optional field with required constraint
+    optional string phone = 6 [(validate.rules).string.min_len = 10];
+}
+
+// Test message with message-level validation rules
+message Address {
+    string street = 1;
+    string city = 2;
+    string state = 3;
+    string zip = 4;
+    
+    // Message-level constraint: if city is set, state must also be set
+    option (validate.message).requires = "state";
+}
+
+// Test message with oneof validation
+message Contact {
+    oneof contact_method {
+        string email = 1 [(validate.rules).string.contains = "@"];
+        string phone = 2 [(validate.rules).string.min_len = 10];
+        string address = 3;
+    }
+}
+
+// Test message with nested validation
+message Company {
+    string name = 1 [(validate.rules).required = true];
+    Person ceo = 2;  // Will validate Person rules when present
+    repeated Address offices = 3 [(nanopb).max_count = 5];
+}

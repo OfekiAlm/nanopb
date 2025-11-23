@@ -1,0 +1,142 @@
+// Test proto file to verify validation constraints support
+syntax = "proto3";
+
+package test;
+
+import "generator/proto/validate.proto";
+
+// Test all numeric types with various constraints
+message NumericConstraints {
+  // Float constraints
+  float positive_float = 1 [(validate.rules).float.gt = 0];
+  float bounded_float = 2 [(validate.rules).float.gte = 0, (validate.rules).float.lte = 100];
+  float const_float = 3 [(validate.rules).float.const = 3.14];
+  repeated float float_list = 4 [(validate.rules).float.in = 1.0, (validate.rules).float.in = 2.0, (validate.rules).float.in = 3.0];
+  
+  // Double constraints
+  double positive_double = 5 [(validate.rules).double.gt = 0];
+  double bounded_double = 6 [(validate.rules).double.gte = 0, (validate.rules).double.lte = 100];
+  
+  // Int32 constraints  
+  int32 positive_int = 7 [(validate.rules).int32.gt = 0];
+  int32 bounded_int = 8 [(validate.rules).int32.gte = -100, (validate.rules).int32.lte = 100];
+  int32 const_int = 9 [(validate.rules).int32.const = 42];
+  repeated int32 allowed_ints = 10 [(validate.rules).int32.in = 1, (validate.rules).int32.in = 2, (validate.rules).int32.in = 3];
+  
+  // Int64 constraints
+  int64 positive_long = 11 [(validate.rules).int64.gt = 0];
+  int64 bounded_long = 12 [(validate.rules).int64.gte = -1000, (validate.rules).int64.lte = 1000];
+  
+  // UInt32 constraints
+  uint32 limited_uint = 13 [(validate.rules).uint32.lt = 1000];
+  uint32 bounded_uint = 14 [(validate.rules).uint32.gte = 10, (validate.rules).uint32.lte = 100];
+  
+  // UInt64 constraints
+  uint64 limited_ulong = 15 [(validate.rules).uint64.lt = 1000000];
+  
+  // SInt32 constraints
+  sint32 signed_int = 16 [(validate.rules).sint32.gte = -50, (validate.rules).sint32.lte = 50];
+  
+  // SInt64 constraints  
+  sint64 signed_long = 17 [(validate.rules).sint64.gte = -1000, (validate.rules).sint64.lte = 1000];
+  
+  // Fixed32 constraints
+  fixed32 fixed_val = 18 [(validate.rules).fixed32.gt = 0, (validate.rules).fixed32.lt = 100];
+  
+  // Fixed64 constraints
+  fixed64 fixed_long = 19 [(validate.rules).fixed64.gt = 0];
+  
+  // SFixed32 constraints
+  sfixed32 sfixed_val = 20 [(validate.rules).sfixed32.gte = -100, (validate.rules).sfixed32.lte = 100];
+  
+  // SFixed64 constraints
+  sfixed64 sfixed_long = 21 [(validate.rules).sfixed64.gte = -1000, (validate.rules).sfixed64.lte = 1000];
+}
+
+// Test string constraints
+message StringConstraints {
+  string required_string = 1 [(validate.rules).required = true];
+  string min_len_string = 2 [(validate.rules).string.min_len = 3];
+  string max_len_string = 3 [(validate.rules).string.max_len = 10];
+  string bounded_string = 4 [(validate.rules).string.min_len = 2, (validate.rules).string.max_len = 20];
+  string const_string = 5 [(validate.rules).string.const = "hello"];
+  string prefix_string = 6 [(validate.rules).string.prefix = "test_"];
+  string suffix_string = 7 [(validate.rules).string.suffix = "_end"];
+  string contains_string = 8 [(validate.rules).string.contains = "middle"];
+  string ascii_string = 9 [(validate.rules).string.ascii = true];
+  repeated string allowed_strings = 10 [(validate.rules).string.in = "option1", (validate.rules).string.in = "option2"];
+  string email = 11 [(validate.rules).string.min_len = 5, (validate.rules).string.max_len = 100, (validate.rules).string.contains = "@"];
+}
+
+// Test bytes constraints
+message BytesConstraints {
+  bytes min_len_bytes = 1 [(validate.rules).bytes.min_len = 4];
+  bytes max_len_bytes = 2 [(validate.rules).bytes.max_len = 32];
+  bytes const_bytes = 3 [(validate.rules).bytes.const = "test"];
+  bytes prefix_bytes = 4 [(validate.rules).bytes.prefix = "header"];
+  bytes suffix_bytes = 5 [(validate.rules).bytes.suffix = "footer"];
+  bytes contains_bytes = 6 [(validate.rules).bytes.contains = "key"];
+}
+
+// Test bool constraints
+message BoolConstraints {
+  bool must_be_true = 1 [(validate.rules).bool.const = true];
+  bool must_be_false = 2 [(validate.rules).bool.const = false];
+  bool required_bool = 3 [(validate.rules).required = true];
+}
+
+// Test enum constraints
+enum TestEnum {
+  UNKNOWN = 0;
+  OPTION_A = 1;
+  OPTION_B = 2;
+  OPTION_C = 3;
+}
+
+message EnumConstraints {
+  TestEnum defined_only_enum = 1 [(validate.rules).enum.defined_only = true];
+  TestEnum const_enum = 2 [(validate.rules).enum.const = 1]; // OPTION_A
+  repeated TestEnum allowed_enums = 3 [(validate.rules).enum.in = 1, (validate.rules).enum.in = 2]; // A or B only
+}
+
+// Test repeated field constraints
+message RepeatedConstraints {
+  repeated string min_items_list = 1 [(validate.rules).repeated.min_items = 2];
+  repeated string max_items_list = 2 [(validate.rules).repeated.max_items = 5];
+  repeated string bounded_list = 3 [(validate.rules).repeated.min_items = 1, (validate.rules).repeated.max_items = 10];
+  repeated int32 unique_ints = 4 [(validate.rules).repeated.unique = true];
+}
+
+// Test map constraints
+message MapConstraints {
+  map<string, int32> min_pairs_map = 1 [(validate.rules).map.min_pairs = 1];
+  map<string, int32> max_pairs_map = 2 [(validate.rules).map.max_pairs = 10];
+  map<string, string> no_sparse_map = 3 [(validate.rules).map.no_sparse = true];
+}
+
+// Test oneof constraints
+message OneofConstraints {
+  oneof test_oneof {
+    string option_a = 1 [(validate.rules).oneof_required = true];
+    int32 option_b = 2;
+    bool option_c = 3;
+  }
+}
+
+// Test message-level constraints
+message MessageConstraints {
+  option (validate.message) = {
+    requires: "field_a"
+    mutex: {fields: "field_b" fields: "field_c"}
+    at_least: {n: 1 fields: "field_d" fields: "field_e"}
+  };
+  
+  optional string field_a = 1;
+  optional string field_b = 2;
+  optional string field_c = 3;
+  optional string field_d = 4;
+  optional string field_e = 5;
+}
+
+// Enable validation for the entire file
+option (validate.validate) = true;
