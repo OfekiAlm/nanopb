@@ -1,0 +1,14 @@
+# Options for validate.proto to avoid C keyword conflicts
+# Rename fields that conflict with C keywords
+
+*Rules.const       type:FT_IGNORE
+*Rules.float       type:FT_IGNORE  
+*Rules.double      type:FT_IGNORE
+*Rules.bool        type:FT_IGNORE
+*Rules.enum        type:FT_IGNORE
+*Rules.in          type:FT_IGNORE
+*Rules.not_in      type:FT_IGNORE
+
+# We don't actually need the validate.pb.h structures in C code
+# The validate.proto is only used by the Python generator
+* type:FT_IGNORE
