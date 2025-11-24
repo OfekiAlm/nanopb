@@ -17,6 +17,3 @@ Contact.address     max_size:201
 
 Company.name        max_size:101
 Company.offices     max_count:5
-
-# Enable validation for the whole file
-* validate:true
