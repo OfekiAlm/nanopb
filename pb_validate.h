@@ -79,6 +79,138 @@ extern "C"
         bool early_exit;
     } pb_validate_context_t;
 
+        /* Convenience macros for generated validators
+         *
+         * These allow the code generator to emit compact, macro-based
+         * validation code instead of repeating the same boilerplate in
+         * every generated *_validate.c file, similar in spirit to the
+         * PB_BIND macros used for field descriptors.
+         */
+
+    /* Begin / end of a validate function body.
+     * Usage:
+     *   bool pb_validate_Foo(const Foo *msg, pb_violations_t *violations)
+     *   {
+     *       PB_VALIDATE_BEGIN(ctx, Foo, msg, violations);
+     *       ... field checks ...
+     *       PB_VALIDATE_END(ctx, violations);
+     *   }
+     */
+    #define PB_VALIDATE_BEGIN(ctx_var, MsgType, msg_ptr, violations_ptr) \
+        pb_validate_context_t ctx_var = {0};                             \
+        ctx_var.violations = (violations_ptr);                           \
+        ctx_var.early_exit = PB_VALIDATE_EARLY_EXIT;                     \
+        if (!(msg_ptr)) return false
+
+    #define PB_VALIDATE_END(ctx_var, violations_ptr) \
+        (void)(ctx_var);                                \
+        return !pb_violations_has_any(violations_ptr)
+
+    /* Per-field context helpers. These wrap push/pop of the field name
+     * into the validation context path buffer.
+     */
+    #define PB_VALIDATE_FIELD_BEGIN(ctx_var, field_name_str)                 \
+        if (!pb_validate_context_push_field(&(ctx_var), (field_name_str)))   \
+            return false
+
+    #define PB_VALIDATE_FIELD_END(ctx_var) \
+        pb_validate_context_pop_field(&(ctx_var))
+
+    /* Helper for guarding checks behind has_XXX flag for OPTIONAL fields.
+     * The generator expands FIELD_RULES_ENUM to the field.rules symbol when
+     * it knows the field is optional, so that checks are skipped when the
+     * field is unset.
+     */
+    #define PB_VALIDATE_IF_OPTIONAL(has_flag_expr, CODE) do { \
+            if (has_flag_expr) {                              \
+                CODE                                          \
+            }                                                 \
+        } while (0)
+
+    /* Generic numeric comparison helper. The generator supplies the
+     * concrete C type, validator function and rule enum.
+     */
+    #define PB_VALIDATE_NUMERIC_GENERIC(ctx_var, msg_ptr, field_name, CTYPE, FUNC, RULE_ENUM, VALUE_EXPR, CONSTRAINT_ID) \
+        do {                                                                                                            \
+            CTYPE __pb_expected = (CTYPE)(VALUE_EXPR);                                                                  \
+            if (!FUNC((msg_ptr)->field_name, &__pb_expected, (RULE_ENUM))) {                                            \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "Value constraint failed"); \
+                if ((ctx_var).early_exit) return false;                                                                 \
+            }                                                                                                           \
+        } while (0)
+
+    /* String length helpers for normal (non-callback) string fields. */
+    #define PB_VALIDATE_STR_MIN_LEN(ctx_var, msg_ptr, field_name, MIN_LEN, CONSTRAINT_ID)                      \
+        do {                                                                                                   \
+            uint32_t __pb_min_len_v = (uint32_t)(MIN_LEN);                                                     \
+            if (!pb_validate_string((msg_ptr)->field_name, (pb_size_t)strlen((msg_ptr)->field_name),          \
+                                    &__pb_min_len_v, PB_VALIDATE_RULE_MIN_LEN)) {                              \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "String too short"); \
+                if ((ctx_var).early_exit) return false;                                                        \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_STR_MAX_LEN(ctx_var, msg_ptr, field_name, MAX_LEN, CONSTRAINT_ID)                      \
+        do {                                                                                                   \
+            uint32_t __pb_max_len_v = (uint32_t)(MAX_LEN);                                                     \
+            if (!pb_validate_string((msg_ptr)->field_name, (pb_size_t)strlen((msg_ptr)->field_name),          \
+                                    &__pb_max_len_v, PB_VALIDATE_RULE_MAX_LEN)) {                              \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "String too long"); \
+                if ((ctx_var).early_exit) return false;                                                        \
+            }                                                                                                  \
+        } while (0)
+
+    /* String pattern helpers for normal (non-callback) string fields. */
+    #define PB_VALIDATE_STR_PREFIX(ctx_var, msg_ptr, field_name, PREFIX_STR, CONSTRAINT_ID)                     \
+        do {                                                                                                    \
+            const char *__pb_prefix = (PREFIX_STR);                                                             \
+            if (!pb_validate_string((msg_ptr)->field_name, (pb_size_t)strlen((msg_ptr)->field_name),           \
+                                    __pb_prefix, PB_VALIDATE_RULE_PREFIX)) {                                   \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),                 \
+                                  "String must start with specified prefix");                                 \
+                if ((ctx_var).early_exit) return false;                                                         \
+            }                                                                                                   \
+        } while (0)
+
+    #define PB_VALIDATE_STR_SUFFIX(ctx_var, msg_ptr, field_name, SUFFIX_STR, CONSTRAINT_ID)                     \
+        do {                                                                                                    \
+            const char *__pb_suffix = (SUFFIX_STR);                                                             \
+            if (!pb_validate_string((msg_ptr)->field_name, (pb_size_t)strlen((msg_ptr)->field_name),           \
+                                    __pb_suffix, PB_VALIDATE_RULE_SUFFIX)) {                                   \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),                 \
+                                  "String must end with specified suffix");                                   \
+                if ((ctx_var).early_exit) return false;                                                         \
+            }                                                                                                   \
+        } while (0)
+
+    #define PB_VALIDATE_STR_CONTAINS(ctx_var, msg_ptr, field_name, NEEDLE_STR, CONSTRAINT_ID)                   \
+        do {                                                                                                    \
+            const char *__pb_needle = (NEEDLE_STR);                                                             \
+            if (!pb_validate_string((msg_ptr)->field_name, (pb_size_t)strlen((msg_ptr)->field_name),           \
+                                    __pb_needle, PB_VALIDATE_RULE_CONTAINS)) {                                 \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),                 \
+                                  "String must contain specified substring");                                  \
+                if ((ctx_var).early_exit) return false;                                                         \
+            }                                                                                                   \
+        } while (0)
+
+    /* Repeated field size helpers working on *_count naming convention. */
+    #define PB_VALIDATE_MIN_ITEMS(ctx_var, msg_ptr, field_name, MIN_ITEMS, CONSTRAINT_ID)                      \
+        do {                                                                                                   \
+            if (!pb_validate_min_items((msg_ptr)->field_name##_count, (MIN_ITEMS))) {                          \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "Too few items"); \
+                if ((ctx_var).early_exit) return false;                                                        \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_MAX_ITEMS(ctx_var, msg_ptr, field_name, MAX_ITEMS, CONSTRAINT_ID)                      \
+        do {                                                                                                   \
+            if (!pb_validate_max_items((msg_ptr)->field_name##_count, (MAX_ITEMS))) {                          \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "Too many items"); \
+                if ((ctx_var).early_exit) return false;                                                        \
+            }                                                                                                  \
+        } while (0)
+
     /* Rule types for internal use */
     typedef enum
     {

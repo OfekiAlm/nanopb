@@ -463,12 +463,11 @@ class ValidatorGenerator:
         """Generate validation source file content."""
         if not self.validators:
             return
-        
         # Extract base name without .proto extension
         base_name = self.proto_file.fdesc.name
         if base_name.endswith('.proto'):
             base_name = base_name[:-6]
-        
+
         yield '/* Validation implementation for %s */\n' % self.proto_file.fdesc.name
         yield '#include "%s_validate.h"\n' % base_name
         yield '#include <string.h>\n'
@@ -503,21 +502,14 @@ class ValidatorGenerator:
                         yield '       - %s\n' % field
                     yield '    */\n'
                     yield '\n'
-            yield '    if (!msg) return false;\n'
-            yield '    \n'
-            
-            
-            
-            yield '    pb_validate_context_t ctx = {0};\n'
-            yield '    ctx.violations = violations;\n'
-            yield '    ctx.early_exit = PB_VALIDATE_EARLY_EXIT;\n'
-            yield '    \n'
+            yield '    PB_VALIDATE_BEGIN(ctx, %s, msg, violations);\n' % struct_name
+            yield '\n'
             
             # Generate field validations
             for field_name, field_validator in validator.field_validators.items():
                 field = field_validator.field
                 yield '    /* Validate field: %s */\n' % field_name
-                yield '    if (!pb_validate_context_push_field(&ctx, "%s")) return false;\n' % field_name
+                yield '    PB_VALIDATE_FIELD_BEGIN(ctx, "%s");\n' % field_name
                 
                 for rule in field_validator.rules:
                     yield '    {\n'
@@ -565,7 +557,7 @@ class ValidatorGenerator:
                     # If field shape is unexpected, skip recursion silently
                     pass
                 
-                yield '    pb_validate_context_pop_field(&ctx);\n'
+                yield '    PB_VALIDATE_FIELD_END(ctx);\n'
                 yield '    \n'
             
             # Also recurse into message-typed fields that have no field-level rules
@@ -592,7 +584,7 @@ class ValidatorGenerator:
                     rules = getattr(f, 'rules', None)
                     # Open path context
                     yield '    /* Validate field: %s */\n' % fname
-                    yield '    if (!pb_validate_context_push_field(&ctx, "%s")) return false;\n' % fname
+                    yield '    PB_VALIDATE_FIELD_BEGIN(ctx, "%s");\n' % fname
                     if allocation == 'POINTER':
                         yield '    {\n'
                         yield '        /* Recurse into submessage */\n'
@@ -616,7 +608,7 @@ class ValidatorGenerator:
                             yield '        bool ok_nested = %s(&msg->%s, violations);\n' % (sub_func, fname)
                             yield '        if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }\n'
                             yield '    }\n'
-                    yield '    pb_validate_context_pop_field(&ctx);\n'
+                    yield '    PB_VALIDATE_FIELD_END(ctx);\n'
                     yield '    \n'
                 except Exception:
                     # Skip if field metadata is unexpected
@@ -628,7 +620,7 @@ class ValidatorGenerator:
                 yield self._generate_message_rule_check(validator.message, rule)
                 yield '    \n'
             
-            yield '    return !pb_violations_has_any(violations);\n'
+            yield '    PB_VALIDATE_END(ctx, violations);\n'
             yield '}\n'
             yield '\n'
     
@@ -671,7 +663,7 @@ class ValidatorGenerator:
         }
         constraint_prefix = rule.constraint_id.split('.', 1)[0]
         validator_func, ctype = type_map_func.get(constraint_prefix, (None, None))
-        
+
         if not validator_func:
             return ''
 
@@ -687,23 +679,10 @@ class ValidatorGenerator:
         if not rule_enum:
             return ''
 
-        if constraint_prefix in ('string', 'bytes'):
-             return ''
-
-        if constraint_prefix == 'bool':
-            init_line = '%s expected = %s;' % (ctype, 'true' if bool(value) else 'false')
-        else:
-            init_line = '%s expected = (%s)%s;' % (ctype, ctype, value)
-            
+        # Use PB_VALIDATE_NUMERIC_GENERIC macro instead of inlining logic
         body = (
-            '        {\n'
-            '            %s\n'
-            '            if (!%s(msg->%s, &expected, %s)) {\n'
-            '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value constraint failed");\n'
-            '                if (ctx.early_exit) return false;\n'
-            '            }\n'
-            '        }\n'
-        ) % (init_line, validator_func, field.name, rule_enum, rule.constraint_id)
+            '        PB_VALIDATE_NUMERIC_GENERIC(ctx, msg, %s, %s, %s, %s, %s, "%s");\n'
+        ) % (field.name, ctype, validator_func, rule_enum, value, rule.constraint_id)
         return self._wrap_optional(field, body)
 
     def _gen_in(self, field: Any, rule: ValidationRule) -> str:
@@ -795,17 +774,12 @@ class ValidatorGenerator:
                     '            }\n'
                     '        }\n'
                 ) % (field_name, min_len, rule.constraint_id)
-            return self._wrap_optional(field, 
-                '        {\n'
-                '            uint32_t min_len_v = %d;\n'
-                '            if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), &min_len_v, PB_VALIDATE_RULE_MIN_LEN)) {\n'
-                '                pb_violations_add(violations, ctx.path_buffer, "%s", "String too short");\n'
-                '                if (ctx.early_exit) return false;\n'
-                '            }\n'
-                '        }\n' % (min_len, field_name, field_name, rule.constraint_id)
+            # Use macro helper for normal string fields
+            return self._wrap_optional(field,
+                '        PB_VALIDATE_STR_MIN_LEN(ctx, msg, %s, %d, "%s");\n' % (field_name, min_len, rule.constraint_id)
             )
         else:  # bytes
-            return self._wrap_optional(field, 
+            return self._wrap_optional(field,
                 '        if (msg->%s.size < %d) {\n'
                 '            pb_violations_add(violations, ctx.path_buffer, "%s", "Bytes too short");\n'
                 '            if (ctx.early_exit) return false;\n'
@@ -829,17 +803,12 @@ class ValidatorGenerator:
                     '            }\n'
                     '        }\n'
                 ) % (field_name, max_len, rule.constraint_id)
-            return self._wrap_optional(field, 
-                '        {\n'
-                '            uint32_t max_len_v = %d;\n'
-                '            if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), &max_len_v, PB_VALIDATE_RULE_MAX_LEN)) {\n'
-                '                pb_violations_add(violations, ctx.path_buffer, "%s", "String too long");\n'
-                '                if (ctx.early_exit) return false;\n'
-                '            }\n'
-                '        }\n' % (max_len, field_name, field_name, rule.constraint_id)
+            # Use macro helper for normal string fields
+            return self._wrap_optional(field,
+                '        PB_VALIDATE_STR_MAX_LEN(ctx, msg, %s, %d, "%s");\n' % (field_name, max_len, rule.constraint_id)
             )
         else:  # bytes
-            return self._wrap_optional(field, 
+            return self._wrap_optional(field,
                 '        if (msg->%s.size > %d) {\n'
                 '            pb_violations_add(violations, ctx.path_buffer, "%s", "Bytes too long");\n'
                 '            if (ctx.early_exit) return false;\n'
@@ -1047,19 +1016,13 @@ class ValidatorGenerator:
     def _gen_min_items(self, field: Any, rule: ValidationRule) -> str:
         min_items = rule.params.get('value', 0)
         return (
-            '        if (!pb_validate_min_items(msg->%s_count, %d)) {\n'
-            '            pb_violations_add(violations, ctx.path_buffer, "%s", "Too few items");\n'
-            '            if (ctx.early_exit) return false;\n'
-            '        }\n'
+            '        PB_VALIDATE_MIN_ITEMS(ctx, msg, %s, %d, "%s");\n'
         ) % (field.name, min_items, rule.constraint_id)
 
     def _gen_max_items(self, field: Any, rule: ValidationRule) -> str:
         max_items = rule.params.get('value', 0)
         return (
-            '        if (!pb_validate_max_items(msg->%s_count, %d)) {\n'
-            '            pb_violations_add(violations, ctx.path_buffer, "%s", "Too many items");\n'
-            '            if (ctx.early_exit) return false;\n'
-            '        }\n'
+            '        PB_VALIDATE_MAX_ITEMS(ctx, msg, %s, %d, "%s");\n'
         ) % (field.name, max_items, rule.constraint_id)
 
     def _gen_unique(self, field: Any, rule: ValidationRule) -> str:

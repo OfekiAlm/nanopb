@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <ctype.h>
+#include <stdio.h>
 
 static bool is_valid_email(const char *s, size_t len);
 static bool is_valid_hostname(const char *s, size_t len);
