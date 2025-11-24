@@ -15,8 +15,47 @@ env.Append(PROTOCFLAGS = ['--nanopb_opt=--validate'])
 # Copy stub validate.pb.h (validate.proto types are only used by Python generator)
 env.Command("validate.pb.h", "validate_stub.pb.h", Copy("$TARGET", "$SOURCE"))
 
-# Generate nanopb files with validation
-env.NanopbProto("validation_test")
+# Generate nanopb files with validation  
+# We manually specify all output files since NanopbProto doesn't know about _validate files
+proto_outputs = [
+    "validation_test.pb.c",
+    "validation_test.pb.h",
+    "validation_test_validate.c",
+    "validation_test_validate.h"
+]
+
+def run_protoc(target, source, env):
+    """Run protoc to generate proto files with validation"""
+    import os, subprocess
+    
+    # Change to build directory
+    build_dir = os.path.dirname(str(target[0]))
+    proto_file = "validation_test.proto"
+    
+    cmd = [
+        str(env['PROTOC']),
+        '--nanopb_opt=--validate',
+        '-I.',
+        '-I../..',
+        '-I' + os.path.join(str(env['NANOPB']), 'generator', 'proto'),
+        '-I' + os.path.join(str(env['NANOPB']), 'generator'),
+        '--nanopb_out=--source-extension=.c,--header-extension=.h:.',
+        proto_file
+    ]
+    
+    print("Running:", ' '.join(cmd))
+    print("In directory:", build_dir)
+    result = subprocess.call(cmd, cwd=build_dir)
+    return result
+
+proto_cmd = env.Command(
+    proto_outputs,
+    ["validation_test.proto", "SConscript"],
+    run_protoc
+)
+
+if env.WhereIs(str(env['NANOPB']) + '/tests/validation/validation_test.options'):
+    env.Depends(proto_cmd, "validation_test.options")
 
 # Build the test program - link against validation runtime from parent directory
 test = env.Program(["test_validation.c", "validation_test.pb.c", "validation_test_validate.c", 
