@@ -1,0 +1,285 @@
+// This file contains custom option extensions for declarative validation
+// constraints in nanopb protocol buffers library.
+//
+// These options allow users to define validation rules directly in their
+// .proto files, which will be enforced through generated C validation code.
+//
+// Example usage:
+//   message User {
+//     string email = 1 [(validate.rules).string.min_len = 1, (validate.rules).string.max_len = 255];
+//     int32 age = 2 [(validate.rules).int32.gte = 0, (validate.rules).int32.lte = 150];
+//   }
+
+syntax = "proto3";
+
+package validate;
+
+import "google/protobuf/descriptor.proto";
+
+option java_package = "fi.kapsi.koti.jpa.nanopb.validate";
+
+// FieldRules encapsulates all validation rules for a single field
+message FieldRules {
+  // Type-specific rules (only one should be set per field)
+  optional FloatRules float = 1;
+  optional DoubleRules double = 2;
+  optional Int32Rules int32 = 3;
+  optional Int64Rules int64 = 4;
+  optional UInt32Rules uint32 = 5;
+  optional UInt64Rules uint64 = 6;
+  optional SInt32Rules sint32 = 7;
+  optional SInt64Rules sint64 = 8;
+  optional Fixed32Rules fixed32 = 9;
+  optional Fixed64Rules fixed64 = 10;
+  optional SFixed32Rules sfixed32 = 11;
+  optional SFixed64Rules sfixed64 = 12;
+  optional BoolRules bool = 13;
+  optional StringRules string = 14;
+  optional BytesRules bytes = 15;
+  optional EnumRules enum = 16;
+  optional RepeatedRules repeated = 17;
+  optional MapRules map = 18;
+  optional AnyRules any = 19;  // Rules for google.protobuf.Any fields
+  
+  // Field presence rules
+  optional bool required = 22; // Field must be set (for optional fields)
+  optional bool oneof_required = 23; // This oneof arm must be selected if any in the oneof is
+}
+
+// Numeric rules for float fields
+message FloatRules {
+  optional float const = 1;    // Value must equal this
+  optional float lt = 2;       // Value must be less than this
+  optional float lte = 3;      // Value must be less than or equal to this
+  optional float gt = 4;       // Value must be greater than this
+  optional float gte = 5;      // Value must be greater than or equal to this
+  repeated float in = 6;       // Value must be in this list
+  repeated float not_in = 7;   // Value must not be in this list
+}
+
+// Numeric rules for double fields
+message DoubleRules {
+  optional double const = 1;
+  optional double lt = 2;
+  optional double lte = 3;
+  optional double gt = 4;
+  optional double gte = 5;
+  repeated double in = 6;
+  repeated double not_in = 7;
+}
+
+// Numeric rules for int32 fields
+message Int32Rules {
+  optional int32 const = 1;
+  optional int32 lt = 2;
+  optional int32 lte = 3;
+  optional int32 gt = 4;
+  optional int32 gte = 5;
+  repeated int32 in = 6;
+  repeated int32 not_in = 7;
+}
+
+// Numeric rules for int64 fields
+message Int64Rules {
+  optional int64 const = 1;
+  optional int64 lt = 2;
+  optional int64 lte = 3;
+  optional int64 gt = 4;
+  optional int64 gte = 5;
+  repeated int64 in = 6;
+  repeated int64 not_in = 7;
+}
+
+// Numeric rules for uint32 fields
+message UInt32Rules {
+  optional uint32 const = 1;
+  optional uint32 lt = 2;
+  optional uint32 lte = 3;
+  optional uint32 gt = 4;
+  optional uint32 gte = 5;
+  repeated uint32 in = 6;
+  repeated uint32 not_in = 7;
+}
+
+// Numeric rules for uint64 fields
+message UInt64Rules {
+  optional uint64 const = 1;
+  optional uint64 lt = 2;
+  optional uint64 lte = 3;
+  optional uint64 gt = 4;
+  optional uint64 gte = 5;
+  repeated uint64 in = 6;
+  repeated uint64 not_in = 7;
+}
+
+// Numeric rules for sint32 fields
+message SInt32Rules {
+  optional sint32 const = 1;
+  optional sint32 lt = 2;
+  optional sint32 lte = 3;
+  optional sint32 gt = 4;
+  optional sint32 gte = 5;
+  repeated sint32 in = 6;
+  repeated sint32 not_in = 7;
+}
+
+// Numeric rules for sint64 fields
+message SInt64Rules {
+  optional sint64 const = 1;
+  optional sint64 lt = 2;
+  optional sint64 lte = 3;
+  optional sint64 gt = 4;
+  optional sint64 gte = 5;
+  repeated sint64 in = 6;
+  repeated sint64 not_in = 7;
+}
+
+// Numeric rules for fixed32 fields
+message Fixed32Rules {
+  optional fixed32 const = 1;
+  optional fixed32 lt = 2;
+  optional fixed32 lte = 3;
+  optional fixed32 gt = 4;
+  optional fixed32 gte = 5;
+  repeated fixed32 in = 6;
+  repeated fixed32 not_in = 7;
+}
+
+// Numeric rules for fixed64 fields
+message Fixed64Rules {
+  optional fixed64 const = 1;
+  optional fixed64 lt = 2;
+  optional fixed64 lte = 3;
+  optional fixed64 gt = 4;
+  optional fixed64 gte = 5;
+  repeated fixed64 in = 6;
+  repeated fixed64 not_in = 7;
+}
+
+// Numeric rules for sfixed32 fields
+message SFixed32Rules {
+  optional sfixed32 const = 1;
+  optional sfixed32 lt = 2;
+  optional sfixed32 lte = 3;
+  optional sfixed32 gt = 4;
+  optional sfixed32 gte = 5;
+  repeated sfixed32 in = 6;
+  repeated sfixed32 not_in = 7;
+}
+
+// Numeric rules for sfixed64 fields
+message SFixed64Rules {
+  optional sfixed64 const = 1;
+  optional sfixed64 lt = 2;
+  optional sfixed64 lte = 3;
+  optional sfixed64 gt = 4;
+  optional sfixed64 gte = 5;
+  repeated sfixed64 in = 6;
+  repeated sfixed64 not_in = 7;
+}
+
+// Rules for bool fields
+message BoolRules {
+  optional bool const = 1; // Value must equal this
+}
+
+// Rules for string fields
+message StringRules {
+  optional string const = 1;         // Value must equal this
+  optional uint32 min_len = 2;       // Minimum length in characters
+  optional uint32 max_len = 3;       // Maximum length in characters
+  optional uint32 min_bytes = 4;     // Minimum length in bytes
+  optional uint32 max_bytes = 5;     // Maximum length in bytes
+  optional string pattern = 6;       // Regex pattern (not implemented in C runtime)
+  optional string prefix = 7;        // Value must start with this
+  optional string suffix = 8;        // Value must end with this
+  optional string contains = 9;      // Value must contain this substring
+  repeated string in = 10;           // Value must be in this list
+  repeated string not_in = 11;       // Value must not be in this list
+  optional bool ascii = 12;          // Value must be ASCII only
+  optional bool email = 13;          // Value must be a valid email
+  optional bool hostname = 14;       // Value must be a valid hostname
+  optional bool ip = 15;             // Value must be a valid IP (v4 or v6)
+  optional bool ipv4 = 16;           // Value must be a valid IPv4
+  optional bool ipv6 = 17;           // Value must be a valid IPv6
+}
+
+// Rules for bytes fields
+message BytesRules {
+  optional bytes const = 1;          // Value must equal this
+  optional uint32 min_len = 2;       // Minimum length in bytes
+  optional uint32 max_len = 3;       // Maximum length in bytes
+  optional string pattern = 4;       // Regex pattern (not implemented in C runtime)
+  optional bytes prefix = 5;         // Value must start with these bytes
+  optional bytes suffix = 6;         // Value must end with these bytes
+  optional bytes contains = 7;       // Value must contain these bytes
+  repeated bytes in = 8;             // Value must be in this list
+  repeated bytes not_in = 9;         // Value must not be in this list
+}
+
+// Rules for enum fields
+message EnumRules {
+  optional int32 const = 1;          // Value must equal this
+  optional bool defined_only = 2;    // Value must be a defined enum value
+  repeated int32 in = 3;             // Value must be in this list
+  repeated int32 not_in = 4;         // Value must not be in this list
+}
+
+// Rules for repeated fields
+message RepeatedRules {
+  optional uint32 min_items = 1;     // Minimum number of items
+  optional uint32 max_items = 2;     // Maximum number of items
+  optional bool unique = 3;          // All items must be unique
+  // Note: Per-item validation rules are not supported to avoid circular dependencies
+}
+
+// Rules for map fields
+message MapRules {
+  optional uint32 min_pairs = 1;     // Minimum number of key-value pairs
+  optional uint32 max_pairs = 2;     // Maximum number of key-value pairs
+  optional bool no_sparse = 3;       // Disallow keys with empty values
+  // Note: Per-key/value validation rules are not supported to avoid circular dependencies
+}
+
+// Rules for google.protobuf.Any fields
+message AnyRules {
+  repeated string in = 1;            // type_url must be in this list
+  repeated string not_in = 2;        // type_url must not be in this list
+}
+
+// Note: Duration and Timestamp validation rules are not implemented
+// in the initial version to keep the implementation simple and avoid
+// complex dependencies.
+
+// MessageRules defines validation rules that apply at the message level
+message MessageRules {
+  // Cross-field constraints
+  repeated string requires = 1;      // If this message is set, these fields must also be set
+  repeated FieldGroup mutex = 2;     // Mutually exclusive field groups
+  repeated AtLeastRule at_least = 3; // At least N of the specified fields must be set
+}
+
+// FieldGroup represents a group of field names
+message FieldGroup {
+  repeated string fields = 1;
+}
+
+// AtLeastRule requires at least N fields from the group to be set
+message AtLeastRule {
+  uint32 n = 1;                      // Minimum number of fields that must be set
+  repeated string fields = 2;        // Field names in the group
+}
+
+// Extension points for options
+// Using extension number 1011 to avoid conflict with nanopb's 1010
+extend google.protobuf.FieldOptions {
+  optional FieldRules rules = 1011;
+}
+
+extend google.protobuf.MessageOptions {
+  optional MessageRules message = 1011;
+}
+
+extend google.protobuf.FileOptions {
+  optional bool validate = 1011; // Enable validation for entire file
+}
