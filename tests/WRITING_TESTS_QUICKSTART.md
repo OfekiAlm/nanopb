@@ -43,11 +43,12 @@ MyMessage.name max_size:64
 **encode_test.c**:
 ```c
 #include <stdio.h>
+#include <string.h>
 #include <pb_encode.h>
 #include "my_message.pb.h"
 #include "test_helpers.h"
 
-int main(int argc, char **argv) {
+int main(void) {
     uint8_t buffer[MyMessage_size];
     pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
     
@@ -76,7 +77,7 @@ int main(int argc, char **argv) {
 #include "my_message.pb.h"
 #include "test_helpers.h"
 
-int main(int argc, char **argv) {
+int main(void) {
     uint8_t buffer[MyMessage_size];
     MyMessage msg = MyMessage_init_zero;
     
