@@ -6,6 +6,9 @@ This document describes the internal architecture of `nanopb_generator.py`, the 
 
 - [Overview](#overview)
 - [Execution Flow](#execution-flow)
+- [Proto Data Extraction: From .proto to Python Objects](#proto-data-extraction-from-proto-to-python-objects)
+- [How Nanopb Handles Custom Options](#how-nanopb-handles-custom-options)
+- [Adding Your Own Custom Options](#adding-your-own-custom-options)
 - [Core Classes](#core-classes)
 - [Code Generation Pipeline](#code-generation-pipeline)
 - [Key Algorithms](#key-algorithms)
@@ -79,6 +82,375 @@ The generator can be invoked in two modes:
 │  - Generate .pb.c        │
 └──────────────────────────┘
 ```
+
+## Proto Data Extraction: From .proto to Python Objects
+
+Understanding how `.proto` files become Python objects is fundamental to working with the generator.
+
+### Step 1: Protoc Parses .proto Files
+
+When you run the generator, it first invokes Google's `protoc` compiler to parse your `.proto` files:
+
+```python
+# From main_cli() - simplified
+args = ["protoc"] + include_path
+args += ['--include_imports', '--include_source_info', '-o' + tmpname, filename]
+status = invoke_protoc(args)  # Calls protoc via grpcio-tools or system binary
+```
+
+The `invoke_protoc()` function (in `proto/_utils.py`) handles the protoc invocation:
+
+```python
+def invoke_protoc(argv):
+    """
+    Invoke protoc using grpcio-tools if available, 
+    otherwise fall back to system protoc.
+    """
+    # Add include paths for standard protos
+    for incpath in get_proto_builtin_include_path():
+        argv.append('-I' + incpath)
+
+    if has_grpcio_protoc():
+        import grpc_tools.protoc as protoc
+        return protoc.main(argv)
+    else:
+        return subprocess.call(argv)
+```
+
+**Output:** Protoc produces a binary `FileDescriptorSet` (a serialized protobuf message describing your `.proto` file).
+
+### Step 2: Load FileDescriptorSet into Python
+
+The binary descriptor is loaded using Google's protobuf Python library:
+
+```python
+# Load the binary descriptor
+data = open(tmpname, 'rb').read()
+
+# Parse into Python objects using descriptor_pb2
+fdescs = descriptor.FileDescriptorSet.FromString(data).file
+```
+
+The `FileDescriptorSet` is defined in `google/protobuf/descriptor.proto` and contains:
+- `FileDescriptorProto` for each `.proto` file
+- `MessageDescriptorProto` for each message
+- `FieldDescriptorProto` for each field
+- `EnumDescriptorProto` for each enum
+
+### Step 3: Python Descriptor Objects
+
+After parsing, you have Python objects representing your proto definitions:
+
+```python
+# fdesc is a FileDescriptorProto
+fdesc.name           # "myfile.proto"
+fdesc.package        # "mypackage"
+fdesc.message_type   # List of DescriptorProto (messages)
+fdesc.enum_type      # List of EnumDescriptorProto (enums)
+fdesc.options        # FileOptions (including custom extensions)
+
+# For each message
+for msg in fdesc.message_type:
+    msg.name         # "MyMessage"
+    msg.field        # List of FieldDescriptorProto
+    msg.nested_type  # Nested messages
+    msg.enum_type    # Nested enums
+    msg.options      # MessageOptions
+
+# For each field
+for field in msg.field:
+    field.name       # "my_field"
+    field.number     # 1 (tag number)
+    field.type       # TYPE_INT32, TYPE_STRING, etc.
+    field.label      # LABEL_OPTIONAL, LABEL_REQUIRED, LABEL_REPEATED
+    field.options    # FieldOptions (including custom extensions)
+    field.default_value  # Default value as string
+```
+
+### Step 4: Nanopb Wraps Descriptors in Custom Classes
+
+The generator creates nanopb-specific objects from the descriptors:
+
+```python
+# In parse_file()
+file_options = get_nanopb_suboptions(fdesc, toplevel_options, Names([filename]))
+f = ProtoFile(fdesc, file_options)
+
+# ProtoFile creates Message, Field, Enum objects
+# Each wraps the corresponding descriptor + nanopb options
+```
+
+**Key relationship:**
+```
+FileDescriptorProto (Google)  →  ProtoFile (Nanopb)
+DescriptorProto (Google)      →  Message (Nanopb)
+FieldDescriptorProto (Google) →  Field (Nanopb)
+EnumDescriptorProto (Google)  →  Enum (Nanopb)
+```
+
+## How Nanopb Handles Custom Options
+
+### Default Values: The `[default = ...]` Option
+
+Default values in Protocol Buffers are handled through the `FieldDescriptorProto.default_value` field:
+
+```protobuf
+// In your .proto file
+message Config {
+    optional int32 timeout = 1 [default = 30];
+    optional string name = 2 [default = "unnamed"];
+    optional MyEnum status = 3 [default = STATUS_OK];
+}
+```
+
+**How the generator processes defaults:**
+
+```python
+# In Field.__init__()
+if desc.HasField('default_value'):
+    self.default = desc.default_value  # Stored as string
+
+# In Field.default_decl() - generates C code
+def default_decl(self, declaration_only=False, null_init=False):
+    if self.default is None or null_init:
+        # Use zero initialization
+        return "0"
+    elif self.pbtype in ['STRING', 'BYTES']:
+        # Escape string for C
+        data = codecs.escape_encode(self.default.encode('utf-8'))[0]
+        return '"%s"' % data.decode('ascii')
+    elif self.pbtype == 'ENUM':
+        # Use enum value name
+        return Globals.naming_style.enum_entry(self.default)
+    else:
+        # Numeric types
+        return str(self.default)
+```
+
+**Generated C code:**
+```c
+// In .pb.h
+#define Config_init_default { 30, "unnamed", STATUS_OK }
+#define Config_init_zero { 0, "", 0 }
+```
+
+### The Nanopb Options System
+
+Nanopb extends protobuf with custom options defined in `nanopb.proto`:
+
+```protobuf
+// generator/proto/nanopb.proto
+extend google.protobuf.FieldOptions {
+    optional NanoPBOptions nanopb = 1010;
+}
+
+extend google.protobuf.MessageOptions {
+    optional NanoPBOptions nanopb_msgopt = 1010;
+}
+
+extend google.protobuf.FileOptions {
+    optional NanoPBOptions nanopb_fileopt = 1010;
+}
+```
+
+**Using nanopb options in your .proto:**
+```protobuf
+import "nanopb.proto";
+
+message User {
+    // Field-level option
+    required string name = 1 [(nanopb).max_size = 40];
+    
+    // Using max_length (equivalent to max_size + 1 for strings)
+    optional string email = 2 [(nanopb).max_length = 100];
+    
+    // Repeated field with max count
+    repeated int32 scores = 3 [(nanopb).max_count = 10];
+    
+    // Force callback allocation
+    optional bytes data = 4 [(nanopb).type = FT_CALLBACK];
+}
+
+// Message-level option
+message Config {
+    option (nanopb_msgopt).msgid = 42;
+}
+
+// File-level option
+option (nanopb_fileopt).long_names = false;
+```
+
+### How Options Are Extracted and Merged
+
+The `get_nanopb_suboptions()` function handles option extraction:
+
+```python
+def get_nanopb_suboptions(subdesc, options, name):
+    '''Get copy of options, and merge information from subdesc.'''
+    # Start with copy of parent options
+    new_options = nanopb_pb2.NanoPBOptions()
+    new_options.CopyFrom(options)
+
+    # Check proto3 syntax
+    if hasattr(subdesc, 'syntax') and subdesc.syntax == "proto3":
+        new_options.proto3 = True
+
+    # Merge options from separate .options file
+    dotname = '.'.join(name.parts)
+    for namemask, file_options in Globals.separate_options:
+        if fnmatchcase(dotname, namemask):
+            new_options.MergeFrom(file_options)
+
+    # Merge options from .proto annotations
+    if isinstance(subdesc.options, descriptor.FieldOptions):
+        ext_type = nanopb_pb2.nanopb
+    elif isinstance(subdesc.options, descriptor.FileOptions):
+        ext_type = nanopb_pb2.nanopb_fileopt
+    elif isinstance(subdesc.options, descriptor.MessageOptions):
+        ext_type = nanopb_pb2.nanopb_msgopt
+    # ...
+
+    if subdesc.options.HasExtension(ext_type):
+        ext = subdesc.options.Extensions[ext_type]
+        new_options.MergeFrom(ext)  # Proto annotations override file options
+
+    return new_options
+```
+
+**Option priority (highest to lowest):**
+1. Field-level annotations in `.proto`
+2. Message-level annotations in `.proto`
+3. Options in separate `.options` file
+4. File-level annotations in `.proto`
+5. Command-line options
+6. Default values
+
+### The .options File Format
+
+For large projects, you can use a separate `.options` file:
+
+```
+# myfile.options
+# Format: field_pattern option:value [option:value ...]
+
+# Apply to specific field
+MyMessage.name              max_size:64
+MyMessage.items             max_count:100
+
+# Wildcards supported
+*.timestamp                 int_size:IS_32
+MyPackage.*                 long_names:false
+
+# Multiple options
+MyMessage.data              type:FT_CALLBACK callback_datatype:"custom_cb_t"
+```
+
+The file is parsed by `read_options_file()`:
+
+```python
+def read_options_file(infile):
+    results = []
+    for line in data.split('\n'):
+        parts = line.split(None, 1)  # Split on whitespace
+        opts = nanopb_pb2.NanoPBOptions()
+        text_format.Merge(parts[1], opts)  # Parse as text protobuf
+        results.append((parts[0], opts))   # (pattern, options)
+    return results
+```
+
+## Adding Your Own Custom Options
+
+### Method 1: Extend nanopb.proto (Recommended for Nanopb Features)
+
+If you're adding features to nanopb itself:
+
+1. **Add to NanoPBOptions in `generator/proto/nanopb.proto`:**
+   ```protobuf
+   message NanoPBOptions {
+       // ... existing options ...
+       
+       // Your new option
+       optional bool my_custom_option = 100;  // Use high number
+   }
+   ```
+
+2. **Regenerate nanopb_pb2.py:**
+   ```bash
+   cd generator/proto
+   protoc --python_out=. nanopb.proto
+   ```
+
+3. **Process in generator:**
+   ```python
+   # In Field.__init__() or wherever appropriate
+   if field_options.HasField("my_custom_option"):
+       self.my_custom_option = field_options.my_custom_option
+   ```
+
+### Method 2: Create Your Own Extension (For External Tools)
+
+For options used by your own tools (not nanopb itself):
+
+1. **Create your options proto:**
+   ```protobuf
+   // myoptions.proto
+   syntax = "proto2";
+   import "google/protobuf/descriptor.proto";
+
+   message MyOptions {
+       optional string custom_annotation = 1;
+       optional int32 custom_size = 2;
+   }
+
+   extend google.protobuf.FieldOptions {
+       optional MyOptions myopt = 50000;  // Get a unique extension number
+   }
+   ```
+
+2. **Use in your .proto files:**
+   ```protobuf
+   import "myoptions.proto";
+
+   message MyMessage {
+       string field = 1 [(myopt).custom_annotation = "special"];
+   }
+   ```
+
+3. **Access in your Python tool:**
+   ```python
+   import myoptions_pb2  # Generated from myoptions.proto
+   
+   for field in message.field:
+       if field.options.HasExtension(myoptions_pb2.myopt):
+           my_opts = field.options.Extensions[myoptions_pb2.myopt]
+           print(f"Custom annotation: {my_opts.custom_annotation}")
+   ```
+
+### Method 3: Using Unknown Fields (Advanced)
+
+For truly custom extensions that nanopb doesn't need to understand:
+
+```python
+# Access raw extension data
+if field.options.HasExtension(my_extension):
+    ext = field.options.Extensions[my_extension]
+    # Process extension data
+```
+
+### Best Practices for Custom Options
+
+1. **Register your extension number** at [protobuf global extension registry](https://github.com/protocolbuffers/protobuf/blob/main/docs/options.md) for public extensions
+
+2. **Use high extension numbers** (50000+) for private/internal extensions
+
+3. **Document your options** with comments in the proto file
+
+4. **Provide defaults** for optional behavior:
+   ```protobuf
+   optional bool my_option = 1 [default = false];
+   ```
+
+5. **Test option inheritance** - ensure options cascade correctly from file → message → field levels
 
 ## Core Classes
 
