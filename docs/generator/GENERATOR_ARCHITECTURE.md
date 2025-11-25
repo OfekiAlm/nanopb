@@ -210,21 +210,29 @@ message Config {
 if desc.HasField('default_value'):
     self.default = desc.default_value  # Stored as string
 
-# In Field.default_decl() - generates C code
-def default_decl(self, declaration_only=False, null_init=False):
+# In Field.get_initializer() - generates C initialization code
+def get_initializer(self, null_init, inner_init_only=False):
+    '''Return literal expression for this field's default value.'''
     if self.default is None or null_init:
-        # Use zero initialization
-        return "0"
-    elif self.pbtype in ['STRING', 'BYTES']:
-        # Escape string for C
-        data = codecs.escape_encode(self.default.encode('utf-8'))[0]
-        return '"%s"' % data.decode('ascii')
-    elif self.pbtype == 'ENUM':
-        # Use enum value name
-        return Globals.naming_style.enum_entry(self.default)
+        if self.pbtype == 'STRING':
+            return '""'
+        elif self.pbtype in ('ENUM', 'UENUM'):
+            return '_%s_MIN' % self.ctype
+        else:
+            return '0'
     else:
-        # Numeric types
-        return str(self.default)
+        if self.pbtype == 'STRING':
+            # Escape string for C
+            data = codecs.escape_encode(self.default.encode('utf-8'))[0]
+            return '"' + data.decode('ascii') + '"'
+        elif self.pbtype in ('ENUM', 'UENUM'):
+            # Use enum value name
+            return Globals.naming_style.enum_entry(self.default)
+        elif self.pbtype in ['FIXED32', 'UINT32']:
+            return str(self.default) + 'u'
+        else:
+            # Other numeric types
+            return str(self.default)
 ```
 
 **Generated C code:**
