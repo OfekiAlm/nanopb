@@ -3445,26 +3445,13 @@ def main_cli():
 
     options, filenames = process_cmdline(sys.argv[1:], is_plugin = False)
 
-    # Ensure output directory exists (create if needed)
-    if options.output_dir:
-        if not os.path.exists(options.output_dir):
-            if not options.quiet:
-                sys.stderr.write("Creating output directory: %s\n" % options.output_dir)
-            os.makedirs(options.output_dir, exist_ok=True)
+    if options.output_dir and not os.path.exists(options.output_dir):
+        optparser.print_help()
+        sys.stderr.write("\noutput_dir does not exist: %s\n" % options.output_dir)
+        sys.exit(1)
 
-    # Build include paths for protoc: include options paths and directories of proto files
-    include_dirs = set()
-    # Add user-specified options/proto search paths
-    for p in options.options_path:
-        include_dirs.add(os.path.abspath(p))
-    # Add directories containing the proto files
-    for fname in filenames:
-        d = os.path.dirname(fname)
-        if d:
-            include_dirs.add(os.path.abspath(d))
-        else:
-            include_dirs.add(os.getcwd())
-    include_path = ['-I%s' % d for d in include_dirs]
+    # Load .pb files into memory and compile any .proto files.
+    include_path = ['-I%s' % p for p in options.options_path]
     all_fdescs = {}
     out_fdescs = {}
     for filename in filenames:
