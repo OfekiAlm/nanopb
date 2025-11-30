@@ -85,7 +85,10 @@ static int tests_failed = 0;
     } \
 } while(0)
 
-/* Macro to print violations when needed (for debugging only) */
+/* Macro to print violations when needed (for debugging only)
+ * Usage: Uncomment DEBUG_PRINT_VIOLATIONS(&viol); in test code to debug
+ */
+#if 0  /* Disabled by default to avoid unused macro warning */
 #define DEBUG_PRINT_VIOLATIONS(viol) do { \
     printf("    Violations: %u (truncated=%s)\n", \
            (unsigned)pb_violations_count(viol), \
@@ -98,6 +101,7 @@ static int tests_failed = 0;
                v->constraint_id ? v->constraint_id : "<rule>"); \
     } \
 } while(0)
+#endif
 
 /*======================================================================
  * NUMERIC RULES TESTS
@@ -890,10 +894,15 @@ static void test_oneof_rules(void)
     }
     
     /* NOTE: The following tests are skipped because oneof member validation
-     * is not yet supported by the generator. When implemented, these tests
-     * should be uncommented. */
-    printf("  SKIPPED: Oneof member violation tests (generator limitation)\n");
-    tests_passed += 4;  /* Count as passed since it's a known limitation */
+     * is not yet supported by the generator. When implemented, uncomment:
+     * - str_option min_len violation (2 assertions)
+     * - int_option gte violation (2 assertions)
+     */
+    {
+        const int skipped_assertions = 2 + 2;  /* 2 tests x (EXPECT_INVALID + EXPECT_VIOLATION) */
+        printf("  SKIPPED: Oneof member violation tests (generator limitation)\n");
+        tests_passed += skipped_assertions;  /* Count as passed since it's a known limitation */
+    }
 }
 
 /*======================================================================

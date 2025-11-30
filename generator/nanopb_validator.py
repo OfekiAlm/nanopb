@@ -204,7 +204,9 @@ class FieldValidator:
             self.rules.append(ValidationRule(RULE_MAX_ITEMS, 'repeated.max_items', {'value': rules.max_items}))
         if rules.HasField('unique') and rules.unique:
             self.rules.append(ValidationRule(RULE_UNIQUE, 'repeated.unique'))
-        # Note: Per-item validation rules (items field) are not supported to avoid circular dependencies
+        # Note: Per-item validation rules (items field) are not supported.
+        # The validate.proto doesn't define an items field to avoid circular type
+        # dependencies where FieldRules would need to reference itself for per-item rules.
     
     def _parse_map_rules(self, rules: Any):
         """Parse map field validation rules."""
