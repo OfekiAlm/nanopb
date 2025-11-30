@@ -307,6 +307,22 @@ class ValidatorGenerator:
         except Exception:
             return str(s)
 
+    def _escape_c_string(self, s: str) -> str:
+        """Escape a string to be safe for use in C string literals."""
+        try:
+            if s is None:
+                return ''
+            # Escape backslashes first, then special characters
+            s = str(s)
+            s = s.replace('\\', '\\\\')
+            s = s.replace('"', '\\"')
+            s = s.replace('\n', '\\n')
+            s = s.replace('\r', '\\r')
+            s = s.replace('\t', '\\t')
+            return s
+        except Exception:
+            return str(s)
+
     def _rule_to_text(self, rule: ValidationRule) -> str:
         """Convert a single ValidationRule into a human-friendly sentence fragment."""
         rt = rule.rule_type
@@ -1295,45 +1311,48 @@ class ValidatorGenerator:
         """Generate prefix validation for oneof string member."""
         prefix = rule.params.get('value', '')
         if 'string' in rule.constraint_id:
+            escaped_prefix = self._escape_c_string(prefix)
             return (
                 '            {\n'
                 '                const char *prefix = "%s";\n'
                 '                if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), prefix, PB_VALIDATE_RULE_PREFIX)) {\n'
-                '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must start with \'%s\'");\n'
+                '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must start with specified prefix");\n'
                 '                    if (ctx.early_exit) return false;\n'
                 '                }\n'
                 '            }\n'
-            ) % (prefix, field_access, field_access, rule.constraint_id, prefix)
+            ) % (escaped_prefix, field_access, field_access, rule.constraint_id)
         return ''
 
     def _gen_oneof_suffix(self, field: Any, rule: ValidationRule, field_access: str) -> str:
         """Generate suffix validation for oneof string member."""
         suffix = rule.params.get('value', '')
         if 'string' in rule.constraint_id:
+            escaped_suffix = self._escape_c_string(suffix)
             return (
                 '            {\n'
                 '                const char *suffix = "%s";\n'
                 '                if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), suffix, PB_VALIDATE_RULE_SUFFIX)) {\n'
-                '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must end with \'%s\'");\n'
+                '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must end with specified suffix");\n'
                 '                    if (ctx.early_exit) return false;\n'
                 '                }\n'
                 '            }\n'
-            ) % (suffix, field_access, field_access, rule.constraint_id, suffix)
+            ) % (escaped_suffix, field_access, field_access, rule.constraint_id)
         return ''
 
     def _gen_oneof_contains(self, field: Any, rule: ValidationRule, field_access: str) -> str:
         """Generate contains validation for oneof string member."""
         contains = rule.params.get('value', '')
         if 'string' in rule.constraint_id:
+            escaped_contains = self._escape_c_string(contains)
             return (
                 '            {\n'
                 '                const char *needle = "%s";\n'
                 '                if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), needle, PB_VALIDATE_RULE_CONTAINS)) {\n'
-                '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain \'%s\'");\n'
+                '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain specified substring");\n'
                 '                    if (ctx.early_exit) return false;\n'
                 '                }\n'
                 '            }\n'
-            ) % (contains, field_access, field_access, rule.constraint_id, contains)
+            ) % (escaped_contains, field_access, field_access, rule.constraint_id)
         return ''
 
     def _gen_oneof_ascii(self, field: Any, rule: ValidationRule, field_access: str) -> str:
@@ -1376,49 +1395,47 @@ class ValidatorGenerator:
         """Generate 'in' validation for oneof member."""
         values = rule.params.get('values', [])
         if 'string' in rule.constraint_id:
-            conditions = ['strcmp(msg->%s, "%s") == 0' % (field_access, v) for v in values]
+            escaped_values = [self._escape_c_string(v) for v in values]
+            conditions = ['strcmp(msg->%s, "%s") == 0' % (field_access, v) for v in escaped_values]
             condition_str = ' || '.join(conditions)
-            values_str = ', '.join('"%s"' % v for v in values)
             return (
                 '            if (!(%s)) {\n'
-                '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of: %s");\n'
+                '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of allowed set");\n'
                 '                if (ctx.early_exit) return false;\n'
                 '            }\n'
-            ) % (condition_str, rule.constraint_id, values_str)
+            ) % (condition_str, rule.constraint_id)
         else:
             conditions = ['msg->%s == %s' % (field_access, v) for v in values]
             condition_str = ' || '.join(conditions)
-            values_str = ', '.join(str(v) for v in values)
             return (
                 '            if (!(%s)) {\n'
-                '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of: %s");\n'
+                '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of allowed set");\n'
                 '                if (ctx.early_exit) return false;\n'
                 '            }\n'
-            ) % (condition_str, rule.constraint_id, values_str)
+            ) % (condition_str, rule.constraint_id)
 
     def _gen_oneof_not_in(self, field: Any, rule: ValidationRule, field_access: str) -> str:
         """Generate 'not_in' validation for oneof member."""
         values = rule.params.get('values', [])
         if 'string' in rule.constraint_id:
-            conditions = ['strcmp(msg->%s, "%s") != 0' % (field_access, v) for v in values]
+            escaped_values = [self._escape_c_string(v) for v in values]
+            conditions = ['strcmp(msg->%s, "%s") != 0' % (field_access, v) for v in escaped_values]
             condition_str = ' && '.join(conditions)
-            values_str = ', '.join('"%s"' % v for v in values)
             return (
                 '            if (!(%s)) {\n'
-                '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value must not be one of: %s");\n'
+                '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value in forbidden set");\n'
                 '                if (ctx.early_exit) return false;\n'
                 '            }\n'
-            ) % (condition_str, rule.constraint_id, values_str)
+            ) % (condition_str, rule.constraint_id)
         else:
             conditions = ['msg->%s != %s' % (field_access, v) for v in values]
             condition_str = ' && '.join(conditions)
-            values_str = ', '.join(str(v) for v in values)
             return (
                 '            if (!(%s)) {\n'
-                '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value must not be one of: %s");\n'
+                '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value in forbidden set");\n'
                 '                if (ctx.early_exit) return false;\n'
                 '            }\n'
-            ) % (condition_str, rule.constraint_id, values_str)
+            ) % (condition_str, rule.constraint_id)
 
     def _gen_oneof_enum_defined(self, field: Any, rule: ValidationRule, field_access: str) -> str:
         """Generate enum defined_only validation for oneof member."""
