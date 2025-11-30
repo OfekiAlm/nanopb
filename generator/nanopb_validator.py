@@ -259,9 +259,10 @@ class MessageValidator:
 
 class ValidatorGenerator:
     """Generates validation code for messages."""
-    def __init__(self, proto_file):
+    def __init__(self, proto_file, bypass=False):
         self.proto_file = proto_file
         self.validators = OrderedDict()
+        self.bypass = bypass  # When True, generated code collects all violations without early exit
         
         # Check if validation is enabled
         self.validate_enabled = False
@@ -502,7 +503,11 @@ class ValidatorGenerator:
                         yield '       - %s\n' % field
                     yield '    */\n'
                     yield '\n'
-            yield '    PB_VALIDATE_BEGIN(ctx, %s, msg, violations);\n' % struct_name
+            # Use bypass macro if bypass mode is enabled
+            if self.bypass:
+                yield '    PB_VALIDATE_BEGIN_BYPASS(ctx, %s, msg, violations);\n' % struct_name
+            else:
+                yield '    PB_VALIDATE_BEGIN(ctx, %s, msg, violations);\n' % struct_name
             yield '\n'
             
             # Generate field validations
@@ -762,18 +767,10 @@ class ValidatorGenerator:
         field_name = field.name
         if 'string' in rule.constraint_id:
             if getattr(field, 'allocation', None) == 'CALLBACK':
-                return (
-                    '        {\n'
-                    '            const char *s = NULL; pb_size_t l = 0;\n'
-                    '            if (pb_read_callback_string(&msg->%s, &s, &l)) {\n'
-                    '                uint32_t min_len = %d;\n'
-                    '                if (!pb_validate_string(s, l, &min_len, PB_VALIDATE_RULE_MIN_LEN)) {\n'
-                    '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String too short");\n'
-                    '                    if (ctx.early_exit) return false;\n'
-                    '                }\n'
-                    '            }\n'
-                    '        }\n'
-                ) % (field_name, min_len, rule.constraint_id)
+                # Use macro for callback string fields
+                return self._wrap_optional(field,
+                    '        PB_VALIDATE_STRING_MIN_LEN(ctx, msg, %s, %d, "%s");\n' % (field_name, min_len, rule.constraint_id)
+                )
             # Use macro helper for normal string fields
             return self._wrap_optional(field,
                 '        PB_VALIDATE_STR_MIN_LEN(ctx, msg, %s, %d, "%s");\n' % (field_name, min_len, rule.constraint_id)
@@ -791,18 +788,10 @@ class ValidatorGenerator:
         field_name = field.name
         if 'string' in rule.constraint_id:
             if getattr(field, 'allocation', None) == 'CALLBACK':
-                return (
-                    '        {\n'
-                    '            const char *s = NULL; pb_size_t l = 0;\n'
-                    '            if (pb_read_callback_string(&msg->%s, &s, &l)) {\n'
-                    '                uint32_t max_len_v = %d;\n'
-                    '                if (!pb_validate_string(s, l, &max_len_v, PB_VALIDATE_RULE_MAX_LEN)) {\n'
-                    '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String too long");\n'
-                    '                    if (ctx.early_exit) return false;\n'
-                    '                }\n'
-                    '            }\n'
-                    '        }\n'
-                ) % (field_name, max_len, rule.constraint_id)
+                # Use macro for callback string fields
+                return self._wrap_optional(field,
+                    '        PB_VALIDATE_STRING_MAX_LEN(ctx, msg, %s, %d, "%s");\n' % (field_name, max_len, rule.constraint_id)
+                )
             # Use macro helper for normal string fields
             return self._wrap_optional(field,
                 '        PB_VALIDATE_STR_MAX_LEN(ctx, msg, %s, %d, "%s");\n' % (field_name, max_len, rule.constraint_id)
@@ -820,26 +809,12 @@ class ValidatorGenerator:
         field_name = field.name
         if 'string' in rule.constraint_id:
             if getattr(field, 'allocation', None) == 'CALLBACK':
-                return (
-                    '        {\n'
-                    '            const char *s = NULL; pb_size_t l = 0;\n'
-                    '            if (pb_read_callback_string(&msg->%s, &s, &l)) {\n'
-                    '                const char *prefix = "%s";\n'
-                    '                if (!pb_validate_string(s, l, prefix, PB_VALIDATE_RULE_PREFIX)) {\n'
-                    '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must start with \'%s\'");\n'
-                    '                    if (ctx.early_exit) return false;\n'
-                    '                }\n'
-                    '            }\n'
-                    '        }\n'
-                ) % (field_name, prefix, rule.constraint_id, prefix)
+                # Use macro for callback string fields
+                return self._wrap_optional(field,
+                    '        PB_VALIDATE_STRING_PREFIX(ctx, msg, %s, "%s", "%s");\n' % (field_name, prefix, rule.constraint_id)
+                )
             return self._wrap_optional(field, 
-                '        {\n'
-                '            const char *prefix = "%s";\n'
-                '            if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), prefix, PB_VALIDATE_RULE_PREFIX)) {\n'
-                '                pb_violations_add(violations, ctx.path_buffer, "%s", "String must start with \'%s\'");\n'
-                '                if (ctx.early_exit) return false;\n'
-                '            }\n'
-                '        }\n' % (prefix, field_name, field_name, rule.constraint_id, prefix)
+                '        PB_VALIDATE_STR_PREFIX(ctx, msg, %s, "%s", "%s");\n' % (field_name, prefix, rule.constraint_id)
             )
         else:  # bytes
             return self._wrap_optional(field, '        if (msg->%s.size < %d || memcmp(msg->%s.bytes, "%s", %d) != 0) {\n' \
@@ -852,26 +827,12 @@ class ValidatorGenerator:
         field_name = field.name
         if 'string' in rule.constraint_id:
             if getattr(field, 'allocation', None) == 'CALLBACK':
-                return (
-                    '        {\n'
-                    '            const char *s = NULL; pb_size_t l = 0;\n'
-                    '            if (pb_read_callback_string(&msg->%s, &s, &l)) {\n'
-                    '                const char *suffix = "%s";\n'
-                    '                if (!pb_validate_string(s, l, suffix, PB_VALIDATE_RULE_SUFFIX)) {\n'
-                    '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must end with \'%s\'");\n'
-                    '                    if (ctx.early_exit) return false;\n'
-                    '                }\n'
-                    '            }\n'
-                    '        }\n'
-                ) % (field_name, suffix, rule.constraint_id, suffix)
+                # Use macro for callback string fields
+                return self._wrap_optional(field,
+                    '        PB_VALIDATE_STRING_SUFFIX(ctx, msg, %s, "%s", "%s");\n' % (field_name, suffix, rule.constraint_id)
+                )
             return self._wrap_optional(field, 
-                '        {\n'
-                '            const char *suffix = "%s";\n'
-                '            if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), suffix, PB_VALIDATE_RULE_SUFFIX)) {\n'
-                '                pb_violations_add(violations, ctx.path_buffer, "%s", "String must end with \'%s\'");\n'
-                '                if (ctx.early_exit) return false;\n'
-                '            }\n'
-                '        }\n' % (suffix, field_name, field_name, rule.constraint_id, suffix)
+                '        PB_VALIDATE_STR_SUFFIX(ctx, msg, %s, "%s", "%s");\n' % (field_name, suffix, rule.constraint_id)
             )
         else:  # bytes
             return self._wrap_optional(field, '        if (msg->%s.size < %d || memcmp(msg->%s.bytes + msg->%s.size - %d, "%s", %d) != 0) {\n' \
@@ -884,26 +845,12 @@ class ValidatorGenerator:
         field_name = field.name
         if 'string' in rule.constraint_id:
             if getattr(field, 'allocation', None) == 'CALLBACK':
-                return (
-                    '        {\n'
-                    '            const char *s = NULL; pb_size_t l = 0;\n'
-                    '            if (pb_read_callback_string(&msg->%s, &s, &l)) {\n'
-                    '                const char *needle = "%s";\n'
-                    '                if (!pb_validate_string(s, l, needle, PB_VALIDATE_RULE_CONTAINS)) {\n'
-                    '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain \'%s\'");\n'
-                    '                    if (ctx.early_exit) return false;\n'
-                    '                }\n'
-                    '            }\n'
-                    '        }\n'
-                ) % (field_name, contains, rule.constraint_id, contains)
+                # Use macro for callback string fields
+                return self._wrap_optional(field,
+                    '        PB_VALIDATE_STRING_CONTAINS(ctx, msg, %s, "%s", "%s");\n' % (field_name, contains, rule.constraint_id)
+                )
             return self._wrap_optional(field, 
-                '        {\n'
-                '            const char *needle = "%s";\n'
-                '            if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), needle, PB_VALIDATE_RULE_CONTAINS)) {\n'
-                '                pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain \'%s\'");\n'
-                '                if (ctx.early_exit) return false;\n'
-                '            }\n'
-                '        }\n' % (contains, field_name, field_name, rule.constraint_id, contains)
+                '        PB_VALIDATE_STR_CONTAINS(ctx, msg, %s, "%s", "%s");\n' % (field_name, contains, rule.constraint_id)
             )
         else:  # bytes  
             return self._wrap_optional(field, '        {\n' \
@@ -924,17 +871,10 @@ class ValidatorGenerator:
         field_name = field.name
         if 'string' in rule.constraint_id:
             if getattr(field, 'allocation', None) == 'CALLBACK':
-                return (
-                    '        {\n'
-                    '            const char *s = NULL; pb_size_t l = 0;\n'
-                    '            if (pb_read_callback_string(&msg->%s, &s, &l)) {\n'
-                    '                if (!pb_validate_string(s, l, NULL, PB_VALIDATE_RULE_ASCII)) {\n'
-                    '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain only ASCII characters");\n'
-                    '                    if (ctx.early_exit) return false;\n'
-                    '                }\n'
-                    '            }\n'
-                    '        }\n'
-                ) % (field_name, rule.constraint_id)
+                # Use macro for callback string fields
+                return self._wrap_optional(field,
+                    '        PB_VALIDATE_STRING_ASCII(ctx, msg, %s, "%s");\n' % (field_name, rule.constraint_id)
+                )
             return self._wrap_optional(field, 
                 '        {\n'
                 '            if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), NULL, PB_VALIDATE_RULE_ASCII)) {\n'
@@ -948,6 +888,14 @@ class ValidatorGenerator:
     def _gen_string_format(self, field: Any, rule: ValidationRule) -> str:
         field_name = field.name
         if 'string' in rule.constraint_id:
+            # Map rule types to macro names and rule enums
+            macro_map = {
+                RULE_EMAIL: 'PB_VALIDATE_STRING_EMAIL',
+                RULE_HOSTNAME: 'PB_VALIDATE_STRING_HOSTNAME',
+                RULE_IP: 'PB_VALIDATE_STRING_IP',
+                RULE_IPV4: 'PB_VALIDATE_STRING_IPV4',
+                RULE_IPV6: 'PB_VALIDATE_STRING_IPV6',
+            }
             enum_map = {
                 RULE_EMAIL: 'PB_VALIDATE_RULE_EMAIL',
                 RULE_HOSTNAME: 'PB_VALIDATE_RULE_HOSTNAME',
@@ -955,21 +903,15 @@ class ValidatorGenerator:
                 RULE_IPV4: 'PB_VALIDATE_RULE_IPV4',
                 RULE_IPV6: 'PB_VALIDATE_RULE_IPV6',
             }
+            macro_name = macro_map.get(rule.rule_type)
             rule_enum = enum_map.get(rule.rule_type)
-            if not rule_enum:
+            if not macro_name or not rule_enum:
                 return ''
             if getattr(field, 'allocation', None) == 'CALLBACK':
-                return (
-                    '        {\n'
-                    '            const char *s = NULL; pb_size_t l = 0;\n'
-                    '            if (pb_read_callback_string(&msg->%s, &s, &l)) {\n'
-                    '                if (!pb_validate_string(s, l, NULL, %s)) {\n'
-                    '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String format validation failed");\n'
-                    '                    if (ctx.early_exit) return false;\n'
-                    '                }\n'
-                    '            }\n'
-                    '        }\n'
-                ) % (field_name, rule_enum, rule.constraint_id)
+                # Use macro for callback string fields
+                return self._wrap_optional(field,
+                    '        %s(ctx, msg, %s, "%s");\n' % (macro_name, field_name, rule.constraint_id)
+                )
             return self._wrap_optional(field, 
                 '        {\n'
                 '            if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), NULL, %s)) {\n'

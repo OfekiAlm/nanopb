@@ -2434,7 +2434,8 @@ class ProtoFile:
 
     def _build_validator_generator(self, options):
         """Create and populate a ValidatorGenerator consistently for header/source generation."""
-        validator_gen = nanopb_validator.ValidatorGenerator(self)
+        bypass = getattr(options, 'bypass', False)
+        validator_gen = nanopb_validator.ValidatorGenerator(self, bypass=bypass)
         # Add validators for all messages
         for msg in self.messages:
             if hasattr(msg, 'fields'):
@@ -3230,6 +3231,8 @@ optparser.add_option("--validate", dest="validate", action="store_true", default
     help="Generate validation code for messages.")
 optparser.add_option("--validate-consolidated", dest="validate_consolidated", action="store_true", default=False,
     help="Generate consolidated validation files instead of per-proto files.")
+optparser.add_option("--bypass", dest="bypass", action="store_true", default=False,
+    help="Generate validation code in bypass mode: collect all violations without early exit.")
 optparser.add_option("--envelope-mode", dest="envelope_mode", metavar="MODE", default="oneof",
     help="Envelope detection mode: 'oneof' (enum+oneof pattern) or 'any' (google.protobuf.Any field). [default: %default]")
 optparser.add_option("--envelope-name", dest="envelope_name", metavar="NAME", default=None,
