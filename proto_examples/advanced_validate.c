@@ -8,14 +8,31 @@ bool pb_validate_test_AdvancedMessage(const test_AdvancedMessage *msg, pb_violat
        - test_oneof
     */
 
-    if (!msg) return false;
-    
-    pb_validate_context_t ctx = {0};
-    ctx.violations = violations;
-    ctx.early_exit = PB_VALIDATE_EARLY_EXIT;
+    PB_VALIDATE_BEGIN(ctx, test_AdvancedMessage, msg, violations);
+
+    /* Validate field: values */
+    PB_VALIDATE_FIELD_BEGIN(ctx, "values");
+    {
+        /* Rule: repeated.min_items */
+        PB_VALIDATE_MIN_ITEMS(ctx, msg, values, 1, "repeated.min_items");
+    }
+    {
+        /* Rule: repeated.max_items */
+        PB_VALIDATE_MAX_ITEMS(ctx, msg, values, 5, "repeated.max_items");
+    }
+    {
+        /* Rule: repeated.unique */
+        PB_VALIDATE_REPEATED_UNIQUE_STRING(ctx, msg, values, "repeated.unique");
+    }
+    {
+        /* Rule: repeated.items */
+        PB_VALIDATE_REPEATED_ITEMS_STR_MIN_LEN(ctx, msg, values, 3, "string.min_len");
+        PB_VALIDATE_REPEATED_ITEMS_STR_MAX_LEN(ctx, msg, values, 10, "string.max_len");
+    }
+    PB_VALIDATE_FIELD_END(ctx);
     
     /* Validate field: email */
-    if (!pb_validate_context_push_field(&ctx, "email")) return false;
+    PB_VALIDATE_FIELD_BEGIN(ctx, "email");
     {
         /* Rule: string.email */
         {
@@ -28,9 +45,9 @@ bool pb_validate_test_AdvancedMessage(const test_AdvancedMessage *msg, pb_violat
             }
         }
     }
-    pb_validate_context_pop_field(&ctx);
+    PB_VALIDATE_FIELD_END(ctx);
     
-    return !pb_violations_has_any(violations);
+    PB_VALIDATE_END(ctx, violations);
 }
 
 bool pb_validate_test_SimpleMessage(const test_SimpleMessage *msg, pb_violations_t *violations)
@@ -39,38 +56,22 @@ bool pb_validate_test_SimpleMessage(const test_SimpleMessage *msg, pb_violations
        - advanced_message
     */
 
-    if (!msg) return false;
-    
-    pb_validate_context_t ctx = {0};
-    ctx.violations = violations;
-    ctx.early_exit = PB_VALIDATE_EARLY_EXIT;
-    
+    PB_VALIDATE_BEGIN(ctx, test_SimpleMessage, msg, violations);
+
     /* Validate field: bounded_float */
-    if (!pb_validate_context_push_field(&ctx, "bounded_float")) return false;
+    PB_VALIDATE_FIELD_BEGIN(ctx, "bounded_float");
     {
         /* Rule: float.lte */
-        {
-            float expected = (float)100.0;
-            if (!pb_validate_float(msg->bounded_float, &expected, PB_VALIDATE_RULE_LTE)) {
-                pb_violations_add(violations, ctx.path_buffer, "float.lte", "Value constraint failed");
-                if (ctx.early_exit) return false;
-            }
-        }
+        PB_VALIDATE_NUMERIC_GENERIC(ctx, msg, bounded_float, float, pb_validate_float, PB_VALIDATE_RULE_LTE, 100.0, "float.lte");
     }
     {
         /* Rule: float.gte */
-        {
-            float expected = (float)0.0;
-            if (!pb_validate_float(msg->bounded_float, &expected, PB_VALIDATE_RULE_GTE)) {
-                pb_violations_add(violations, ctx.path_buffer, "float.gte", "Value constraint failed");
-                if (ctx.early_exit) return false;
-            }
-        }
+        PB_VALIDATE_NUMERIC_GENERIC(ctx, msg, bounded_float, float, pb_validate_float, PB_VALIDATE_RULE_GTE, 0.0, "float.gte");
     }
-    pb_validate_context_pop_field(&ctx);
+    PB_VALIDATE_FIELD_END(ctx);
     
     /* Validate field: optional_string */
-    if (!pb_validate_context_push_field(&ctx, "optional_string")) return false;
+    PB_VALIDATE_FIELD_BEGIN(ctx, "optional_string");
     {
         /* Rule: string.min_len */
         {
@@ -97,10 +98,10 @@ bool pb_validate_test_SimpleMessage(const test_SimpleMessage *msg, pb_violations
             }
         }
     }
-    pb_validate_context_pop_field(&ctx);
+    PB_VALIDATE_FIELD_END(ctx);
     
     /* Validate field: advanced_message */
-    if (!pb_validate_context_push_field(&ctx, "advanced_message")) return false;
+    PB_VALIDATE_FIELD_BEGIN(ctx, "advanced_message");
     {
         /* Recurse into submessage (optional) */
         if (msg->has_advanced_message) {
@@ -108,8 +109,8 @@ bool pb_validate_test_SimpleMessage(const test_SimpleMessage *msg, pb_violations
             if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }
         }
     }
-    pb_validate_context_pop_field(&ctx);
+    PB_VALIDATE_FIELD_END(ctx);
     
-    return !pb_violations_has_any(violations);
+    PB_VALIDATE_END(ctx, violations);
 }
 

@@ -1139,32 +1139,19 @@ class ValidatorGenerator:
         field_name = field.name
         # Get the field type to determine comparison method
         pbtype = getattr(field, 'pbtype', None)
-        ctype = getattr(field, 'ctype', None)
         
         # Skip unique validation for message types
         if pbtype in ('MESSAGE', 'MSG_W_CB'):
             return '        /* NOTE: repeated.unique is not supported for message types */\n'
         
-        code = '        /* Validate repeated.unique: check for duplicate elements */\n'
-        code += '        for (pb_size_t __pb_i = 0; __pb_i < msg->%s_count; ++__pb_i) {\n' % field_name
-        code += '            for (pb_size_t __pb_j = __pb_i + 1; __pb_j < msg->%s_count; ++__pb_j) {\n' % field_name
-        
-        # Generate comparison based on type
+        # Use appropriate macro based on type
         if pbtype == 'STRING':
-            code += '                if (strcmp(msg->%s[__pb_i], msg->%s[__pb_j]) == 0) {\n' % (field_name, field_name)
+            return '        PB_VALIDATE_REPEATED_UNIQUE_STRING(ctx, msg, %s, "%s");\n' % (field_name, rule.constraint_id)
         elif pbtype == 'BYTES':
-            code += '                if (msg->%s[__pb_i].size == msg->%s[__pb_j].size &&\n' % (field_name, field_name)
-            code += '                    memcmp(msg->%s[__pb_i].bytes, msg->%s[__pb_j].bytes, msg->%s[__pb_i].size) == 0) {\n' % (field_name, field_name, field_name)
+            return '        PB_VALIDATE_REPEATED_UNIQUE_BYTES(ctx, msg, %s, "%s");\n' % (field_name, rule.constraint_id)
         else:
             # Scalar types and enums use direct comparison
-            code += '                if (msg->%s[__pb_i] == msg->%s[__pb_j]) {\n' % (field_name, field_name)
-        
-        code += '                    pb_violations_add(violations, ctx.path_buffer, "%s", "Repeated field elements must be unique");\n' % rule.constraint_id
-        code += '                    if (ctx.early_exit) return false;\n'
-        code += '                }\n'
-        code += '            }\n'
-        code += '        }\n'
-        return code
+            return '        PB_VALIDATE_REPEATED_UNIQUE_SCALAR(ctx, msg, %s, "%s");\n' % (field_name, rule.constraint_id)
     
     def _gen_items(self, field: Any, rule: ValidationRule) -> str:
         """Generate code for per-item validation rules on repeated fields."""
@@ -1174,34 +1161,19 @@ class ValidatorGenerator:
             return ''
         
         pbtype = getattr(field, 'pbtype', None)
-        
-        code = '        /* Validate repeated.items: per-element validation */\n'
-        code += '        for (pb_size_t __pb_i = 0; __pb_i < msg->%s_count; ++__pb_i) {\n' % field_name
-        code += '            pb_validate_context_push_index(&ctx, __pb_i);\n'
+        code = ''
         
         for item_rule in item_rules:
             rule_type = item_rule.get('rule')
             constraint_id = item_rule.get('constraint_id', '')
             
-            if rule_type in (RULE_MIN_LEN, RULE_MAX_LEN):
+            if rule_type == RULE_MIN_LEN and pbtype == 'STRING':
                 value = item_rule.get('value', 0)
-                if pbtype == 'STRING':
-                    if rule_type == RULE_MIN_LEN:
-                        code += '            {\n'
-                        code += '                uint32_t __pb_min_len_v = %d;\n' % value
-                        code += '                if (!pb_validate_string(msg->%s[__pb_i], (pb_size_t)strlen(msg->%s[__pb_i]), &__pb_min_len_v, PB_VALIDATE_RULE_MIN_LEN)) {\n' % (field_name, field_name)
-                        code += '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String too short");\n' % constraint_id
-                        code += '                    if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
-                        code += '                }\n'
-                        code += '            }\n'
-                    else:  # RULE_MAX_LEN
-                        code += '            {\n'
-                        code += '                uint32_t __pb_max_len_v = %d;\n' % value
-                        code += '                if (!pb_validate_string(msg->%s[__pb_i], (pb_size_t)strlen(msg->%s[__pb_i]), &__pb_max_len_v, PB_VALIDATE_RULE_MAX_LEN)) {\n' % (field_name, field_name)
-                        code += '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String too long");\n' % constraint_id
-                        code += '                    if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
-                        code += '                }\n'
-                        code += '            }\n'
+                code += '        PB_VALIDATE_REPEATED_ITEMS_STR_MIN_LEN(ctx, msg, %s, %d, "%s");\n' % (field_name, value, constraint_id)
+            
+            elif rule_type == RULE_MAX_LEN and pbtype == 'STRING':
+                value = item_rule.get('value', 0)
+                code += '        PB_VALIDATE_REPEATED_ITEMS_STR_MAX_LEN(ctx, msg, %s, %d, "%s");\n' % (field_name, value, constraint_id)
             
             elif rule_type in (RULE_GT, RULE_GTE, RULE_LT, RULE_LTE, RULE_EQ):
                 value = item_rule.get('value', 0)
@@ -1216,55 +1188,62 @@ class ValidatorGenerator:
                         RULE_EQ: 'PB_VALIDATE_RULE_EQ'
                     }.get(rule_type)
                     if rule_enum:
-                        code += '            {\n'
-                        code += '                %s __pb_expected = (%s)%s;\n' % (ctype, ctype, value)
-                        code += '                if (!%s(msg->%s[__pb_i], &__pb_expected, %s)) {\n' % (func, field_name, rule_enum)
-                        code += '                    pb_violations_add(violations, ctx.path_buffer, "%s", "Value constraint failed");\n' % constraint_id
-                        code += '                    if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
-                        code += '                }\n'
-                        code += '            }\n'
+                        code += '        PB_VALIDATE_REPEATED_ITEMS_NUMERIC(ctx, msg, %s, %s, %s, %s, %s, "%s");\n' % (
+                            field_name, ctype, func, rule_enum, value, constraint_id)
             
             elif rule_type == RULE_PREFIX:
                 prefix = item_rule.get('value', '')
                 if pbtype == 'STRING':
-                    code += '            {\n'
-                    code += '                const char *__pb_prefix = "%s";\n' % prefix
-                    code += '                if (!pb_validate_string(msg->%s[__pb_i], (pb_size_t)strlen(msg->%s[__pb_i]), __pb_prefix, PB_VALIDATE_RULE_PREFIX)) {\n' % (field_name, field_name)
-                    code += '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must start with specified prefix");\n' % constraint_id
-                    code += '                    if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
-                    code += '                }\n'
+                    code += '        /* repeated.items string.prefix validation */\n'
+                    code += '        for (pb_size_t __pb_i = 0; __pb_i < msg->%s_count; ++__pb_i) {\n' % field_name
+                    code += '            pb_validate_context_push_index(&ctx, __pb_i);\n'
+                    code += '            const char *__pb_prefix = "%s";\n' % prefix
+                    code += '            if (!pb_validate_string(msg->%s[__pb_i], (pb_size_t)strlen(msg->%s[__pb_i]), __pb_prefix, PB_VALIDATE_RULE_PREFIX)) {\n' % (field_name, field_name)
+                    code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "String must start with specified prefix");\n' % constraint_id
+                    code += '                if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
                     code += '            }\n'
+                    code += '            pb_validate_context_pop_index(&ctx);\n'
+                    code += '        }\n'
             
             elif rule_type == RULE_SUFFIX:
                 suffix = item_rule.get('value', '')
                 if pbtype == 'STRING':
-                    code += '            {\n'
-                    code += '                const char *__pb_suffix = "%s";\n' % suffix
-                    code += '                if (!pb_validate_string(msg->%s[__pb_i], (pb_size_t)strlen(msg->%s[__pb_i]), __pb_suffix, PB_VALIDATE_RULE_SUFFIX)) {\n' % (field_name, field_name)
-                    code += '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must end with specified suffix");\n' % constraint_id
-                    code += '                    if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
-                    code += '                }\n'
+                    code += '        /* repeated.items string.suffix validation */\n'
+                    code += '        for (pb_size_t __pb_i = 0; __pb_i < msg->%s_count; ++__pb_i) {\n' % field_name
+                    code += '            pb_validate_context_push_index(&ctx, __pb_i);\n'
+                    code += '            const char *__pb_suffix = "%s";\n' % suffix
+                    code += '            if (!pb_validate_string(msg->%s[__pb_i], (pb_size_t)strlen(msg->%s[__pb_i]), __pb_suffix, PB_VALIDATE_RULE_SUFFIX)) {\n' % (field_name, field_name)
+                    code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "String must end with specified suffix");\n' % constraint_id
+                    code += '                if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
                     code += '            }\n'
+                    code += '            pb_validate_context_pop_index(&ctx);\n'
+                    code += '        }\n'
             
             elif rule_type == RULE_CONTAINS:
                 needle = item_rule.get('value', '')
                 if pbtype == 'STRING':
-                    code += '            {\n'
-                    code += '                const char *__pb_needle = "%s";\n' % needle
-                    code += '                if (!pb_validate_string(msg->%s[__pb_i], (pb_size_t)strlen(msg->%s[__pb_i]), __pb_needle, PB_VALIDATE_RULE_CONTAINS)) {\n' % (field_name, field_name)
-                    code += '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain specified substring");\n' % constraint_id
-                    code += '                    if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
-                    code += '                }\n'
+                    code += '        /* repeated.items string.contains validation */\n'
+                    code += '        for (pb_size_t __pb_i = 0; __pb_i < msg->%s_count; ++__pb_i) {\n' % field_name
+                    code += '            pb_validate_context_push_index(&ctx, __pb_i);\n'
+                    code += '            const char *__pb_needle = "%s";\n' % needle
+                    code += '            if (!pb_validate_string(msg->%s[__pb_i], (pb_size_t)strlen(msg->%s[__pb_i]), __pb_needle, PB_VALIDATE_RULE_CONTAINS)) {\n' % (field_name, field_name)
+                    code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain specified substring");\n' % constraint_id
+                    code += '                if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
                     code += '            }\n'
+                    code += '            pb_validate_context_pop_index(&ctx);\n'
+                    code += '        }\n'
             
             elif rule_type == RULE_ASCII:
                 if pbtype == 'STRING':
-                    code += '            {\n'
-                    code += '                if (!pb_validate_string(msg->%s[__pb_i], (pb_size_t)strlen(msg->%s[__pb_i]), NULL, PB_VALIDATE_RULE_ASCII)) {\n' % (field_name, field_name)
-                    code += '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain only ASCII characters");\n' % constraint_id
-                    code += '                    if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
-                    code += '                }\n'
+                    code += '        /* repeated.items string.ascii validation */\n'
+                    code += '        for (pb_size_t __pb_i = 0; __pb_i < msg->%s_count; ++__pb_i) {\n' % field_name
+                    code += '            pb_validate_context_push_index(&ctx, __pb_i);\n'
+                    code += '            if (!pb_validate_string(msg->%s[__pb_i], (pb_size_t)strlen(msg->%s[__pb_i]), NULL, PB_VALIDATE_RULE_ASCII)) {\n' % (field_name, field_name)
+                    code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain only ASCII characters");\n' % constraint_id
+                    code += '                if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
                     code += '            }\n'
+                    code += '            pb_validate_context_pop_index(&ctx);\n'
+                    code += '        }\n'
             
             elif rule_type in (RULE_EMAIL, RULE_HOSTNAME, RULE_IP, RULE_IPV4, RULE_IPV6):
                 if pbtype == 'STRING':
@@ -1275,61 +1254,78 @@ class ValidatorGenerator:
                         RULE_IPV4: 'PB_VALIDATE_RULE_IPV4',
                         RULE_IPV6: 'PB_VALIDATE_RULE_IPV6',
                     }.get(rule_type)
-                    code += '            {\n'
-                    code += '                if (!pb_validate_string(msg->%s[__pb_i], (pb_size_t)strlen(msg->%s[__pb_i]), NULL, %s)) {\n' % (field_name, field_name, rule_enum)
-                    code += '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String format validation failed");\n' % constraint_id
-                    code += '                    if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
-                    code += '                }\n'
+                    code += '        /* repeated.items %s validation */\n' % constraint_id
+                    code += '        for (pb_size_t __pb_i = 0; __pb_i < msg->%s_count; ++__pb_i) {\n' % field_name
+                    code += '            pb_validate_context_push_index(&ctx, __pb_i);\n'
+                    code += '            if (!pb_validate_string(msg->%s[__pb_i], (pb_size_t)strlen(msg->%s[__pb_i]), NULL, %s)) {\n' % (field_name, field_name, rule_enum)
+                    code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "String format validation failed");\n' % constraint_id
+                    code += '                if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
                     code += '            }\n'
+                    code += '            pb_validate_context_pop_index(&ctx);\n'
+                    code += '        }\n'
             
             elif rule_type == RULE_IN:
                 values = item_rule.get('values', [])
                 if pbtype == 'STRING':
                     values_array = ', '.join('"%s"' % v for v in values)
-                    code += '            {\n'
-                    code += '                const char *__pb_allowed[] = { %s };\n' % values_array
-                    code += '                bool __pb_match = false;\n'
-                    code += '                for (size_t __pb_k = 0; __pb_k < sizeof(__pb_allowed)/sizeof(__pb_allowed[0]); __pb_k++) {\n'
-                    code += '                    if (strcmp(msg->%s[__pb_i], __pb_allowed[__pb_k]) == 0) { __pb_match = true; break; }\n' % field_name
-                    code += '                }\n'
-                    code += '                if (!__pb_match) {\n'
-                    code += '                    pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of allowed set");\n' % constraint_id
-                    code += '                    if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
-                    code += '                }\n'
+                    code += '        /* repeated.items string.in validation */\n'
+                    code += '        for (pb_size_t __pb_i = 0; __pb_i < msg->%s_count; ++__pb_i) {\n' % field_name
+                    code += '            pb_validate_context_push_index(&ctx, __pb_i);\n'
+                    code += '            const char *__pb_allowed[] = { %s };\n' % values_array
+                    code += '            bool __pb_match = false;\n'
+                    code += '            for (size_t __pb_k = 0; __pb_k < sizeof(__pb_allowed)/sizeof(__pb_allowed[0]); __pb_k++) {\n'
+                    code += '                if (strcmp(msg->%s[__pb_i], __pb_allowed[__pb_k]) == 0) { __pb_match = true; break; }\n' % field_name
                     code += '            }\n'
+                    code += '            if (!__pb_match) {\n'
+                    code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of allowed set");\n' % constraint_id
+                    code += '                if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
+                    code += '            }\n'
+                    code += '            pb_validate_context_pop_index(&ctx);\n'
+                    code += '        }\n'
                 else:
                     conditions = ['msg->%s[__pb_i] == %s' % (field_name, v) for v in values]
                     condition_str = ' || '.join(conditions)
+                    code += '        /* repeated.items %s.in validation */\n' % constraint_id.split('.')[0]
+                    code += '        for (pb_size_t __pb_i = 0; __pb_i < msg->%s_count; ++__pb_i) {\n' % field_name
+                    code += '            pb_validate_context_push_index(&ctx, __pb_i);\n'
                     code += '            if (!(%s)) {\n' % condition_str
                     code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of allowed set");\n' % constraint_id
                     code += '                if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
                     code += '            }\n'
+                    code += '            pb_validate_context_pop_index(&ctx);\n'
+                    code += '        }\n'
             
             elif rule_type == RULE_NOT_IN:
                 values = item_rule.get('values', [])
                 if pbtype == 'STRING':
                     values_array = ', '.join('"%s"' % v for v in values)
-                    code += '            {\n'
-                    code += '                const char *__pb_blocked[] = { %s };\n' % values_array
-                    code += '                bool __pb_forbidden = false;\n'
-                    code += '                for (size_t __pb_k = 0; __pb_k < sizeof(__pb_blocked)/sizeof(__pb_blocked[0]); __pb_k++) {\n'
-                    code += '                    if (strcmp(msg->%s[__pb_i], __pb_blocked[__pb_k]) == 0) { __pb_forbidden = true; break; }\n' % field_name
-                    code += '                }\n'
-                    code += '                if (__pb_forbidden) {\n'
-                    code += '                    pb_violations_add(violations, ctx.path_buffer, "%s", "Value is in forbidden set");\n' % constraint_id
-                    code += '                    if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
-                    code += '                }\n'
+                    code += '        /* repeated.items string.not_in validation */\n'
+                    code += '        for (pb_size_t __pb_i = 0; __pb_i < msg->%s_count; ++__pb_i) {\n' % field_name
+                    code += '            pb_validate_context_push_index(&ctx, __pb_i);\n'
+                    code += '            const char *__pb_blocked[] = { %s };\n' % values_array
+                    code += '            bool __pb_forbidden = false;\n'
+                    code += '            for (size_t __pb_k = 0; __pb_k < sizeof(__pb_blocked)/sizeof(__pb_blocked[0]); __pb_k++) {\n'
+                    code += '                if (strcmp(msg->%s[__pb_i], __pb_blocked[__pb_k]) == 0) { __pb_forbidden = true; break; }\n' % field_name
                     code += '            }\n'
+                    code += '            if (__pb_forbidden) {\n'
+                    code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value is in forbidden set");\n' % constraint_id
+                    code += '                if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
+                    code += '            }\n'
+                    code += '            pb_validate_context_pop_index(&ctx);\n'
+                    code += '        }\n'
                 else:
                     conditions = ['msg->%s[__pb_i] != %s' % (field_name, v) for v in values]
                     condition_str = ' && '.join(conditions)
+                    code += '        /* repeated.items %s.not_in validation */\n' % constraint_id.split('.')[0]
+                    code += '        for (pb_size_t __pb_i = 0; __pb_i < msg->%s_count; ++__pb_i) {\n' % field_name
+                    code += '            pb_validate_context_push_index(&ctx, __pb_i);\n'
                     code += '            if (!(%s)) {\n' % condition_str
                     code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value is in forbidden set");\n' % constraint_id
                     code += '                if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
                     code += '            }\n'
+                    code += '            pb_validate_context_pop_index(&ctx);\n'
+                    code += '        }\n'
         
-        code += '            pb_validate_context_pop_index(&ctx);\n'
-        code += '        }\n'
         return code
     
     def _get_numeric_type_info(self, constraint_id: str) -> tuple:

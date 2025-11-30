@@ -13,6 +13,7 @@ extern "C" {
  * @brief Validate test_AdvancedMessage message.
  *
  * Fields and constraints:
+ * - values: at least 1 items; at most 5 items; items must be unique; per-item validation rules
  * - email: valid email address
  * - test_oneof: no constraints
  *
