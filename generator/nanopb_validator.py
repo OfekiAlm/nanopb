@@ -232,10 +232,27 @@ class MessageValidator:
         self.field_validators = OrderedDict()
         self.message_rules = []
         self.proto_file = proto_file
+        # Track oneof groups with fields that have validation rules
+        # Maps oneof name -> list of (field, FieldValidator) tuples
+        self.oneof_validators = OrderedDict()
         
         # Parse field-level rules (simplified: only direct validate_rules usage)
         for field in getattr(message, 'fields', []) or []:
-            if hasattr(field, 'validate_rules') and field.validate_rules:
+            # Check if this is a OneOf container
+            if hasattr(field, 'pbtype') and field.pbtype == 'oneof':
+                # Process fields inside the oneof
+                oneof_name = field.name
+                oneof_fields_with_rules = []
+                for oneof_member in getattr(field, 'fields', []) or []:
+                    if hasattr(oneof_member, 'validate_rules') and oneof_member.validate_rules:
+                        fv = FieldValidator(oneof_member, oneof_member.validate_rules, proto_file, message)
+                        oneof_fields_with_rules.append((oneof_member, fv))
+                if oneof_fields_with_rules:
+                    self.oneof_validators[oneof_name] = {
+                        'oneof': field,
+                        'members': oneof_fields_with_rules
+                    }
+            elif hasattr(field, 'validate_rules') and field.validate_rules:
                 self.field_validators[field.name] = FieldValidator(field, field.validate_rules, proto_file, message)
         
         # Parse message-level rules
@@ -271,7 +288,7 @@ class ValidatorGenerator:
     def add_message_validator(self, message, message_rules=None):
         """Add a validator for a message."""
         validator = MessageValidator(message, message_rules, self.proto_file)
-        if validator.field_validators or validator.message_rules:
+        if validator.field_validators or validator.message_rules or validator.oneof_validators:
             self.validators[str(message.name)] = validator
     
     def force_add_message_validator(self, message, message_rules=None):
@@ -423,8 +440,17 @@ class ValidatorGenerator:
             for fname, fv in validator.field_validators.items():
                 desc = self._escape_for_comment(self._format_field_constraints(fname, fv))
                 yield ' * %s\n' % desc
+            # Oneof validators
+            for oneof_name, oneof_data in validator.oneof_validators.items():
+                yield ' * - oneof %s:\n' % self._escape_for_comment(oneof_name)
+                for member_field, member_fv in oneof_data['members']:
+                    desc = self._escape_for_comment(self._format_field_constraints(member_field.name, member_fv))
+                    yield ' *   %s\n' % desc
             # Without constraints
             for fname in fields_without:
+                # Skip oneof names as they are already documented above
+                if fname in validator.oneof_validators:
+                    continue
                 yield ' * - %s: no constraints\n' % self._escape_for_comment(fname)
             # Message-level rules summary
             if validator.message_rules:
@@ -613,6 +639,37 @@ class ValidatorGenerator:
                 except Exception:
                     # Skip if field metadata is unexpected
                     pass
+
+            # Generate oneof member validations (switch-based)
+            for oneof_name, oneof_data in validator.oneof_validators.items():
+                oneof_obj = oneof_data['oneof']
+                members = oneof_data['members']  # List of (field, FieldValidator) tuples
+                
+                yield '    /* Validate oneof: %s */\n' % oneof_name
+                yield '    switch (msg->which_%s) {\n' % oneof_name
+                
+                for member_field, member_fv in members:
+                    field_name = member_field.name
+                    # Generate case for this oneof member
+                    # Tag constant format: <MESSAGE_NAME>_<field_name>_tag
+                    tag_name = '%s_%s_tag' % (struct_name, field_name)
+                    yield '        case %s:\n' % tag_name
+                    yield '            PB_VALIDATE_FIELD_BEGIN(ctx, "%s");\n' % field_name
+                    
+                    for rule in member_fv.rules:
+                        yield '            {\n'
+                        yield '                /* Rule: %s */\n' % rule.constraint_id
+                        yield self._generate_oneof_rule_check(member_field, rule, oneof_name, oneof_obj)
+                        yield '            }\n'
+                    
+                    yield '            PB_VALIDATE_FIELD_END(ctx);\n'
+                    yield '            break;\n'
+                
+                yield '        default:\n'
+                yield '            /* No oneof member set or unrecognized tag */\n'
+                yield '            break;\n'
+                yield '    }\n'
+                yield '    \n'
 
             # Generate message-level validations
             for rule in validator.message_rules:
@@ -1103,6 +1160,294 @@ class ValidatorGenerator:
             return handler(field, rule)
         
         return '        /* TODO: Implement rule type %s */\n' % rule.rule_type
+
+    def _generate_oneof_rule_check(self, field: Any, rule: ValidationRule, oneof_name: str, oneof_obj: Any):
+        """Generate code for a single oneof member validation rule.
+        
+        Oneof members are accessed via msg->oneof_name.field_name (or msg->field_name for anonymous oneofs).
+        """
+        field_name = field.name
+        anonymous = getattr(oneof_obj, 'anonymous', False)
+        
+        # Build field access expression
+        if anonymous:
+            field_access = field_name
+        else:
+            field_access = '%s.%s' % (oneof_name, field_name)
+        
+        # Dispatch to appropriate rule handler with oneof context
+        rt = rule.rule_type
+        
+        if rt in (RULE_GT, RULE_GTE, RULE_LT, RULE_LTE, RULE_EQ):
+            return self._gen_oneof_numeric_comparison(field, rule, field_access)
+        elif rt == RULE_MIN_LEN:
+            return self._gen_oneof_min_len(field, rule, field_access)
+        elif rt == RULE_MAX_LEN:
+            return self._gen_oneof_max_len(field, rule, field_access)
+        elif rt == RULE_PREFIX:
+            return self._gen_oneof_prefix(field, rule, field_access)
+        elif rt == RULE_SUFFIX:
+            return self._gen_oneof_suffix(field, rule, field_access)
+        elif rt == RULE_CONTAINS:
+            return self._gen_oneof_contains(field, rule, field_access)
+        elif rt == RULE_ASCII:
+            return self._gen_oneof_ascii(field, rule, field_access)
+        elif rt in (RULE_EMAIL, RULE_HOSTNAME, RULE_IP, RULE_IPV4, RULE_IPV6):
+            return self._gen_oneof_string_format(field, rule, field_access)
+        elif rt == RULE_IN:
+            return self._gen_oneof_in(field, rule, field_access)
+        elif rt == RULE_NOT_IN:
+            return self._gen_oneof_not_in(field, rule, field_access)
+        elif rt == RULE_ENUM_DEFINED:
+            return self._gen_oneof_enum_defined(field, rule, field_access)
+        
+        return '            /* TODO: Implement oneof rule type %s */\n' % rule.rule_type
+
+    def _gen_oneof_numeric_comparison(self, field: Any, rule: ValidationRule, field_access: str) -> str:
+        """Generate numeric comparison validation for oneof member."""
+        type_map_func = {
+            'int32': ('pb_validate_int32', 'int32_t'),
+            'sint32': ('pb_validate_int32', 'int32_t'),
+            'sfixed32': ('pb_validate_int32', 'int32_t'),
+            'int64': ('pb_validate_int64', 'int64_t'),
+            'sint64': ('pb_validate_int64', 'int64_t'),
+            'sfixed64': ('pb_validate_int64', 'int64_t'),
+            'uint32': ('pb_validate_uint32', 'uint32_t'),
+            'fixed32': ('pb_validate_uint32', 'uint32_t'),
+            'uint64': ('pb_validate_uint64', 'uint64_t'),
+            'fixed64': ('pb_validate_uint64', 'uint64_t'),
+            'float': ('pb_validate_float', 'float'),
+            'double': ('pb_validate_double', 'double'),
+            'bool': ('pb_validate_bool', 'bool'),
+            'enum': ('pb_validate_enum', 'int')
+        }
+        constraint_prefix = rule.constraint_id.split('.', 1)[0]
+        validator_func, ctype = type_map_func.get(constraint_prefix, (None, None))
+
+        if not validator_func:
+            return ''
+
+        value = rule.params.get('value', 0)
+        enum_map = {
+            RULE_GT: 'PB_VALIDATE_RULE_GT',
+            RULE_GTE: 'PB_VALIDATE_RULE_GTE',
+            RULE_LT: 'PB_VALIDATE_RULE_LT',
+            RULE_LTE: 'PB_VALIDATE_RULE_LTE',
+            RULE_EQ: 'PB_VALIDATE_RULE_EQ'
+        }
+        rule_enum = enum_map.get(rule.rule_type)
+        if not rule_enum:
+            return ''
+
+        return (
+            '            {\n'
+            '                %s expected = (%s)%s;\n'
+            '                if (!%s(msg->%s, &expected, %s)) {\n'
+            '                    pb_violations_add(violations, ctx.path_buffer, "%s", "Value constraint failed");\n'
+            '                    if (ctx.early_exit) return false;\n'
+            '                }\n'
+            '            }\n'
+        ) % (ctype, ctype, value, validator_func, field_access, rule_enum, rule.constraint_id)
+
+    def _gen_oneof_min_len(self, field: Any, rule: ValidationRule, field_access: str) -> str:
+        """Generate min_len validation for oneof string member."""
+        min_len = rule.params.get('value', 0)
+        if 'string' in rule.constraint_id:
+            return (
+                '            {\n'
+                '                uint32_t min_len = %d;\n'
+                '                if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), &min_len, PB_VALIDATE_RULE_MIN_LEN)) {\n'
+                '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String too short");\n'
+                '                    if (ctx.early_exit) return false;\n'
+                '                }\n'
+                '            }\n'
+            ) % (min_len, field_access, field_access, rule.constraint_id)
+        else:  # bytes
+            return (
+                '            if (msg->%s.size < %d) {\n'
+                '                pb_violations_add(violations, ctx.path_buffer, "%s", "Bytes too short");\n'
+                '                if (ctx.early_exit) return false;\n'
+                '            }\n'
+            ) % (field_access, min_len, rule.constraint_id)
+
+    def _gen_oneof_max_len(self, field: Any, rule: ValidationRule, field_access: str) -> str:
+        """Generate max_len validation for oneof string member."""
+        max_len = rule.params.get('value', 0)
+        if 'string' in rule.constraint_id:
+            return (
+                '            {\n'
+                '                uint32_t max_len = %d;\n'
+                '                if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), &max_len, PB_VALIDATE_RULE_MAX_LEN)) {\n'
+                '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String too long");\n'
+                '                    if (ctx.early_exit) return false;\n'
+                '                }\n'
+                '            }\n'
+            ) % (max_len, field_access, field_access, rule.constraint_id)
+        else:  # bytes
+            return (
+                '            if (msg->%s.size > %d) {\n'
+                '                pb_violations_add(violations, ctx.path_buffer, "%s", "Bytes too long");\n'
+                '                if (ctx.early_exit) return false;\n'
+                '            }\n'
+            ) % (field_access, max_len, rule.constraint_id)
+
+    def _gen_oneof_prefix(self, field: Any, rule: ValidationRule, field_access: str) -> str:
+        """Generate prefix validation for oneof string member."""
+        prefix = rule.params.get('value', '')
+        if 'string' in rule.constraint_id:
+            return (
+                '            {\n'
+                '                const char *prefix = "%s";\n'
+                '                if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), prefix, PB_VALIDATE_RULE_PREFIX)) {\n'
+                '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must start with \'%s\'");\n'
+                '                    if (ctx.early_exit) return false;\n'
+                '                }\n'
+                '            }\n'
+            ) % (prefix, field_access, field_access, rule.constraint_id, prefix)
+        return ''
+
+    def _gen_oneof_suffix(self, field: Any, rule: ValidationRule, field_access: str) -> str:
+        """Generate suffix validation for oneof string member."""
+        suffix = rule.params.get('value', '')
+        if 'string' in rule.constraint_id:
+            return (
+                '            {\n'
+                '                const char *suffix = "%s";\n'
+                '                if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), suffix, PB_VALIDATE_RULE_SUFFIX)) {\n'
+                '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must end with \'%s\'");\n'
+                '                    if (ctx.early_exit) return false;\n'
+                '                }\n'
+                '            }\n'
+            ) % (suffix, field_access, field_access, rule.constraint_id, suffix)
+        return ''
+
+    def _gen_oneof_contains(self, field: Any, rule: ValidationRule, field_access: str) -> str:
+        """Generate contains validation for oneof string member."""
+        contains = rule.params.get('value', '')
+        if 'string' in rule.constraint_id:
+            return (
+                '            {\n'
+                '                const char *needle = "%s";\n'
+                '                if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), needle, PB_VALIDATE_RULE_CONTAINS)) {\n'
+                '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain \'%s\'");\n'
+                '                    if (ctx.early_exit) return false;\n'
+                '                }\n'
+                '            }\n'
+            ) % (contains, field_access, field_access, rule.constraint_id, contains)
+        return ''
+
+    def _gen_oneof_ascii(self, field: Any, rule: ValidationRule, field_access: str) -> str:
+        """Generate ascii validation for oneof string member."""
+        if 'string' in rule.constraint_id:
+            return (
+                '            {\n'
+                '                if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), NULL, PB_VALIDATE_RULE_ASCII)) {\n'
+                '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain only ASCII characters");\n'
+                '                    if (ctx.early_exit) return false;\n'
+                '                }\n'
+                '            }\n'
+            ) % (field_access, field_access, rule.constraint_id)
+        return ''
+
+    def _gen_oneof_string_format(self, field: Any, rule: ValidationRule, field_access: str) -> str:
+        """Generate format validation (email, hostname, ip) for oneof string member."""
+        if 'string' in rule.constraint_id:
+            enum_map = {
+                RULE_EMAIL: 'PB_VALIDATE_RULE_EMAIL',
+                RULE_HOSTNAME: 'PB_VALIDATE_RULE_HOSTNAME',
+                RULE_IP: 'PB_VALIDATE_RULE_IP',
+                RULE_IPV4: 'PB_VALIDATE_RULE_IPV4',
+                RULE_IPV6: 'PB_VALIDATE_RULE_IPV6',
+            }
+            rule_enum = enum_map.get(rule.rule_type)
+            if not rule_enum:
+                return ''
+            return (
+                '            {\n'
+                '                if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), NULL, %s)) {\n'
+                '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String format validation failed");\n'
+                '                    if (ctx.early_exit) return false;\n'
+                '                }\n'
+                '            }\n'
+            ) % (field_access, field_access, rule_enum, rule.constraint_id)
+        return ''
+
+    def _gen_oneof_in(self, field: Any, rule: ValidationRule, field_access: str) -> str:
+        """Generate 'in' validation for oneof member."""
+        values = rule.params.get('values', [])
+        if 'string' in rule.constraint_id:
+            conditions = ['strcmp(msg->%s, "%s") == 0' % (field_access, v) for v in values]
+            condition_str = ' || '.join(conditions)
+            values_str = ', '.join('"%s"' % v for v in values)
+            return (
+                '            if (!(%s)) {\n'
+                '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of: %s");\n'
+                '                if (ctx.early_exit) return false;\n'
+                '            }\n'
+            ) % (condition_str, rule.constraint_id, values_str)
+        else:
+            conditions = ['msg->%s == %s' % (field_access, v) for v in values]
+            condition_str = ' || '.join(conditions)
+            values_str = ', '.join(str(v) for v in values)
+            return (
+                '            if (!(%s)) {\n'
+                '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of: %s");\n'
+                '                if (ctx.early_exit) return false;\n'
+                '            }\n'
+            ) % (condition_str, rule.constraint_id, values_str)
+
+    def _gen_oneof_not_in(self, field: Any, rule: ValidationRule, field_access: str) -> str:
+        """Generate 'not_in' validation for oneof member."""
+        values = rule.params.get('values', [])
+        if 'string' in rule.constraint_id:
+            conditions = ['strcmp(msg->%s, "%s") != 0' % (field_access, v) for v in values]
+            condition_str = ' && '.join(conditions)
+            values_str = ', '.join('"%s"' % v for v in values)
+            return (
+                '            if (!(%s)) {\n'
+                '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value must not be one of: %s");\n'
+                '                if (ctx.early_exit) return false;\n'
+                '            }\n'
+            ) % (condition_str, rule.constraint_id, values_str)
+        else:
+            conditions = ['msg->%s != %s' % (field_access, v) for v in values]
+            condition_str = ' && '.join(conditions)
+            values_str = ', '.join(str(v) for v in values)
+            return (
+                '            if (!(%s)) {\n'
+                '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value must not be one of: %s");\n'
+                '                if (ctx.early_exit) return false;\n'
+                '            }\n'
+            ) % (condition_str, rule.constraint_id, values_str)
+
+    def _gen_oneof_enum_defined(self, field: Any, rule: ValidationRule, field_access: str) -> str:
+        """Generate enum defined_only validation for oneof member."""
+        if not rule.params.get('value', True):
+            return ''
+        try:
+            enum_vals = []
+            ctype = getattr(field, 'ctype', None)
+            for e in getattr(self.proto_file, 'enums', []) or []:
+                try:
+                    if e.names == ctype or str(e.names) == str(ctype):
+                        enum_vals = [int(v) for (_, v) in getattr(e, 'values', [])]
+                        break
+                except Exception:
+                    continue
+            if enum_vals:
+                arr_values = ', '.join(str(v) for v in enum_vals)
+                return (
+                    '            {\n'
+                    '                static const int __pb_defined_vals[] = { %s };\n'
+                    '                if (!pb_validate_enum_defined_only((int)msg->%s, __pb_defined_vals, (pb_size_t)(sizeof(__pb_defined_vals)/sizeof(__pb_defined_vals[0])))) {\n'
+                    '                    pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be a defined enum value");\n'
+                    '                    if (ctx.early_exit) return false;\n'
+                    '                }\n'
+                    '            }\n'
+                ) % (arr_values, field_access, rule.constraint_id)
+        except Exception:
+            pass
+        return ''
 
 
     
