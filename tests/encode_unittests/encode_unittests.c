@@ -516,6 +516,78 @@ int main()
         TEST(pb_encode_svarint(&s, INT64_MIN));
     }
 
+    {
+        COMMENT("Test pb_get_encoded_size")
+        IntegerArray msg = {5, {1, 2, 3, 4, 5}};
+        size_t size = 0;
+        
+        /* Valid encoding should return size */
+        TEST(pb_get_encoded_size(&size, IntegerArray_fields, &msg) && size > 0);
+        
+        /* Test with empty message */
+        msg.data_count = 0;
+        TEST(pb_get_encoded_size(&size, IntegerArray_fields, &msg) && size == 0);
+    }
+
+    {
+        uint8_t buffer[5];  /* Very small buffer to test overflow */
+        pb_ostream_t s;
+        IntegerArray msg = {5, {1, 2, 3, 4, 5}};
+
+        COMMENT("Test pb_encode_ex with delimited encoding")
+
+        /* Test PB_ENCODE_DELIMITED flag */
+        s = pb_ostream_from_buffer(buffer, sizeof(buffer));
+        TEST(!pb_encode_ex(&s, IntegerArray_fields, &msg, PB_ENCODE_DELIMITED)); /* Should fail - buffer too small */
+        
+        /* Test with larger buffer */
+        uint8_t buffer2[50];
+        s = pb_ostream_from_buffer(buffer2, sizeof(buffer2));
+        TEST(pb_encode_ex(&s, IntegerArray_fields, &msg, PB_ENCODE_DELIMITED));
+    }
+
+    {
+        uint8_t buffer[2];  /* Small buffer to test NULLTERMINATED error path */
+        pb_ostream_t s;
+        IntegerArray msg = {5, {1, 2, 3, 4, 5}};
+
+        COMMENT("Test pb_encode_ex NULLTERMINATED with small buffer")
+        
+        /* This should fail because buffer is too small for the null terminator */
+        s = pb_ostream_from_buffer(buffer, sizeof(buffer));
+        TEST(!pb_encode_ex(&s, IntegerArray_fields, &msg, PB_ENCODE_NULLTERMINATED));
+    }
+
+    {
+        uint8_t buffer[100];
+        pb_ostream_t s;
+        
+        COMMENT("Test pb_encode_tag with various wire types");
+        
+        /* Test all wire types */
+        TEST(WRITES(pb_encode_tag(&s, PB_WT_VARINT, 1), "\x08"));
+        TEST(WRITES(pb_encode_tag(&s, PB_WT_64BIT, 1), "\x09"));
+        TEST(WRITES(pb_encode_tag(&s, PB_WT_STRING, 1), "\x0A"));
+        TEST(WRITES(pb_encode_tag(&s, PB_WT_32BIT, 1), "\x0D"));
+        
+        /* Test larger tag numbers */
+        TEST(WRITES(pb_encode_tag(&s, PB_WT_VARINT, 16), "\x80\x01"));
+        TEST(WRITES(pb_encode_tag(&s, PB_WT_VARINT, 2047), "\xF8\x7F"));
+    }
+
+    {
+        uint8_t buffer[100];
+        pb_ostream_t s;
+
+        COMMENT("Test pb_encode_fixed32 and pb_encode_fixed64");
+
+        uint32_t val32 = 0x12345678;
+        TEST(WRITES(pb_encode_fixed32(&s, &val32), "\x78\x56\x34\x12"));
+
+        uint64_t val64 = 0x123456789ABCDEF0ULL;
+        TEST(WRITES(pb_encode_fixed64(&s, &val64), "\xF0\xDE\xBC\x9A\x78\x56\x34\x12"));
+    }
+
     if (status != 0)
         fprintf(stdout, "\n\nSome tests FAILED!\n");
     
