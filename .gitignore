@@ -34,3 +34,10 @@ extra/poetry/build
 build/
 .idea
 .vscode/
+
+# Generated validation files
+*_validate.c
+*_validate.h
+
+# Test binaries
+tests/repeated_validation/test_repeated
