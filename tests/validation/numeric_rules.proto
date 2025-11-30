@@ -1,0 +1,93 @@
+/* Test numeric validation rules for all numeric types */
+
+syntax = "proto3";
+
+import "validate.proto";
+
+option (validate.validate) = true;
+
+/* Test int32 rules */
+message Int32Rules {
+    int32 lt_field = 1 [(validate.rules).int32.lt = 100];
+    int32 lte_field = 2 [(validate.rules).int32.lte = 100];
+    int32 gt_field = 3 [(validate.rules).int32.gt = 0];
+    int32 gte_field = 4 [(validate.rules).int32.gte = 0];
+    int32 const_field = 5 [(validate.rules).int32.const = 42];
+    int32 range_field = 6 [(validate.rules).int32.gte = 0, (validate.rules).int32.lte = 150];
+}
+
+/* Test int64 rules */
+message Int64Rules {
+    int64 lt_field = 1 [(validate.rules).int64.lt = 100];
+    int64 gt_field = 2 [(validate.rules).int64.gt = 0];
+    int64 gte_field = 3 [(validate.rules).int64.gte = -1000];
+    int64 lte_field = 4 [(validate.rules).int64.lte = 1000];
+}
+
+/* Test uint32 rules */
+message UInt32Rules {
+    uint32 lt_field = 1 [(validate.rules).uint32.lt = 100];
+    uint32 gt_field = 2 [(validate.rules).uint32.gt = 0];
+    uint32 gte_field = 3 [(validate.rules).uint32.gte = 0];
+    uint32 lte_field = 4 [(validate.rules).uint32.lte = 1000];
+}
+
+/* Test uint64 rules */
+message UInt64Rules {
+    uint64 lt_field = 1 [(validate.rules).uint64.lt = 1000];
+    uint64 gt_field = 2 [(validate.rules).uint64.gt = 0];
+    uint64 gte_field = 3 [(validate.rules).uint64.gte = 1];
+    uint64 lte_field = 4 [(validate.rules).uint64.lte = 100];
+}
+
+/* Test float rules */
+message FloatRules {
+    float lt_field = 1 [(validate.rules).float.lt = 100.0];
+    float gt_field = 2 [(validate.rules).float.gt = 0.0];
+    float gte_field = 3 [(validate.rules).float.gte = -50.0];
+    float lte_field = 4 [(validate.rules).float.lte = 150.0];
+    float range_field = 5 [(validate.rules).float.gte = -50.0, (validate.rules).float.lte = 150.0];
+}
+
+/* Test double rules */
+message DoubleRules {
+    double lt_field = 1 [(validate.rules).double.lt = 1.0];
+    double gt_field = 2 [(validate.rules).double.gt = 0.0];
+    double gte_field = 3 [(validate.rules).double.gte = 0.0];
+    double lte_field = 4 [(validate.rules).double.lte = 1.0];
+}
+
+/* Test sint32 rules */
+message SInt32Rules {
+    sint32 lt_field = 1 [(validate.rules).sint32.lt = 0];
+    sint32 gt_field = 2 [(validate.rules).sint32.gt = -100];
+    sint32 range_field = 3 [(validate.rules).sint32.gte = -50, (validate.rules).sint32.lte = 50];
+}
+
+/* Test sint64 rules */
+message SInt64Rules {
+    sint64 lt_field = 1 [(validate.rules).sint64.lt = 0];
+    sint64 gt_field = 2 [(validate.rules).sint64.gt = -1000];
+}
+
+/* Test fixed32 rules */
+message Fixed32Rules {
+    fixed32 lt_field = 1 [(validate.rules).fixed32.lt = 100];
+    fixed32 gt_field = 2 [(validate.rules).fixed32.gt = 10];
+}
+
+/* Test fixed64 rules */
+message Fixed64Rules {
+    fixed64 lt_field = 1 [(validate.rules).fixed64.lt = 1000];
+    fixed64 gt_field = 2 [(validate.rules).fixed64.gt = 100];
+}
+
+/* Test sfixed32 rules */
+message SFixed32Rules {
+    sfixed32 range_field = 1 [(validate.rules).sfixed32.gte = -100, (validate.rules).sfixed32.lte = 100];
+}
+
+/* Test sfixed64 rules */
+message SFixed64Rules {
+    sfixed64 range_field = 1 [(validate.rules).sfixed64.gte = -1000, (validate.rules).sfixed64.lte = 1000];
+}

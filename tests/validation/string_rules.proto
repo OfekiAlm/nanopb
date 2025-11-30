@@ -1,0 +1,35 @@
+/* Test string validation rules */
+
+syntax = "proto3";
+
+import "validate.proto";
+import "nanopb.proto";
+
+option (validate.validate) = true;
+
+/* Test all string rules */
+message StringRules {
+    /* Length constraints */
+    string min_len_field = 1 [(nanopb).max_size = 64, (validate.rules).string.min_len = 3];
+    string max_len_field = 2 [(nanopb).max_size = 64, (validate.rules).string.max_len = 20];
+    string range_len_field = 3 [(nanopb).max_size = 64, (validate.rules).string.min_len = 3, (validate.rules).string.max_len = 20];
+    
+    /* Pattern constraints */
+    string prefix_field = 4 [(nanopb).max_size = 64, (validate.rules).string.prefix = "PREFIX_"];
+    string suffix_field = 5 [(nanopb).max_size = 64, (validate.rules).string.suffix = "_SUFFIX"];
+    string contains_field = 6 [(nanopb).max_size = 64, (validate.rules).string.contains = "@"];
+    
+    /* Character set constraints */
+    string ascii_field = 7 [(nanopb).max_size = 64, (validate.rules).string.ascii = true];
+    
+    /* Format constraints */
+    string email_field = 8 [(nanopb).max_size = 128, (validate.rules).string.email = true];
+    string hostname_field = 9 [(nanopb).max_size = 128, (validate.rules).string.hostname = true];
+    string ip_field = 10 [(nanopb).max_size = 46, (validate.rules).string.ip = true];
+    string ipv4_field = 11 [(nanopb).max_size = 16, (validate.rules).string.ipv4 = true];
+    string ipv6_field = 12 [(nanopb).max_size = 46, (validate.rules).string.ipv6 = true];
+    
+    /* Set membership */
+    string in_field = 13 [(nanopb).max_size = 32, (validate.rules).string.in = "red", (validate.rules).string.in = "green", (validate.rules).string.in = "blue"];
+    string not_in_field = 14 [(nanopb).max_size = 32, (validate.rules).string.not_in = "FORBIDDEN", (validate.rules).string.not_in = "BLOCKED", (validate.rules).string.not_in = "BANNED"];
+}

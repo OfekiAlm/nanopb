@@ -1,0 +1,65 @@
+# Build and run validation test suite
+# Tests all validation rules and behaviors
+
+Import("env")
+
+# Clone environment to set validation-specific options
+test_env = env.Clone()
+
+# Enable validation code generation via NANOPBFLAGS
+# Also exclude validate.proto from #include list since it's only used for options
+test_env.Replace(NANOPBFLAGS = "--validate,-x,validate.proto")
+
+# Remove -ansi flag since pb_validate.h requires C99 features (inline)
+# Also enable C99 for stdbool.h
+cflags = str(test_env.get('CFLAGS', ''))
+if '-ansi' in cflags:
+    cflags = cflags.replace('-ansi', '')
+test_env.Replace(CFLAGS = cflags + ' -std=c99 ')
+
+# Build pb_validate.o without extra strict flags (avoid conversion warnings)
+test_env.Object("pb_validate.o", "$NANOPB/pb_validate.c")
+
+# List of proto files to compile
+protos = [
+    "numeric_rules",
+    "string_rules", 
+    "repeated_rules",
+    "enum_rules",
+    "message_rules",
+    "oneof_rules",
+    "bytes_rules",
+    "bypass_behavior"
+]
+
+# Generate nanopb sources for each proto file
+# The NanopbProto builder generates .pb.c and .pb.h
+# With --validate flag, it also generates _validate.c and _validate.h
+# but we need to add _validate.c as a side effect
+pb_sources = []
+validate_sources = []
+for proto in protos:
+    pb_files = test_env.NanopbProto(proto)
+    pb_sources.append(proto + ".pb.c")
+    # Mark _validate.c as side effect of the proto compilation
+    validate_c = proto + "_validate.c"
+    validate_h = proto + "_validate.h"
+    test_env.SideEffect(validate_c, pb_files)
+    test_env.SideEffect(validate_h, pb_files)
+    validate_sources.append(validate_c)
+
+# All C source files for the test binary
+sources = ["test.c"] + pb_sources + validate_sources
+
+# Build the test binary
+test_prog = test_env.Program(
+    sources + [
+        "$COMMON/pb_encode.o",
+        "$COMMON/pb_decode.o",
+        "$COMMON/pb_common.o",
+        "pb_validate.o"
+    ]
+)
+
+# Run the test
+test_env.RunTest(test_prog)

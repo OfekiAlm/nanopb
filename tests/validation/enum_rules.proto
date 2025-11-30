@@ -1,0 +1,35 @@
+/* Test enum validation rules */
+
+syntax = "proto3";
+
+import "validate.proto";
+
+option (validate.validate) = true;
+
+/* Status enum for testing */
+enum Status {
+    STATUS_UNKNOWN = 0;
+    STATUS_ACTIVE = 1;
+    STATUS_INACTIVE = 2;
+    STATUS_SUSPENDED = 3;
+}
+
+/* Color enum for testing */
+enum Color {
+    COLOR_UNSPECIFIED = 0;
+    COLOR_RED = 1;
+    COLOR_GREEN = 2;
+    COLOR_BLUE = 3;
+}
+
+/* Test enum rules */
+message EnumRules {
+    /* defined_only constraint - value must be a defined enum value */
+    Status defined_only_field = 1 [(validate.rules).enum.defined_only = true];
+    
+    /* const constraint - value must equal specific value */
+    Status const_field = 2 [(validate.rules).enum.const = 1];
+    
+    /* Multiple enums with defined_only */
+    Color color_field = 3 [(validate.rules).enum.defined_only = true];
+}

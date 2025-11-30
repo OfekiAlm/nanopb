@@ -1,0 +1,16 @@
+/* Test bytes validation rules */
+
+syntax = "proto3";
+
+import "validate.proto";
+import "nanopb.proto";
+
+option (validate.validate) = true;
+
+/* Test bytes rules */
+message BytesRules {
+    /* Length constraints */
+    bytes min_len_field = 1 [(nanopb).max_size = 256, (validate.rules).bytes.min_len = 1];
+    bytes max_len_field = 2 [(nanopb).max_size = 256, (validate.rules).bytes.max_len = 100];
+    bytes range_len_field = 3 [(nanopb).max_size = 256, (validate.rules).bytes.min_len = 4, (validate.rules).bytes.max_len = 64];
+}
