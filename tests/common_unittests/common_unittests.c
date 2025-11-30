@@ -142,6 +142,69 @@ int main()
         TEST(!pb_validate_utf8("a\xef\xbf\xbez"));
         TEST(!pb_validate_utf8("\xF4\x90\x80\x80"));
         TEST(!pb_validate_utf8("\xF5\x80\x80\x80"));
+        /* Test more UTF-8 edge cases */
+        TEST(pb_validate_utf8(""));  /* Empty string is valid UTF-8 */
+        TEST(!pb_validate_utf8("\xef\xbf\xbf"));  /* U+FFFF */
+        TEST(!pb_validate_utf8("\xed\xa0\x80"));  /* surrogate start */
+    }
+
+    {
+        COMMENT("Test pb_field_iter_find with various scenarios");
+        AllTypes msg;
+        pb_field_iter_t iter;
+
+        TEST(pb_field_iter_begin(&iter, AllTypes_fields, &msg));
+
+        /* Test finding a field that's ahead of current position */
+        TEST(pb_field_iter_find(&iter, 5));  /* sint32 */
+        TEST(iter.tag == 5);
+
+        /* Test finding current tag (should return immediately) */
+        TEST(pb_field_iter_find(&iter, 5));
+        TEST(iter.tag == 5);
+
+        /* Test finding a tag larger than largest_tag (should fail) */
+        TEST(!pb_field_iter_find(&iter, 10000));
+
+        /* Test finding a tag that requires wraparound (tag < current) */
+        TEST(pb_field_iter_find(&iter, 1));  /* Should wrap around */
+        TEST(iter.tag == 1);
+    }
+
+    {
+        COMMENT("Test pb_field_iter_begin with NULL message");
+        pb_field_iter_t iter;
+
+        /* Test with NULL message - pField and pSize should be NULL */
+        TEST(pb_field_iter_begin(&iter, AllTypes_fields, NULL));
+        TEST(iter.pField == NULL);
+        TEST(iter.pData == NULL);
+    }
+
+    {
+        COMMENT("Test pb_field_iter_begin_const");
+        const AllTypes msg = AllTypes_init_zero;
+        pb_field_iter_t iter;
+
+        TEST(pb_field_iter_begin_const(&iter, AllTypes_fields, &msg));
+        TEST(iter.tag == 1);
+    }
+
+    {
+        COMMENT("Test pb_default_field_callback edge cases");
+        pb_field_t field = {0};
+        pb_callback_t callback = {{NULL}, NULL};
+
+        /* Test with mismatched data_size (should do nothing, return true) */
+        field.data_size = sizeof(pb_callback_t) + 1;  /* Wrong size */
+        field.pData = &callback;
+        TEST(pb_default_field_callback(NULL, NULL, &field));
+
+        /* Test with correct data_size but NULL callback */
+        field.data_size = sizeof(pb_callback_t);
+        callback.funcs.decode = NULL;
+        callback.funcs.encode = NULL;
+        TEST(pb_default_field_callback(NULL, NULL, &field));
     }
 
     if (status != 0)
