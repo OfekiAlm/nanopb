@@ -2,6 +2,27 @@
  *
  * This file provides the public API for validating protobuf messages
  * against declarative constraints defined using custom options.
+ *
+ * Key features:
+ * - Numeric constraints: lt, lte, gt, gte, eq, in, not_in
+ * - String constraints: min_len, max_len, prefix, suffix, contains, ascii
+ * - String formats: email, hostname, ipv4, ipv6, ip
+ * - Bytes constraints: same as strings except format validators
+ * - Enum constraints: defined_only, in, not_in
+ * - Repeated field constraints: min_items, max_items
+ * - Message-level constraints: required fields, mutex, at_least
+ *
+ * Usage:
+ *   1. Generate validation code with nanopb generator
+ *   2. Include generated *_validate.h header
+ *   3. Call pb_validate_MessageName(msg, violations)
+ *   4. Check return value (true = valid) or examine violations
+ *
+ * Configuration macros (define before including this header):
+ *   PB_VALIDATE_MAX_VIOLATIONS  - Max violations to collect (default: 16)
+ *   PB_VALIDATE_EARLY_EXIT      - Stop on first violation (default: 1)
+ *   PB_VALIDATE_MAX_PATH_LENGTH - Max field path length (default: 128)
+ *   PB_VALIDATE_MAX_MESSAGE_LENGTH - Max string scan length (default: 256)
  */
 
 #ifndef PB_VALIDATE_H_INCLUDED
@@ -16,68 +37,88 @@ extern "C"
 {
 #endif
 
-/* Configuration options */
+/*
+ * Configuration options - can be overridden before including this header
+ */
+
+/* Maximum number of violations that can be collected */
 #ifndef PB_VALIDATE_MAX_VIOLATIONS
 #define PB_VALIDATE_MAX_VIOLATIONS 16
 #endif
 
+/* If set to 1, validation stops on first violation (faster, less info) */
 #ifndef PB_VALIDATE_EARLY_EXIT
 #define PB_VALIDATE_EARLY_EXIT 1
 #endif
 
+/* Maximum length of field path string (e.g., "user.address.city") */
 #ifndef PB_VALIDATE_MAX_PATH_LENGTH
 #define PB_VALIDATE_MAX_PATH_LENGTH 128
 #endif
 
+/* Maximum string length to scan when reading callback strings */
 #ifndef PB_VALIDATE_MAX_MESSAGE_LENGTH
 #define PB_VALIDATE_MAX_MESSAGE_LENGTH 256
 #endif
 
-    /* Violation structure representing a single validation error */
-    typedef struct pb_violation_s
-    {
-        const char *field_path;    /* Dotted path to the field, e.g., "user.email" */
-        const char *constraint_id; /* Constraint identifier, e.g., "string.max_len" */
-        const char *message;       /* Human-readable error message */
-    } pb_violation_t;
+/*
+ * Violation types - represent individual validation failures
+ */
 
-    /* Violations collection structure */
-    typedef struct pb_violations_s
-    {
-        pb_violation_t violations[PB_VALIDATE_MAX_VIOLATIONS];
-        pb_size_t count; /* Number of violations recorded */
-        bool truncated;  /* True if more violations were found than could be stored */
-    } pb_violations_t;
+/* Single validation error */
+typedef struct pb_violation_s
+{
+    const char *field_path;    /* Dotted path to the field, e.g., "user.email" */
+    const char *constraint_id; /* Constraint identifier, e.g., "string.max_len" */
+    const char *message;       /* Human-readable error message */
+} pb_violation_t;
 
-    /* Initialize a violations structure */
-    void pb_violations_init(pb_violations_t *violations);
+/* Collection of validation errors */
+typedef struct pb_violations_s
+{
+    pb_violation_t violations[PB_VALIDATE_MAX_VIOLATIONS];
+    pb_size_t count; /* Number of violations recorded */
+    bool truncated;  /* True if more violations were found than could be stored */
+} pb_violations_t;
 
-    /* Add a violation to the collection */
-    bool pb_violations_add(pb_violations_t *violations,
-                           const char *field_path,
-                           const char *constraint_id,
-                           const char *message);
+/*
+ * Violations API
+ */
 
-    /* Get the number of violations */
-    static inline pb_size_t pb_violations_count(const pb_violations_t *violations)
-    {
-        return violations ? violations->count : 0;
-    }
+/* Initialize a violations structure. Must be called before use. */
+void pb_violations_init(pb_violations_t *violations);
 
-    /* Check if there are any violations */
-    static inline bool pb_violations_has_any(const pb_violations_t *violations)
-    {
-        return pb_violations_count(violations) > 0;
-    }
+/* Add a violation to the collection.
+ * Returns true if added, false if collection is full.
+ * Note: Pointers are stored directly, caller must ensure lifetime. */
+bool pb_violations_add(pb_violations_t *violations,
+                       const char *field_path,
+                       const char *constraint_id,
+                       const char *message);
 
-    /* Validation context structure (internal use) */
-    typedef struct pb_validate_context_s
-    {
-        pb_violations_t *violations;
-        char path_buffer[PB_VALIDATE_MAX_PATH_LENGTH];
-        pb_size_t path_length;
-        bool early_exit;
-    } pb_validate_context_t;
+/* Get the number of violations. Returns 0 if violations is NULL. */
+static inline pb_size_t pb_violations_count(const pb_violations_t *violations)
+{
+    return violations ? violations->count : 0;
+}
+
+/* Check if there are any violations. */
+static inline bool pb_violations_has_any(const pb_violations_t *violations)
+{
+    return pb_violations_count(violations) > 0;
+}
+
+/*
+ * Validation context - used internally by generated validators
+ */
+
+typedef struct pb_validate_context_s
+{
+    pb_violations_t *violations;
+    char path_buffer[PB_VALIDATE_MAX_PATH_LENGTH];
+    pb_size_t path_length;
+    bool early_exit;
+} pb_validate_context_t;
 
         /* Convenience macros for generated validators
          *
