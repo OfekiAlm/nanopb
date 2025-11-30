@@ -421,7 +421,101 @@ int main()
         strs[0] = zstr;
         TEST(WRITES(pb_encode(&s, StringPointerContainer_fields, &msg), "\x0a\x01Z"))
     }
+
+    {
+        uint8_t buffer[30];
+        pb_ostream_t s;
+        IntegerArray msg = {0, {0}};
+        
+        COMMENT("Test pb_encode_ex with null-terminated output");
+        
+        /* Test PB_ENCODE_NULLTERMINATED flag */
+        s = pb_ostream_from_buffer(buffer, sizeof(buffer));
+        TEST(pb_encode_ex(&s, IntegerArray_fields, &msg, PB_ENCODE_NULLTERMINATED));
+        TEST(buffer[s.bytes_written - 1] == 0x00);
+        
+        /* Test regular encode via pb_encode_ex (no flags) */
+        s = pb_ostream_from_buffer(buffer, sizeof(buffer));
+        TEST(pb_encode_ex(&s, IntegerArray_fields, &msg, 0));
+    }
     
+    {
+        uint8_t buffer[10];
+        pb_ostream_t s;
+        
+        COMMENT("Test pb_write with zero count");
+        s = pb_ostream_from_buffer(buffer, sizeof(buffer));
+        /* Writing 0 bytes should succeed */
+        TEST(pb_write(&s, NULL, 0));
+        TEST(s.bytes_written == 0);
+    }
+    
+    {
+        COMMENT("Test pb_write with integer overflow check");
+        /* Create a stream with buffer callback that is nearly at max size */
+        uint8_t buf[10] = {0};
+        uint8_t buffer[20];
+        pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
+        stream.bytes_written = SIZE_MAX - 5;
+        stream.max_size = SIZE_MAX;
+        /* This should fail due to overflow in bytes_written + count */
+        TEST(!pb_write(&stream, buf, 10));
+    }
+
+    {
+        uint8_t buffer[30];
+        pb_ostream_t s;
+        pb_field_iter_t field;
+        
+        COMMENT("Test pb_enc_varint with various data sizes");
+        
+        /* Test with 8-bit unsigned integer */
+        uint8_t val8 = 42;
+        field.type = PB_LTYPE_UVARINT;
+        field.data_size = sizeof(val8);
+        field.pData = &val8;
+        TEST(WRITES(pb_enc_varint(&s, &field), "\x2A"));
+        
+        /* Test with 16-bit unsigned integer */
+        uint16_t val16 = 300;
+        field.data_size = sizeof(val16);
+        field.pData = &val16;
+        TEST(WRITES(pb_enc_varint(&s, &field), "\xAC\x02"));
+        
+        /* Test with 8-bit signed integer (negative) */
+        int8_t sval8 = -1;
+        field.type = PB_LTYPE_VARINT;
+        field.data_size = sizeof(sval8);
+        field.pData = &sval8;
+        s = pb_ostream_from_buffer(buffer, sizeof(buffer));
+        TEST(pb_enc_varint(&s, &field));
+        
+        /* Test with 16-bit signed integer (negative) */
+        int16_t sval16 = -1;
+        field.data_size = sizeof(sval16);
+        field.pData = &sval16;
+        s = pb_ostream_from_buffer(buffer, sizeof(buffer));
+        TEST(pb_enc_varint(&s, &field));
+    }
+
+    {
+        uint8_t buffer[100];
+        pb_ostream_t s;
+        
+        COMMENT("Test pb_encode_svarint with edge cases");
+        
+        /* Test positive values */
+        TEST(WRITES(pb_encode_svarint(&s, 0), "\x00"));
+        TEST(WRITES(pb_encode_svarint(&s, 1), "\x02"));
+        TEST(WRITES(pb_encode_svarint(&s, -1), "\x01"));
+        
+        /* Test with int64 max and min */
+        s = pb_ostream_from_buffer(buffer, sizeof(buffer));
+        TEST(pb_encode_svarint(&s, INT64_MAX));
+        s = pb_ostream_from_buffer(buffer, sizeof(buffer));
+        TEST(pb_encode_svarint(&s, INT64_MIN));
+    }
+
     if (status != 0)
         fprintf(stdout, "\n\nSome tests FAILED!\n");
     

@@ -439,6 +439,199 @@ int main()
         pb_free(data);
     }
 
+    {
+        pb_istream_t s = {0};
+        void *data = NULL;
+
+        COMMENT("Testing allocate_field with zero size")
+        /* Test with data_size = 0 should fail */
+        TEST(!allocate_field(&s, &data, 0, 10));
+        /* Test with array_size = 0 should fail */
+        TEST(!allocate_field(&s, &data, 10, 0));
+    }
+
+    {
+        pb_istream_t s;
+        uint32_t dest;
+
+        COMMENT("Testing pb_decode_varint32 sign extension edge cases")
+        /* Test varint32 with negative number sign extension (valid) */
+        TEST((s = S("\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\x01"), pb_decode_varint32(&s, &dest) && dest == UINT32_MAX));
+        /* Test varint32 that's too long (invalid) */
+        TEST((s = S("\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\x01"), !pb_decode_varint32(&s, &dest)));
+    }
+
+    {
+        pb_istream_t s;
+
+        COMMENT("Testing pb_skip_string with edge cases")
+        /* Test skip_string with length that causes size_t overflow */
+        TEST((s = S("\xFF\xFF\xFF\xFF\x0F"), !pb_skip_string(&s)));
+    }
+
+    {
+        pb_istream_t s;
+
+        COMMENT("Testing pb_make_string_substream edge cases")
+        pb_istream_t substream;
+
+        /* Test with parent stream too short */
+        s = S("\x10"); /* Length prefix says 16 bytes but stream only has 0 bytes left */
+        TEST(!pb_make_string_substream(&s, &substream));
+    }
+
+    {
+        COMMENT("Testing pb_close_string_substream")
+        pb_istream_t s;
+        pb_istream_t substream;
+
+        /* Create a stream with some data */
+        s = S("\x05hello");
+        TEST(pb_make_string_substream(&s, &substream));
+        /* Read some but not all data from substream */
+        uint8_t buf[3];
+        TEST(pb_read(&substream, buf, 2));
+        /* Close should skip remaining bytes */
+        TEST(pb_close_string_substream(&s, &substream));
+    }
+
+    {
+        pb_istream_t s;
+        pb_field_iter_t f;
+        uint8_t d8;
+
+        COMMENT("Testing pb_dec_varint with uint8_t")
+        f.type = PB_LTYPE_UVARINT;
+        f.data_size = sizeof(d8);
+        f.pData = &d8;
+
+        /* Test normal value */
+        TEST((s = S("\x7F"), pb_dec_varint(&s, &f) && d8 == 127));
+        /* Test value that would overflow uint8 (256) */
+        TEST((s = S("\x80\x02"), !pb_dec_varint(&s, &f)));
+    }
+
+    {
+        pb_istream_t s;
+        pb_field_iter_t f;
+        uint16_t d16;
+
+        COMMENT("Testing pb_dec_varint with uint16_t")
+        f.type = PB_LTYPE_UVARINT;
+        f.data_size = sizeof(d16);
+        f.pData = &d16;
+
+        /* Test normal value */
+        TEST((s = S("\xFF\x7F"), pb_dec_varint(&s, &f) && d16 == 16383));
+        /* Test value that would overflow uint16 (65536) */
+        TEST((s = S("\x80\x80\x04"), !pb_dec_varint(&s, &f)));
+    }
+
+    {
+        pb_istream_t s;
+        pb_field_iter_t f;
+        int8_t d8;
+
+        COMMENT("Testing pb_dec_varint with int8_t")
+        f.type = PB_LTYPE_SVARINT;
+        f.data_size = sizeof(d8);
+        f.pData = &d8;
+
+        /* Test normal value */
+        TEST((s = S("\x02"), pb_dec_varint(&s, &f) && d8 == 1));
+        /* Test value that would overflow int8 (128 as svarint = 256 wire) */
+        TEST((s = S("\x80\x02"), !pb_dec_varint(&s, &f)));
+    }
+
+    {
+        pb_istream_t s;
+        pb_field_iter_t f;
+        int16_t d16;
+
+        COMMENT("Testing pb_dec_varint with int16_t")
+        f.type = PB_LTYPE_SVARINT;
+        f.data_size = sizeof(d16);
+        f.pData = &d16;
+
+        /* Test normal value */
+        TEST((s = S("\x02"), pb_dec_varint(&s, &f) && d16 == 1));
+        /* Test value that would overflow int16 (32768 as svarint = 65536 wire) */
+        TEST((s = S("\x80\x80\x04"), !pb_dec_varint(&s, &f)));
+    }
+
+    {
+        pb_istream_t s;
+        pb_field_iter_t f;
+        uint8_t d[10];
+
+        COMMENT("Testing pb_dec_fixed_length_bytes with size 0")
+        f.type = PB_LTYPE_FIXED_LENGTH_BYTES;
+        f.data_size = sizeof(d);
+        f.pData = d;
+        memset(d, 0xAA, sizeof(d));
+
+        /* Empty fixed length bytes should zero-fill destination */
+        TEST((s = S("\x00"), pb_dec_fixed_length_bytes(&s, &f)));
+        TEST(d[0] == 0 && d[9] == 0);
+    }
+
+    {
+        pb_istream_t s;
+        pb_field_iter_t f;
+        uint8_t d[5];
+
+        COMMENT("Testing pb_dec_fixed_length_bytes with mismatched size")
+        f.type = PB_LTYPE_FIXED_LENGTH_BYTES;
+        f.data_size = sizeof(d);
+        f.pData = d;
+
+        /* Wrong size should fail */
+        TEST((s = S("\x03""abc"), !pb_dec_fixed_length_bytes(&s, &f)));
+    }
+
+    {
+        pb_istream_t s;
+
+        COMMENT("Testing pb_read skip mode with callback stream")
+        /* Create callback stream for testing skip */
+        s.callback = &stream_callback;
+        s.state = NULL;
+        s.bytes_left = 100;
+        #ifndef PB_NO_ERRMSG
+        s.errmsg = NULL;
+        #endif
+
+        /* Skip 32 bytes (tests the skip loop) */
+        TEST(pb_read(&s, NULL, 32));
+        TEST(s.bytes_left == 68);
+    }
+
+    {
+        pb_istream_t s;
+        bool d;
+
+        COMMENT("Testing pb_decode_bool")
+        /* Test decoding 0 as false */
+        TEST((s = S("\x00"), pb_decode_bool(&s, &d) && d == false));
+        /* Test decoding 1 as true */
+        TEST((s = S("\x01"), pb_decode_bool(&s, &d) && d == true));
+        /* Test decoding larger value as true */
+        TEST((s = S("\xFF\x01"), pb_decode_bool(&s, &d) && d == true));
+    }
+
+    {
+        pb_istream_t s;
+        int64_t d;
+
+        COMMENT("Testing pb_decode_svarint")
+        /* Test decoding positive value */
+        TEST((s = S("\x04"), pb_decode_svarint(&s, &d) && d == 2));
+        /* Test decoding negative value */
+        TEST((s = S("\x03"), pb_decode_svarint(&s, &d) && d == -2));
+        /* Test decoding zero */
+        TEST((s = S("\x00"), pb_decode_svarint(&s, &d) && d == 0));
+    }
+
     if (status != 0)
         fprintf(stdout, "\n\nSome tests FAILED!\n");
 
