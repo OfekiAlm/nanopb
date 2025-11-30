@@ -1181,14 +1181,22 @@ class ValidatorGenerator:
         """Generate code for a single oneof member validation rule.
         
         Oneof members are accessed via msg->oneof_name.field_name (or msg->field_name for anonymous oneofs).
+        
+        Anonymous oneofs (defined with nanopb option 'anonymous_oneof = true') generate C unions
+        without a named union field, so their members are accessed directly at the message struct level.
+        Non-anonymous oneofs generate a named union field (e.g. msg->values), and their members
+        are accessed through this union (e.g. msg->values.field_name).
         """
         field_name = field.name
+        # Check if oneof is anonymous (nanopb-specific option that generates C11 anonymous unions)
         anonymous = getattr(oneof_obj, 'anonymous', False)
         
-        # Build field access expression
+        # Build field access expression based on whether the oneof is anonymous
         if anonymous:
+            # Anonymous oneof: fields accessed directly as msg->field_name
             field_access = field_name
         else:
+            # Named oneof: fields accessed as msg->oneof_name.field_name
             field_access = '%s.%s' % (oneof_name, field_name)
         
         # Dispatch to appropriate rule handler with oneof context
