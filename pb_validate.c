@@ -1,10 +1,19 @@
-/* pb_validate.c: Runtime support implementation for nanopb validation */
+/* pb_validate.c: Runtime support implementation for nanopb validation
+ *
+ * This file provides runtime validation functions for protobuf messages.
+ * It supports various constraint types including:
+ * - Numeric comparisons (lt, lte, gt, gte, eq)
+ * - Set membership (in, not_in)
+ * - String constraints (min_len, max_len, prefix, suffix, contains, ascii)
+ * - String formats (email, hostname, ipv4, ipv6)
+ * - Repeated field constraints (min_items, max_items)
+ * - Enum validation (defined_only)
+ */
 
 #include "pb_validate.h"
 #include <string.h>
 #include <stdio.h>
 #include <ctype.h>
-#include <stdio.h>
 
 static bool is_valid_email(const char *s, size_t len);
 static bool is_valid_hostname(const char *s, size_t len);
@@ -49,19 +58,26 @@ bool pb_violations_add(pb_violations_t *violations,
 /* Push a field name to the path */
 bool pb_validate_context_push_field(pb_validate_context_t *ctx, const char *field_name)
 {
-    size_t name_len = strlen(field_name);
-    size_t needed = name_len + (ctx->path_length > 0 ? 1 : 0); /* +1 for dot separator */
+    size_t name_len;
+    size_t needed;
+
+    if (!ctx || !field_name)
+        return false;
+
+    name_len = strlen(field_name);
+    needed = name_len + (ctx->path_length > 0 ? 1U : 0U); /* +1 for dot separator */
 
     if (ctx->path_length + needed >= PB_VALIDATE_MAX_PATH_LENGTH)
         return false;
 
     if (ctx->path_length > 0)
     {
-        ctx->path_buffer[ctx->path_length++] = '.';
+        ctx->path_buffer[ctx->path_length] = '.';
+        ctx->path_length++;
     }
 
     memcpy(&ctx->path_buffer[ctx->path_length], field_name, name_len);
-    ctx->path_length += name_len;
+    ctx->path_length += (pb_size_t)name_len;
     ctx->path_buffer[ctx->path_length] = '\0';
 
     return true;
@@ -70,12 +86,17 @@ bool pb_validate_context_push_field(pb_validate_context_t *ctx, const char *fiel
 /* Pop a field name from the path */
 void pb_validate_context_pop_field(pb_validate_context_t *ctx)
 {
+    char *last_dot;
+
+    if (!ctx)
+        return;
+
     /* Find the last dot and truncate there */
-    char *last_dot = strrchr(ctx->path_buffer, '.');
+    last_dot = strrchr(ctx->path_buffer, '.');
     if (last_dot)
     {
         *last_dot = '\0';
-        ctx->path_length = last_dot - ctx->path_buffer;
+        ctx->path_length = (pb_size_t)(last_dot - ctx->path_buffer);
     }
     else
     {
@@ -89,16 +110,21 @@ void pb_validate_context_pop_field(pb_validate_context_t *ctx)
 bool pb_validate_context_push_index(pb_validate_context_t *ctx, pb_size_t index)
 {
     char index_str[16];
-    int len = snprintf(index_str, sizeof(index_str), "[%u]", (unsigned int)index);
+    int len;
+
+    if (!ctx)
+        return false;
+
+    len = snprintf(index_str, sizeof(index_str), "[%u]", (unsigned int)index);
 
     if (len < 0 || (size_t)len >= sizeof(index_str))
         return false;
 
-    if (ctx->path_length + len >= PB_VALIDATE_MAX_PATH_LENGTH)
+    if (ctx->path_length + (pb_size_t)len >= PB_VALIDATE_MAX_PATH_LENGTH)
         return false;
 
-    memcpy(&ctx->path_buffer[ctx->path_length], index_str, len);
-    ctx->path_length += len;
+    memcpy(&ctx->path_buffer[ctx->path_length], index_str, (size_t)len);
+    ctx->path_length += (pb_size_t)len;
     ctx->path_buffer[ctx->path_length] = '\0';
 
     return true;
@@ -107,22 +133,36 @@ bool pb_validate_context_push_index(pb_validate_context_t *ctx, pb_size_t index)
 /* Pop an array index from the path */
 void pb_validate_context_pop_index(pb_validate_context_t *ctx)
 {
+    char *last_bracket;
+
+    if (!ctx)
+        return;
+
     /* Find the last '[' and truncate there */
-    char *last_bracket = strrchr(ctx->path_buffer, '[');
+    last_bracket = strrchr(ctx->path_buffer, '[');
     if (last_bracket)
     {
         *last_bracket = '\0';
-        ctx->path_length = last_bracket - ctx->path_buffer;
+        ctx->path_length = (pb_size_t)(last_bracket - ctx->path_buffer);
     }
 }
 
-/* Helper function to check if a value is in a list */
+/* Helper function to check if a value is in a list
+ * Note: Uses memcmp for type-agnostic comparison. For proper alignment,
+ * ensure list elements are properly aligned for elem_size.
+ */
 static bool value_in_list(const void *value, const void *list, pb_size_t count, size_t elem_size)
 {
-    const uint8_t *list_bytes = (const uint8_t *)list;
-    for (pb_size_t i = 0; i < count; i++)
+    const uint8_t *list_bytes;
+    pb_size_t i;
+
+    if (!value || !list || count == 0 || elem_size == 0)
+        return false;
+
+    list_bytes = (const uint8_t *)list;
+    for (i = 0; i < count; i++)
     {
-        if (memcmp(value, list_bytes + i * elem_size, elem_size) == 0)
+        if (memcmp(value, list_bytes + (size_t)i * elem_size, elem_size) == 0)
             return true;
     }
     return false;
@@ -388,7 +428,9 @@ bool pb_validate_bool(bool value, const void *rule_data, pb_validate_rule_type_t
     }
 }
 
-/* Validation function for strings */
+/* Validation function for strings
+ * Note: If rule_type requires rule_data, caller must ensure it is non-NULL.
+ */
 bool pb_validate_string(const char *value, pb_size_t length, const void *rule_data, pb_validate_rule_type_t rule_type)
 {
     if (!value)
@@ -397,34 +439,47 @@ bool pb_validate_string(const char *value, pb_size_t length, const void *rule_da
     switch (rule_type)
     {
     case PB_VALIDATE_RULE_MIN_LEN:
+        if (!rule_data) return true;
         return length >= *(const uint32_t *)rule_data;
     case PB_VALIDATE_RULE_MAX_LEN:
+        if (!rule_data) return true;
         return length <= *(const uint32_t *)rule_data;
     case PB_VALIDATE_RULE_EQ:
     {
-        const char *expected = (const char *)rule_data;
+        const char *expected;
+        if (!rule_data) return false;
+        expected = (const char *)rule_data;
         return strcmp(value, expected) == 0;
     }
     case PB_VALIDATE_RULE_PREFIX:
     {
-        const char *prefix = (const char *)rule_data;
-        size_t prefix_len = strlen(prefix);
-        return length >= prefix_len && strncmp(value, prefix, prefix_len) == 0;
+        const char *prefix;
+        size_t prefix_len;
+        if (!rule_data) return true;
+        prefix = (const char *)rule_data;
+        prefix_len = strlen(prefix);
+        return (size_t)length >= prefix_len && strncmp(value, prefix, prefix_len) == 0;
     }
     case PB_VALIDATE_RULE_SUFFIX:
     {
-        const char *suffix = (const char *)rule_data;
-        size_t suffix_len = strlen(suffix);
-        return length >= suffix_len && strcmp(value + length - suffix_len, suffix) == 0;
+        const char *suffix;
+        size_t suffix_len;
+        if (!rule_data) return true;
+        suffix = (const char *)rule_data;
+        suffix_len = strlen(suffix);
+        return (size_t)length >= suffix_len && strcmp(value + length - suffix_len, suffix) == 0;
     }
     case PB_VALIDATE_RULE_CONTAINS:
     {
-        const char *substring = (const char *)rule_data;
+        const char *substring;
+        if (!rule_data) return true;
+        substring = (const char *)rule_data;
         return strstr(value, substring) != NULL;
     }
     case PB_VALIDATE_RULE_ASCII:
     {
-        for (pb_size_t i = 0; i < length; i++)
+        pb_size_t i;
+        for (i = 0; i < length; i++)
         {
             if ((unsigned char)value[i] > 127)
                 return false;
@@ -432,25 +487,29 @@ bool pb_validate_string(const char *value, pb_size_t length, const void *rule_da
         return true;
     }
     case PB_VALIDATE_RULE_EMAIL:
-        return is_valid_email(value, length);
+        return is_valid_email(value, (size_t)length);
     case PB_VALIDATE_RULE_HOSTNAME:
-        return is_valid_hostname(value, length);
+        return is_valid_hostname(value, (size_t)length);
     case PB_VALIDATE_RULE_IPV4:
-        return is_valid_ipv4(value, length);
+        return is_valid_ipv4(value, (size_t)length);
     case PB_VALIDATE_RULE_IPV6:
-        return is_valid_ipv6(value, length);
+        return is_valid_ipv6(value, (size_t)length);
     case PB_VALIDATE_RULE_IP:
-        return is_valid_ipv4(value, length) || is_valid_ipv6(value, length);
+        return is_valid_ipv4(value, (size_t)length) || is_valid_ipv6(value, (size_t)length);
     case PB_VALIDATE_RULE_IN:
     {
         const struct
         {
             const char *const *values;
             pb_size_t count;
-        } *in_data = rule_data;
-        for (pb_size_t i = 0; i < in_data->count; i++)
+        } *in_data;
+        pb_size_t i;
+        if (!rule_data) return false;
+        in_data = (const void *)rule_data;
+        if (!in_data->values) return false;
+        for (i = 0; i < in_data->count; i++)
         {
-            if (strcmp(value, in_data->values[i]) == 0)
+            if (in_data->values[i] && strcmp(value, in_data->values[i]) == 0)
                 return true;
         }
         return false;
@@ -461,10 +520,14 @@ bool pb_validate_string(const char *value, pb_size_t length, const void *rule_da
         {
             const char *const *values;
             pb_size_t count;
-        } *not_in_data = rule_data;
-        for (pb_size_t i = 0; i < not_in_data->count; i++)
+        } *not_in_data;
+        pb_size_t i;
+        if (!rule_data) return true;
+        not_in_data = (const void *)rule_data;
+        if (!not_in_data->values) return true;
+        for (i = 0; i < not_in_data->count; i++)
         {
-            if (strcmp(value, not_in_data->values[i]) == 0)
+            if (not_in_data->values[i] && strcmp(value, not_in_data->values[i]) == 0)
                 return false;
         }
         return true;
@@ -474,7 +537,9 @@ bool pb_validate_string(const char *value, pb_size_t length, const void *rule_da
     }
 }
 
-/* Validation function for bytes */
+/* Validation function for bytes
+ * Note: If rule_type requires rule_data, caller must ensure it is non-NULL.
+ */
 bool pb_validate_bytes(const pb_bytes_array_t *value, const void *rule_data, pb_validate_rule_type_t rule_type)
 {
     if (!value)
@@ -483,34 +548,45 @@ bool pb_validate_bytes(const pb_bytes_array_t *value, const void *rule_data, pb_
     switch (rule_type)
     {
     case PB_VALIDATE_RULE_MIN_LEN:
+        if (!rule_data) return true;
         return value->size >= *(const uint32_t *)rule_data;
     case PB_VALIDATE_RULE_MAX_LEN:
+        if (!rule_data) return true;
         return value->size <= *(const uint32_t *)rule_data;
     case PB_VALIDATE_RULE_EQ:
     {
-        const pb_bytes_array_t *expected = (const pb_bytes_array_t *)rule_data;
+        const pb_bytes_array_t *expected;
+        if (!rule_data) return false;
+        expected = (const pb_bytes_array_t *)rule_data;
         return value->size == expected->size &&
                memcmp(value->bytes, expected->bytes, value->size) == 0;
     }
     case PB_VALIDATE_RULE_PREFIX:
     {
-        const pb_bytes_array_t *prefix = (const pb_bytes_array_t *)rule_data;
+        const pb_bytes_array_t *prefix;
+        if (!rule_data) return true;
+        prefix = (const pb_bytes_array_t *)rule_data;
         return value->size >= prefix->size &&
                memcmp(value->bytes, prefix->bytes, prefix->size) == 0;
     }
     case PB_VALIDATE_RULE_SUFFIX:
     {
-        const pb_bytes_array_t *suffix = (const pb_bytes_array_t *)rule_data;
+        const pb_bytes_array_t *suffix;
+        if (!rule_data) return true;
+        suffix = (const pb_bytes_array_t *)rule_data;
         return value->size >= suffix->size &&
                memcmp(value->bytes + value->size - suffix->size, suffix->bytes, suffix->size) == 0;
     }
     case PB_VALIDATE_RULE_CONTAINS:
     {
-        const pb_bytes_array_t *pattern = (const pb_bytes_array_t *)rule_data;
+        const pb_bytes_array_t *pattern;
+        pb_size_t i;
+        if (!rule_data) return true;
+        pattern = (const pb_bytes_array_t *)rule_data;
         if (pattern->size > value->size)
             return false;
 
-        for (pb_size_t i = 0; i <= value->size - pattern->size; i++)
+        for (i = 0; i <= value->size - pattern->size; i++)
         {
             if (memcmp(value->bytes + i, pattern->bytes, pattern->size) == 0)
                 return true;
@@ -578,15 +654,18 @@ bool pb_validate_enum_defined_only(int value, const int *values, pb_size_t count
  */
 bool pb_read_callback_string(const struct pb_callback_s *callback, const char **out_str, pb_size_t *out_len)
 {
+    const char *p;
+    size_t len;
+
     if (!callback || !out_str || !out_len)
         return false;
-    /* pb_callback_t defined in pb.h as struct pb_callback_s { bool (*func)(pb_istream_t*, pb_ostream_t*, const pb_field_t*, void**); void *arg; } (typical).
+    /* pb_callback_t defined in pb.h as struct pb_callback_s.
        We rely only on arg. */
-    const char *p = (const char *)callback->arg;
+    p = (const char *)callback->arg;
     if (!p)
         return false;
     /* Ensure NUL-termination within reasonable bounds: scan up to PB_VALIDATE_MAX_MESSAGE_LENGTH */
-    size_t len = 0;
+    len = 0;
     while (p[len] != '\0')
     {
         if (len >= PB_VALIDATE_MAX_MESSAGE_LENGTH)
@@ -605,17 +684,19 @@ bool pb_read_callback_string(const struct pb_callback_s *callback, const char **
 
 static bool is_valid_hostname_label(const char *s, size_t len)
 {
+    size_t i;
+
     if (len == 0 || len > 63)
         return false;
     /* First and last cannot be '-' */
     if (s[0] == '-' || s[len - 1] == '-')
         return false;
-    for (size_t i = 0; i < len; i++)
+    for (i = 0; i < len; i++)
     {
         unsigned char c = (unsigned char)s[i];
         if (c > 127)
             return false; /* ASCII only */
-        if (!(isalnum(c) || c == '-'))
+        if (!(isalnum((int)c) || c == '-'))
             return false;
     }
     return true;
@@ -623,13 +704,16 @@ static bool is_valid_hostname_label(const char *s, size_t len)
 
 static bool is_valid_hostname(const char *s, size_t len)
 {
+    size_t start;
+    size_t i;
+
     if (!s || len == 0 || len > 253)
         return false;
     /* Cannot start or end with '.' and no consecutive dots */
     if (s[0] == '.' || s[len - 1] == '.')
         return false;
-    size_t start = 0;
-    for (size_t i = 0; i <= len; i++)
+    start = 0;
+    for (i = 0; i <= len; i++)
     {
         if (i == len || s[i] == '.')
         {
@@ -649,11 +733,15 @@ static bool is_valid_hostname(const char *s, size_t len)
 
 static bool is_valid_email(const char *s, size_t len)
 {
+    size_t at_pos;
+    size_t i;
+    size_t lstart, lend;
+
     if (!s || len < 3) /* a@b minimal */
         return false;
     /* Basic checks: single '@', non-empty local & domain, no spaces */
-    size_t at_pos = (size_t)-1;
-    for (size_t i = 0; i < len; i++)
+    at_pos = (size_t)-1;
+    for (i = 0; i < len; i++)
     {
         unsigned char c = (unsigned char)s[i];
         if (c <= 32 || c == 127)
@@ -668,10 +756,11 @@ static bool is_valid_email(const char *s, size_t len)
     if (at_pos == (size_t)-1 || at_pos == 0 || at_pos == len - 1)
         return false;
     /* Local part basic validity: cannot start/end with '.', no consecutive '..' */
-    size_t lstart = 0, lend = at_pos;
+    lstart = 0;
+    lend = at_pos;
     if (s[lstart] == '.' || s[lend - 1] == '.')
         return false;
-    for (size_t i = lstart + 1; i < lend; i++)
+    for (i = lstart + 1; i < lend; i++)
     {
         if (s[i] == '.' && s[i - 1] == '.')
             return false;
@@ -682,12 +771,15 @@ static bool is_valid_email(const char *s, size_t len)
 
 static bool parse_uint_dotted_segment(const char *s, size_t len, int *out)
 {
-    if (len == 0)
+    int value;
+    size_t i;
+
+    if (len == 0 || !out)
         return false;
-    int value = 0;
-    for (size_t i = 0; i < len; i++)
+    value = 0;
+    for (i = 0; i < len; i++)
     {
-        if (!isdigit((unsigned char)s[i]))
+        if (!isdigit((int)(unsigned char)s[i]))
             return false;
         value = value * 10 + (s[i] - '0');
         if (value > 255)
@@ -699,25 +791,29 @@ static bool parse_uint_dotted_segment(const char *s, size_t len, int *out)
 
 static bool is_valid_ipv4(const char *s, size_t len)
 {
+    size_t start;
+    int parts;
+    size_t i;
+
     if (!s || len < 7 || len > 15)
         return false;
-    size_t start = 0;
-    int parts = 0;
-    for (size_t i = 0; i <= len; i++)
+    start = 0;
+    parts = 0;
+    for (i = 0; i <= len; i++)
     {
         if (i == len || s[i] == '.')
         {
+            int v;
             if (parts > 3)
                 return false;
             if (i == start)
                 return false; /* empty */
-            int v;
             if (!parse_uint_dotted_segment(&s[start], i - start, &v))
                 return false;
             parts++;
             start = i + 1;
         }
-        else if (!isdigit((unsigned char)s[i]))
+        else if (!isdigit((int)(unsigned char)s[i]))
         {
             return false;
         }
@@ -732,11 +828,16 @@ static bool is_hex_digit(char c)
 
 static bool is_valid_ipv6(const char *s, size_t len)
 {
+    size_t i, start;
+    int hextets;
+    bool compress;
+
     if (!s || len < 2)
         return false;
-    size_t i = 0, start = 0;
-    int hextets = 0;
-    bool compress = false;
+    i = 0;
+    start = 0;
+    hextets = 0;
+    compress = false;
 
     if (s[i] == ':')
     {
@@ -765,31 +866,37 @@ static bool is_valid_ipv6(const char *s, size_t len)
             }
 
             /* Check if this segment is IPv4 tail */
-            bool has_dot = false;
-            for (size_t k = start; k < i; k++)
             {
-                if (s[k] == '.')
+                bool has_dot = false;
+                size_t k;
+                for (k = start; k < i; k++)
                 {
-                    has_dot = true;
-                    break;
+                    if (s[k] == '.')
+                    {
+                        has_dot = true;
+                        break;
+                    }
+                }
+                if (has_dot)
+                {
+                    if (!is_valid_ipv4(&s[start], i - start))
+                        return false;
+                    hextets += 2; /* IPv4 part equals two hextets */
+                    start = i + 1;
+                    break; /* IPv4 must be the last part */
                 }
             }
-            if (has_dot)
-            {
-                if (!is_valid_ipv4(&s[start], i - start))
-                    return false;
-                hextets += 2; /* IPv4 part equals two hextets */
-                start = i + 1;
-                break; /* IPv4 must be the last part */
-            }
 
-            size_t seglen = i - start;
-            if (seglen == 0 || seglen > 4)
-                return false;
-            for (size_t k = start; k < i; k++)
             {
-                if (!is_hex_digit(s[k]))
+                size_t seglen = i - start;
+                size_t k;
+                if (seglen == 0 || seglen > 4)
                     return false;
+                for (k = start; k < i; k++)
+                {
+                    if (!is_hex_digit(s[k]))
+                        return false;
+                }
             }
             hextets++;
             start = i + 1;
