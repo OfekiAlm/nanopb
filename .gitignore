@@ -34,3 +34,5 @@ extra/poetry/build
 build/
 .idea
 .vscode/
+.pytest_cache/
+__pycache__/
