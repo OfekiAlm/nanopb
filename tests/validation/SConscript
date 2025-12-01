@@ -29,7 +29,6 @@ protos = [
     "message_rules",
     "oneof_rules",
     "bytes_rules",
-    "bypass_behavior",
     "any_behavior"
 ]
 
@@ -39,6 +38,19 @@ protos = [
 # but we need to add _validate.c as a side effect
 pb_sources = []
 validate_sources = []
+
+# Generate bypass_behavior proto with --bypass flag
+bypass_env = test_env.Clone()
+bypass_env.Replace(NANOPBFLAGS = "--validate,--bypass,-x,validate.proto")
+pb_files = bypass_env.NanopbProto("bypass_behavior")
+pb_sources.append("bypass_behavior.pb.c")
+validate_c = "bypass_behavior_validate.c"
+validate_h = "bypass_behavior_validate.h"
+bypass_env.SideEffect(validate_c, pb_files)
+bypass_env.SideEffect(validate_h, pb_files)
+validate_sources.append(validate_c)
+
+
 for proto in protos:
     pb_files = test_env.NanopbProto(proto)
     pb_sources.append(proto + ".pb.c")

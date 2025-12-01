@@ -4,36 +4,19 @@
 
 bool pb_validate_test_SimpleMessage(const test_SimpleMessage *msg, pb_violations_t *violations)
 {
-    if (!msg) return false;
-    
-    pb_validate_context_t ctx = {0};
-    ctx.violations = violations;
-    ctx.early_exit = PB_VALIDATE_EARLY_EXIT;
-    
+    PB_VALIDATE_BEGIN(ctx, test_SimpleMessage, msg, violations);
+
     /* Validate field: bounded_float */
-    if (!pb_validate_context_push_field(&ctx, "bounded_float")) return false;
+    PB_VALIDATE_FIELD_BEGIN(ctx, "bounded_float");
     {
         /* Rule: float.lte */
-        {
-            float expected = (float)100.0;
-            if (!pb_validate_float(msg->bounded_float, &expected, PB_VALIDATE_RULE_LTE)) {
-                pb_violations_add(violations, ctx.path_buffer, "float.lte", "Value constraint failed");
-                if (ctx.early_exit) return false;
-            }
-        }
+        PB_VALIDATE_NUMERIC_GENERIC(ctx, msg, bounded_float, float, pb_validate_float, PB_VALIDATE_RULE_LTE, 100.0, "float.lte");
     }
     {
         /* Rule: float.gte */
-        {
-            float expected = (float)0.0;
-            if (!pb_validate_float(msg->bounded_float, &expected, PB_VALIDATE_RULE_GTE)) {
-                pb_violations_add(violations, ctx.path_buffer, "float.gte", "Value constraint failed");
-                if (ctx.early_exit) return false;
-            }
-        }
+        PB_VALIDATE_NUMERIC_GENERIC(ctx, msg, bounded_float, float, pb_validate_float, PB_VALIDATE_RULE_GTE, 0.0, "float.gte");
     }
-    pb_validate_context_pop_field(&ctx);
+    PB_VALIDATE_FIELD_END(ctx);
     
-    return !pb_violations_has_any(violations);
+    PB_VALIDATE_END(ctx, violations);
 }
-
