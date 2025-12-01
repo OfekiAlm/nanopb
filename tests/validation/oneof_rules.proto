@@ -1,0 +1,37 @@
+/* Test oneof validation rules */
+
+syntax = "proto3";
+
+import "validate.proto";
+import "nanopb.proto";
+
+option (validate.validate) = true;
+
+/* Test message with oneof containing validated fields */
+message OneofRules {
+    string common_field = 1 [(nanopb).max_size = 32];
+    
+    oneof choice {
+        /* String option with validation */
+        string str_option = 2 [(nanopb).max_size = 64, (validate.rules).string.min_len = 3];
+        
+        /* Numeric option with validation */
+        int32 int_option = 3 [(validate.rules).int32.gte = 0, (validate.rules).int32.lte = 1000];
+        
+        /* Float option with validation */
+        float float_option = 4 [(validate.rules).float.gt = 0.0];
+    }
+}
+
+/* Test multiple oneofs */
+message MultipleOneofs {
+    oneof first_choice {
+        string first_str = 1 [(nanopb).max_size = 32, (validate.rules).string.min_len = 1];
+        int32 first_int = 2 [(validate.rules).int32.gt = 0];
+    }
+    
+    oneof second_choice {
+        string second_str = 3 [(nanopb).max_size = 32];
+        double second_double = 4 [(validate.rules).double.gte = 0.0, (validate.rules).double.lte = 100.0];
+    }
+}

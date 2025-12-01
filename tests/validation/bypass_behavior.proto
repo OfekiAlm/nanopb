@@ -1,0 +1,39 @@
+/* Test early-exit vs bypass behavior */
+
+syntax = "proto3";
+
+import "validate.proto";
+import "nanopb.proto";
+
+option (validate.validate) = true;
+
+/* Message with multiple validation rules to test violation collection */
+message BypassBehavior {
+    /* Multiple numeric constraints - if validation fails early, only first violation is reported */
+    int32 first_num = 1 [(validate.rules).int32.gte = 0, (validate.rules).int32.lte = 100];
+    int32 second_num = 2 [(validate.rules).int32.gte = 0, (validate.rules).int32.lte = 100];
+    int32 third_num = 3 [(validate.rules).int32.gte = 0, (validate.rules).int32.lte = 100];
+    
+    /* Multiple string constraints */
+    string first_str = 4 [(nanopb).max_size = 32, (validate.rules).string.min_len = 1];
+    string second_str = 5 [(nanopb).max_size = 32, (validate.rules).string.min_len = 1];
+    
+    /* This tests the violations collection capacity */
+    int32 extra1 = 6 [(validate.rules).int32.gte = 0];
+    int32 extra2 = 7 [(validate.rules).int32.gte = 0];
+    int32 extra3 = 8 [(validate.rules).int32.gte = 0];
+    int32 extra4 = 9 [(validate.rules).int32.gte = 0];
+    int32 extra5 = 10 [(validate.rules).int32.gte = 0];
+}
+
+/* Message for testing path reporting */
+message PathReporting {
+    string name = 1 [(nanopb).max_size = 32, (validate.rules).string.min_len = 1];
+    
+    message Nested {
+        string nested_name = 1 [(nanopb).max_size = 32, (validate.rules).string.min_len = 1];
+        int32 nested_value = 2 [(validate.rules).int32.gte = 0];
+    }
+    
+    Nested nested = 2;
+}

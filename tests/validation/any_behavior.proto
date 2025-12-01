@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+import "validate.proto";
+import "nanopb.proto";
+import "google/protobuf/any.proto";
+
+option (validate.validate) = true;
+
+/* Test any field behavior */
+message AnyBehavior {
+    // No specific validation rules for google.protobuf.Any yet
+    google.protobuf.Any any_field = 1 [
+        (nanopb).max_size = 512,
+        (validate.rules).any.in = "type.google.com/demo.Int32Rules",
+        (validate.rules).any.in = "type.google.com/demo.EnumRules"
+    ];
+    google.protobuf.Any any_field2 = 2 [
+        (nanopb).max_size = 512,
+        (validate.rules).any.not_in = "type.google.com/demo.Int32Rules",
+        (validate.rules).any.not_in = "type.google.com/demo.EnumRules"    
+    ];
+}
