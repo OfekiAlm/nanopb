@@ -39,6 +39,7 @@ RULE_ENUM_DEFINED = 'ENUM_DEFINED'
 RULE_MIN_ITEMS = 'MIN_ITEMS'
 RULE_MAX_ITEMS = 'MAX_ITEMS'
 RULE_UNIQUE = 'UNIQUE'
+RULE_ITEMS = 'ITEMS'
 RULE_NO_SPARSE = 'NO_SPARSE'
 RULE_ANY_IN = 'ANY_IN'
 RULE_ANY_NOT_IN = 'ANY_NOT_IN'
@@ -115,8 +116,8 @@ class FieldValidator:
     
     def _parse_numeric_rules(self, rules, type_name):
         """Parse numeric validation rules."""
-        if rules.HasField('const'):
-            self.rules.append(ValidationRule(RULE_EQ, f'{type_name}.const', {'value': rules.const}))
+        if rules.HasField('const_value'):
+            self.rules.append(ValidationRule(RULE_EQ, f'{type_name}.const', {'value': rules.const_value}))
         if rules.HasField('lt'):
             self.rules.append(ValidationRule(RULE_LT, f'{type_name}.lt', {'value': rules.lt}))
         if rules.HasField('lte'):
@@ -132,13 +133,13 @@ class FieldValidator:
     
     def _parse_bool_rules(self, rules: Any):
         """Parse bool validation rules."""
-        if rules.HasField('const'):
-            self.rules.append(ValidationRule(RULE_EQ, 'bool.const', {'value': rules.const}))
+        if rules.HasField('const_value'):
+            self.rules.append(ValidationRule(RULE_EQ, 'bool.const', {'value': rules.const_value}))
     
     def _parse_string_rules(self, rules: Any):
         """Parse string validation rules."""
-        if rules.HasField('const'):
-            self.rules.append(ValidationRule(RULE_EQ, 'string.const', {'value': rules.const}))
+        if rules.HasField('const_value'):
+            self.rules.append(ValidationRule(RULE_EQ, 'string.const', {'value': rules.const_value}))
         if rules.HasField('min_len'):
             self.rules.append(ValidationRule(RULE_MIN_LEN, 'string.min_len', {'value': rules.min_len}))
         if rules.HasField('max_len'):
@@ -168,8 +169,8 @@ class FieldValidator:
     
     def _parse_bytes_rules(self, rules: Any):
         """Parse bytes validation rules."""
-        if rules.HasField('const'):
-            self.rules.append(ValidationRule(RULE_EQ, 'bytes.const', {'value': rules.const}))
+        if rules.HasField('const_value'):
+            self.rules.append(ValidationRule(RULE_EQ, 'bytes.const', {'value': rules.const_value}))
         if rules.HasField('min_len'):
             self.rules.append(ValidationRule(RULE_MIN_LEN, 'bytes.min_len', {'value': rules.min_len}))
         if rules.HasField('max_len'):
@@ -187,8 +188,8 @@ class FieldValidator:
     
     def _parse_enum_rules(self, rules: Any):
         """Parse enum validation rules."""
-        if rules.HasField('const'):
-            self.rules.append(ValidationRule(RULE_EQ, 'enum.const', {'value': rules.const}))
+        if rules.HasField('const_value'):
+            self.rules.append(ValidationRule(RULE_EQ, 'enum.const', {'value': rules.const_value}))
         if rules.HasField('defined_only'):
             self.rules.append(ValidationRule(RULE_ENUM_DEFINED, 'enum.defined_only', {'value': rules.defined_only}))
         if hasattr(rules, 'in') and getattr(rules, 'in'):
@@ -205,8 +206,114 @@ class FieldValidator:
         if rules.HasField('unique') and rules.unique:
             self.rules.append(ValidationRule(RULE_UNIQUE, 'repeated.unique'))
         if rules.HasField('items'):
-            # TODO: Handle per-item validation rules
-            pass
+            # Parse per-item validation rules
+            items_rules = rules.items
+            item_rules_list = []
+            # Extract type-specific rules from items
+            if items_rules.HasField('string'):
+                item_rules_list.extend(self._extract_string_item_rules(items_rules.string))
+            if items_rules.HasField('int32'):
+                item_rules_list.extend(self._extract_numeric_item_rules(items_rules.int32, 'int32'))
+            if items_rules.HasField('int64'):
+                item_rules_list.extend(self._extract_numeric_item_rules(items_rules.int64, 'int64'))
+            if items_rules.HasField('uint32'):
+                item_rules_list.extend(self._extract_numeric_item_rules(items_rules.uint32, 'uint32'))
+            if items_rules.HasField('uint64'):
+                item_rules_list.extend(self._extract_numeric_item_rules(items_rules.uint64, 'uint64'))
+            if items_rules.HasField('sint32'):
+                item_rules_list.extend(self._extract_numeric_item_rules(items_rules.sint32, 'sint32'))
+            if items_rules.HasField('sint64'):
+                item_rules_list.extend(self._extract_numeric_item_rules(items_rules.sint64, 'sint64'))
+            if items_rules.HasField('fixed32'):
+                item_rules_list.extend(self._extract_numeric_item_rules(items_rules.fixed32, 'fixed32'))
+            if items_rules.HasField('fixed64'):
+                item_rules_list.extend(self._extract_numeric_item_rules(items_rules.fixed64, 'fixed64'))
+            if items_rules.HasField('sfixed32'):
+                item_rules_list.extend(self._extract_numeric_item_rules(items_rules.sfixed32, 'sfixed32'))
+            if items_rules.HasField('sfixed64'):
+                item_rules_list.extend(self._extract_numeric_item_rules(items_rules.sfixed64, 'sfixed64'))
+            if items_rules.HasField('float'):
+                item_rules_list.extend(self._extract_numeric_item_rules(items_rules.float, 'float'))
+            if items_rules.HasField('double'):
+                item_rules_list.extend(self._extract_numeric_item_rules(items_rules.double, 'double'))
+            if items_rules.HasField('bool'):
+                item_rules_list.extend(self._extract_bool_item_rules(items_rules.bool))
+            if items_rules.HasField('enum'):
+                item_rules_list.extend(self._extract_enum_item_rules(items_rules.enum))
+            if item_rules_list:
+                self.rules.append(ValidationRule(RULE_ITEMS, 'repeated.items', {'item_rules': item_rules_list}))
+    
+    def _extract_string_item_rules(self, rules: Any) -> List[Dict[str, Any]]:
+        """Extract string validation rules for repeated items."""
+        result = []
+        if rules.HasField('const_value'):
+            result.append({'rule': RULE_EQ, 'constraint_id': 'string.const', 'value': rules.const_value})
+        if rules.HasField('min_len'):
+            result.append({'rule': RULE_MIN_LEN, 'constraint_id': 'string.min_len', 'value': rules.min_len})
+        if rules.HasField('max_len'):
+            result.append({'rule': RULE_MAX_LEN, 'constraint_id': 'string.max_len', 'value': rules.max_len})
+        if rules.HasField('prefix'):
+            result.append({'rule': RULE_PREFIX, 'constraint_id': 'string.prefix', 'value': rules.prefix})
+        if rules.HasField('suffix'):
+            result.append({'rule': RULE_SUFFIX, 'constraint_id': 'string.suffix', 'value': rules.suffix})
+        if rules.HasField('contains'):
+            result.append({'rule': RULE_CONTAINS, 'constraint_id': 'string.contains', 'value': rules.contains})
+        if rules.HasField('ascii') and rules.ascii:
+            result.append({'rule': RULE_ASCII, 'constraint_id': 'string.ascii'})
+        if getattr(rules, 'email', False):
+            result.append({'rule': RULE_EMAIL, 'constraint_id': 'string.email'})
+        if getattr(rules, 'hostname', False):
+            result.append({'rule': RULE_HOSTNAME, 'constraint_id': 'string.hostname'})
+        if getattr(rules, 'ip', False):
+            result.append({'rule': RULE_IP, 'constraint_id': 'string.ip'})
+        if getattr(rules, 'ipv4', False):
+            result.append({'rule': RULE_IPV4, 'constraint_id': 'string.ipv4'})
+        if getattr(rules, 'ipv6', False):
+            result.append({'rule': RULE_IPV6, 'constraint_id': 'string.ipv6'})
+        if hasattr(rules, 'in') and getattr(rules, 'in'):
+            result.append({'rule': RULE_IN, 'constraint_id': 'string.in', 'values': list(getattr(rules, 'in'))})
+        if rules.not_in:
+            result.append({'rule': RULE_NOT_IN, 'constraint_id': 'string.not_in', 'values': list(rules.not_in)})
+        return result
+    
+    def _extract_numeric_item_rules(self, rules: Any, type_name: str) -> List[Dict[str, Any]]:
+        """Extract numeric validation rules for repeated items."""
+        result = []
+        if rules.HasField('const_value'):
+            result.append({'rule': RULE_EQ, 'constraint_id': f'{type_name}.const', 'value': rules.const_value})
+        if rules.HasField('lt'):
+            result.append({'rule': RULE_LT, 'constraint_id': f'{type_name}.lt', 'value': rules.lt})
+        if rules.HasField('lte'):
+            result.append({'rule': RULE_LTE, 'constraint_id': f'{type_name}.lte', 'value': rules.lte})
+        if rules.HasField('gt'):
+            result.append({'rule': RULE_GT, 'constraint_id': f'{type_name}.gt', 'value': rules.gt})
+        if rules.HasField('gte'):
+            result.append({'rule': RULE_GTE, 'constraint_id': f'{type_name}.gte', 'value': rules.gte})
+        if hasattr(rules, 'in') and getattr(rules, 'in'):
+            result.append({'rule': RULE_IN, 'constraint_id': f'{type_name}.in', 'values': list(getattr(rules, 'in'))})
+        if rules.not_in:
+            result.append({'rule': RULE_NOT_IN, 'constraint_id': f'{type_name}.not_in', 'values': list(rules.not_in)})
+        return result
+    
+    def _extract_bool_item_rules(self, rules: Any) -> List[Dict[str, Any]]:
+        """Extract bool validation rules for repeated items."""
+        result = []
+        if rules.HasField('const_value'):
+            result.append({'rule': RULE_EQ, 'constraint_id': 'bool.const', 'value': rules.const_value})
+        return result
+    
+    def _extract_enum_item_rules(self, rules: Any) -> List[Dict[str, Any]]:
+        """Extract enum validation rules for repeated items."""
+        result = []
+        if rules.HasField('const_value'):
+            result.append({'rule': RULE_EQ, 'constraint_id': 'enum.const', 'value': rules.const_value})
+        if rules.HasField('defined_only') and rules.defined_only:
+            result.append({'rule': RULE_ENUM_DEFINED, 'constraint_id': 'enum.defined_only', 'value': rules.defined_only})
+        if hasattr(rules, 'in') and getattr(rules, 'in'):
+            result.append({'rule': RULE_IN, 'constraint_id': 'enum.in', 'values': list(getattr(rules, 'in'))})
+        if rules.not_in:
+            result.append({'rule': RULE_NOT_IN, 'constraint_id': 'enum.not_in', 'values': list(rules.not_in)})
+        return result
     
     def _parse_map_rules(self, rules: Any):
         """Parse map field validation rules."""
@@ -382,6 +489,8 @@ class ValidatorGenerator:
             return f'at most {val} items'
         if rt == RULE_UNIQUE:
             return 'items must be unique'
+        if rt == RULE_ITEMS:
+            return 'per-item validation rules'
         if rt == RULE_NO_SPARSE:
             return 'no sparse map entries'
         # Fallback
@@ -1099,7 +1208,219 @@ class ValidatorGenerator:
         ) % (field.name, max_items, rule.constraint_id)
 
     def _gen_unique(self, field: Any, rule: ValidationRule) -> str:
-        return '        /* TODO: Implement unique constraint for repeated field */\n'
+        """Generate code for unique constraint on repeated fields."""
+        field_name = field.name
+        # Get the field type to determine comparison method
+        pbtype = getattr(field, 'pbtype', None)
+        
+        # Skip unique validation for message types
+        if pbtype in ('MESSAGE', 'MSG_W_CB'):
+            return '        /* NOTE: repeated.unique is not supported for message types */\n'
+        
+        # Use appropriate macro based on type
+        if pbtype == 'STRING':
+            return '        PB_VALIDATE_REPEATED_UNIQUE_STRING(ctx, msg, %s, "%s");\n' % (field_name, rule.constraint_id)
+        elif pbtype == 'BYTES':
+            return '        PB_VALIDATE_REPEATED_UNIQUE_BYTES(ctx, msg, %s, "%s");\n' % (field_name, rule.constraint_id)
+        else:
+            # Scalar types and enums use direct comparison
+            return '        PB_VALIDATE_REPEATED_UNIQUE_SCALAR(ctx, msg, %s, "%s");\n' % (field_name, rule.constraint_id)
+    
+    def _gen_items(self, field: Any, rule: ValidationRule) -> str:
+        """Generate code for per-item validation rules on repeated fields."""
+        field_name = field.name
+        item_rules = rule.params.get('item_rules', [])
+        if not item_rules:
+            return ''
+        
+        pbtype = getattr(field, 'pbtype', None)
+        code = ''
+        
+        for item_rule in item_rules:
+            rule_type = item_rule.get('rule')
+            constraint_id = item_rule.get('constraint_id', '')
+            
+            if rule_type == RULE_MIN_LEN and pbtype == 'STRING':
+                value = item_rule.get('value', 0)
+                code += '        PB_VALIDATE_REPEATED_ITEMS_STR_MIN_LEN(ctx, msg, %s, %d, "%s");\n' % (field_name, value, constraint_id)
+            
+            elif rule_type == RULE_MAX_LEN and pbtype == 'STRING':
+                value = item_rule.get('value', 0)
+                code += '        PB_VALIDATE_REPEATED_ITEMS_STR_MAX_LEN(ctx, msg, %s, %d, "%s");\n' % (field_name, value, constraint_id)
+            
+            elif rule_type in (RULE_GT, RULE_GTE, RULE_LT, RULE_LTE, RULE_EQ):
+                value = item_rule.get('value', 0)
+                # Determine C type and validator function based on constraint_id
+                ctype, func = self._get_numeric_type_info(constraint_id)
+                if ctype and func:
+                    rule_enum = {
+                        RULE_GT: 'PB_VALIDATE_RULE_GT',
+                        RULE_GTE: 'PB_VALIDATE_RULE_GTE',
+                        RULE_LT: 'PB_VALIDATE_RULE_LT',
+                        RULE_LTE: 'PB_VALIDATE_RULE_LTE',
+                        RULE_EQ: 'PB_VALIDATE_RULE_EQ'
+                    }.get(rule_type)
+                    if rule_enum:
+                        code += '        PB_VALIDATE_REPEATED_ITEMS_NUMERIC(ctx, msg, %s, %s, %s, %s, %s, "%s");\n' % (
+                            field_name, ctype, func, rule_enum, value, constraint_id)
+            
+            elif rule_type == RULE_PREFIX:
+                prefix = item_rule.get('value', '')
+                if pbtype == 'STRING':
+                    code += '        /* repeated.items string.prefix validation */\n'
+                    code += '        for (pb_size_t __pb_i = 0; __pb_i < msg->%s_count; ++__pb_i) {\n' % field_name
+                    code += '            pb_validate_context_push_index(&ctx, __pb_i);\n'
+                    code += '            const char *__pb_prefix = "%s";\n' % prefix
+                    code += '            if (!pb_validate_string(msg->%s[__pb_i], (pb_size_t)strlen(msg->%s[__pb_i]), __pb_prefix, PB_VALIDATE_RULE_PREFIX)) {\n' % (field_name, field_name)
+                    code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "String must start with specified prefix");\n' % constraint_id
+                    code += '                if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
+                    code += '            }\n'
+                    code += '            pb_validate_context_pop_index(&ctx);\n'
+                    code += '        }\n'
+            
+            elif rule_type == RULE_SUFFIX:
+                suffix = item_rule.get('value', '')
+                if pbtype == 'STRING':
+                    code += '        /* repeated.items string.suffix validation */\n'
+                    code += '        for (pb_size_t __pb_i = 0; __pb_i < msg->%s_count; ++__pb_i) {\n' % field_name
+                    code += '            pb_validate_context_push_index(&ctx, __pb_i);\n'
+                    code += '            const char *__pb_suffix = "%s";\n' % suffix
+                    code += '            if (!pb_validate_string(msg->%s[__pb_i], (pb_size_t)strlen(msg->%s[__pb_i]), __pb_suffix, PB_VALIDATE_RULE_SUFFIX)) {\n' % (field_name, field_name)
+                    code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "String must end with specified suffix");\n' % constraint_id
+                    code += '                if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
+                    code += '            }\n'
+                    code += '            pb_validate_context_pop_index(&ctx);\n'
+                    code += '        }\n'
+            
+            elif rule_type == RULE_CONTAINS:
+                needle = item_rule.get('value', '')
+                if pbtype == 'STRING':
+                    code += '        /* repeated.items string.contains validation */\n'
+                    code += '        for (pb_size_t __pb_i = 0; __pb_i < msg->%s_count; ++__pb_i) {\n' % field_name
+                    code += '            pb_validate_context_push_index(&ctx, __pb_i);\n'
+                    code += '            const char *__pb_needle = "%s";\n' % needle
+                    code += '            if (!pb_validate_string(msg->%s[__pb_i], (pb_size_t)strlen(msg->%s[__pb_i]), __pb_needle, PB_VALIDATE_RULE_CONTAINS)) {\n' % (field_name, field_name)
+                    code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain specified substring");\n' % constraint_id
+                    code += '                if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
+                    code += '            }\n'
+                    code += '            pb_validate_context_pop_index(&ctx);\n'
+                    code += '        }\n'
+            
+            elif rule_type == RULE_ASCII:
+                if pbtype == 'STRING':
+                    code += '        /* repeated.items string.ascii validation */\n'
+                    code += '        for (pb_size_t __pb_i = 0; __pb_i < msg->%s_count; ++__pb_i) {\n' % field_name
+                    code += '            pb_validate_context_push_index(&ctx, __pb_i);\n'
+                    code += '            if (!pb_validate_string(msg->%s[__pb_i], (pb_size_t)strlen(msg->%s[__pb_i]), NULL, PB_VALIDATE_RULE_ASCII)) {\n' % (field_name, field_name)
+                    code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain only ASCII characters");\n' % constraint_id
+                    code += '                if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
+                    code += '            }\n'
+                    code += '            pb_validate_context_pop_index(&ctx);\n'
+                    code += '        }\n'
+            
+            elif rule_type in (RULE_EMAIL, RULE_HOSTNAME, RULE_IP, RULE_IPV4, RULE_IPV6):
+                if pbtype == 'STRING':
+                    rule_enum = {
+                        RULE_EMAIL: 'PB_VALIDATE_RULE_EMAIL',
+                        RULE_HOSTNAME: 'PB_VALIDATE_RULE_HOSTNAME',
+                        RULE_IP: 'PB_VALIDATE_RULE_IP',
+                        RULE_IPV4: 'PB_VALIDATE_RULE_IPV4',
+                        RULE_IPV6: 'PB_VALIDATE_RULE_IPV6',
+                    }.get(rule_type)
+                    code += '        /* repeated.items %s validation */\n' % constraint_id
+                    code += '        for (pb_size_t __pb_i = 0; __pb_i < msg->%s_count; ++__pb_i) {\n' % field_name
+                    code += '            pb_validate_context_push_index(&ctx, __pb_i);\n'
+                    code += '            if (!pb_validate_string(msg->%s[__pb_i], (pb_size_t)strlen(msg->%s[__pb_i]), NULL, %s)) {\n' % (field_name, field_name, rule_enum)
+                    code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "String format validation failed");\n' % constraint_id
+                    code += '                if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
+                    code += '            }\n'
+                    code += '            pb_validate_context_pop_index(&ctx);\n'
+                    code += '        }\n'
+            
+            elif rule_type == RULE_IN:
+                values = item_rule.get('values', [])
+                if pbtype == 'STRING':
+                    values_array = ', '.join('"%s"' % v for v in values)
+                    code += '        /* repeated.items string.in validation */\n'
+                    code += '        for (pb_size_t __pb_i = 0; __pb_i < msg->%s_count; ++__pb_i) {\n' % field_name
+                    code += '            pb_validate_context_push_index(&ctx, __pb_i);\n'
+                    code += '            const char *__pb_allowed[] = { %s };\n' % values_array
+                    code += '            bool __pb_match = false;\n'
+                    code += '            for (size_t __pb_k = 0; __pb_k < sizeof(__pb_allowed)/sizeof(__pb_allowed[0]); __pb_k++) {\n'
+                    code += '                if (strcmp(msg->%s[__pb_i], __pb_allowed[__pb_k]) == 0) { __pb_match = true; break; }\n' % field_name
+                    code += '            }\n'
+                    code += '            if (!__pb_match) {\n'
+                    code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of allowed set");\n' % constraint_id
+                    code += '                if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
+                    code += '            }\n'
+                    code += '            pb_validate_context_pop_index(&ctx);\n'
+                    code += '        }\n'
+                else:
+                    conditions = ['msg->%s[__pb_i] == %s' % (field_name, v) for v in values]
+                    condition_str = ' || '.join(conditions)
+                    code += '        /* repeated.items %s.in validation */\n' % constraint_id.split('.')[0]
+                    code += '        for (pb_size_t __pb_i = 0; __pb_i < msg->%s_count; ++__pb_i) {\n' % field_name
+                    code += '            pb_validate_context_push_index(&ctx, __pb_i);\n'
+                    code += '            if (!(%s)) {\n' % condition_str
+                    code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of allowed set");\n' % constraint_id
+                    code += '                if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
+                    code += '            }\n'
+                    code += '            pb_validate_context_pop_index(&ctx);\n'
+                    code += '        }\n'
+            
+            elif rule_type == RULE_NOT_IN:
+                values = item_rule.get('values', [])
+                if pbtype == 'STRING':
+                    values_array = ', '.join('"%s"' % v for v in values)
+                    code += '        /* repeated.items string.not_in validation */\n'
+                    code += '        for (pb_size_t __pb_i = 0; __pb_i < msg->%s_count; ++__pb_i) {\n' % field_name
+                    code += '            pb_validate_context_push_index(&ctx, __pb_i);\n'
+                    code += '            const char *__pb_blocked[] = { %s };\n' % values_array
+                    code += '            bool __pb_forbidden = false;\n'
+                    code += '            for (size_t __pb_k = 0; __pb_k < sizeof(__pb_blocked)/sizeof(__pb_blocked[0]); __pb_k++) {\n'
+                    code += '                if (strcmp(msg->%s[__pb_i], __pb_blocked[__pb_k]) == 0) { __pb_forbidden = true; break; }\n' % field_name
+                    code += '            }\n'
+                    code += '            if (__pb_forbidden) {\n'
+                    code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value is in forbidden set");\n' % constraint_id
+                    code += '                if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
+                    code += '            }\n'
+                    code += '            pb_validate_context_pop_index(&ctx);\n'
+                    code += '        }\n'
+                else:
+                    conditions = ['msg->%s[__pb_i] != %s' % (field_name, v) for v in values]
+                    condition_str = ' && '.join(conditions)
+                    code += '        /* repeated.items %s.not_in validation */\n' % constraint_id.split('.')[0]
+                    code += '        for (pb_size_t __pb_i = 0; __pb_i < msg->%s_count; ++__pb_i) {\n' % field_name
+                    code += '            pb_validate_context_push_index(&ctx, __pb_i);\n'
+                    code += '            if (!(%s)) {\n' % condition_str
+                    code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value is in forbidden set");\n' % constraint_id
+                    code += '                if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
+                    code += '            }\n'
+                    code += '            pb_validate_context_pop_index(&ctx);\n'
+                    code += '        }\n'
+        
+        return code
+    
+    def _get_numeric_type_info(self, constraint_id: str) -> tuple:
+        """Get C type and validator function name from constraint_id."""
+        type_map = {
+            'int32': ('int32_t', 'pb_validate_int32'),
+            'sint32': ('int32_t', 'pb_validate_int32'),
+            'sfixed32': ('int32_t', 'pb_validate_int32'),
+            'int64': ('int64_t', 'pb_validate_int64'),
+            'sint64': ('int64_t', 'pb_validate_int64'),
+            'sfixed64': ('int64_t', 'pb_validate_int64'),
+            'uint32': ('uint32_t', 'pb_validate_uint32'),
+            'fixed32': ('uint32_t', 'pb_validate_uint32'),
+            'uint64': ('uint64_t', 'pb_validate_uint64'),
+            'fixed64': ('uint64_t', 'pb_validate_uint64'),
+            'float': ('float', 'pb_validate_float'),
+            'double': ('double', 'pb_validate_double'),
+            'bool': ('bool', 'pb_validate_bool'),
+            'enum': ('int', 'pb_validate_enum'),
+        }
+        type_prefix = constraint_id.split('.', 1)[0]
+        return type_map.get(type_prefix, (None, None))
 
     def _gen_no_sparse(self, field: Any, rule: ValidationRule) -> str:
         return '        /* TODO: Implement no_sparse constraint for map field */\n'
@@ -1169,6 +1490,7 @@ class ValidatorGenerator:
             RULE_NO_SPARSE: self._gen_no_sparse,
             RULE_ANY_IN: self._gen_any_in,
             RULE_ANY_NOT_IN: self._gen_any_not_in,
+            RULE_ITEMS: self._gen_items,
         }
         
         handler = dispatch.get(rule.rule_type)

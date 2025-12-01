@@ -211,6 +211,98 @@ extern "C"
             }                                                                                                  \
         } while (0)
 
+    /* Repeated unique validation for scalar types (direct comparison). */
+    #define PB_VALIDATE_REPEATED_UNIQUE_SCALAR(ctx_var, msg_ptr, field_name, CONSTRAINT_ID)                     \
+        do {                                                                                                   \
+            for (pb_size_t __pb_i = 0; __pb_i < (msg_ptr)->field_name##_count; ++__pb_i) {                     \
+                for (pb_size_t __pb_j = __pb_i + 1; __pb_j < (msg_ptr)->field_name##_count; ++__pb_j) {        \
+                    if ((msg_ptr)->field_name[__pb_i] == (msg_ptr)->field_name[__pb_j]) {                      \
+                        pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),        \
+                                          "Repeated field elements must be unique");                           \
+                        if ((ctx_var).early_exit) return false;                                                \
+                    }                                                                                          \
+                }                                                                                              \
+            }                                                                                                  \
+        } while (0)
+
+    /* Repeated unique validation for string types (strcmp comparison). */
+    #define PB_VALIDATE_REPEATED_UNIQUE_STRING(ctx_var, msg_ptr, field_name, CONSTRAINT_ID)                     \
+        do {                                                                                                   \
+            for (pb_size_t __pb_i = 0; __pb_i < (msg_ptr)->field_name##_count; ++__pb_i) {                     \
+                for (pb_size_t __pb_j = __pb_i + 1; __pb_j < (msg_ptr)->field_name##_count; ++__pb_j) {        \
+                    if (strcmp((msg_ptr)->field_name[__pb_i], (msg_ptr)->field_name[__pb_j]) == 0) {           \
+                        pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),        \
+                                          "Repeated field elements must be unique");                           \
+                        if ((ctx_var).early_exit) return false;                                                \
+                    }                                                                                          \
+                }                                                                                              \
+            }                                                                                                  \
+        } while (0)
+
+    /* Repeated unique validation for bytes types (memcmp comparison). */
+    #define PB_VALIDATE_REPEATED_UNIQUE_BYTES(ctx_var, msg_ptr, field_name, CONSTRAINT_ID)                      \
+        do {                                                                                                   \
+            for (pb_size_t __pb_i = 0; __pb_i < (msg_ptr)->field_name##_count; ++__pb_i) {                     \
+                for (pb_size_t __pb_j = __pb_i + 1; __pb_j < (msg_ptr)->field_name##_count; ++__pb_j) {        \
+                    if ((msg_ptr)->field_name[__pb_i].size == (msg_ptr)->field_name[__pb_j].size &&            \
+                        memcmp((msg_ptr)->field_name[__pb_i].bytes, (msg_ptr)->field_name[__pb_j].bytes,       \
+                               (msg_ptr)->field_name[__pb_i].size) == 0) {                                    \
+                        pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),        \
+                                          "Repeated field elements must be unique");                           \
+                        if ((ctx_var).early_exit) return false;                                                \
+                    }                                                                                          \
+                }                                                                                              \
+            }                                                                                                  \
+        } while (0)
+
+    /* Repeated items string length validation macros. */
+    #define PB_VALIDATE_REPEATED_ITEMS_STR_MIN_LEN(ctx_var, msg_ptr, field_name, MIN_LEN, CONSTRAINT_ID)        \
+        do {                                                                                                   \
+            for (pb_size_t __pb_i = 0; __pb_i < (msg_ptr)->field_name##_count; ++__pb_i) {                     \
+                pb_validate_context_push_index(&(ctx_var), __pb_i);                                            \
+                uint32_t __pb_min_len_v = (uint32_t)(MIN_LEN);                                                 \
+                if (!pb_validate_string((msg_ptr)->field_name[__pb_i],                                         \
+                                        (pb_size_t)strlen((msg_ptr)->field_name[__pb_i]),                      \
+                                        &__pb_min_len_v, PB_VALIDATE_RULE_MIN_LEN)) {                          \
+                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),            \
+                                      "String too short");                                                     \
+                    if ((ctx_var).early_exit) { pb_validate_context_pop_index(&(ctx_var)); return false; }     \
+                }                                                                                              \
+                pb_validate_context_pop_index(&(ctx_var));                                                     \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_REPEATED_ITEMS_STR_MAX_LEN(ctx_var, msg_ptr, field_name, MAX_LEN, CONSTRAINT_ID)        \
+        do {                                                                                                   \
+            for (pb_size_t __pb_i = 0; __pb_i < (msg_ptr)->field_name##_count; ++__pb_i) {                     \
+                pb_validate_context_push_index(&(ctx_var), __pb_i);                                            \
+                uint32_t __pb_max_len_v = (uint32_t)(MAX_LEN);                                                 \
+                if (!pb_validate_string((msg_ptr)->field_name[__pb_i],                                         \
+                                        (pb_size_t)strlen((msg_ptr)->field_name[__pb_i]),                      \
+                                        &__pb_max_len_v, PB_VALIDATE_RULE_MAX_LEN)) {                          \
+                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),            \
+                                      "String too long");                                                      \
+                    if ((ctx_var).early_exit) { pb_validate_context_pop_index(&(ctx_var)); return false; }     \
+                }                                                                                              \
+                pb_validate_context_pop_index(&(ctx_var));                                                     \
+            }                                                                                                  \
+        } while (0)
+
+    /* Repeated items numeric validation macro. */
+    #define PB_VALIDATE_REPEATED_ITEMS_NUMERIC(ctx_var, msg_ptr, field_name, CTYPE, FUNC, RULE_ENUM, VALUE_EXPR, CONSTRAINT_ID) \
+        do {                                                                                                   \
+            for (pb_size_t __pb_i = 0; __pb_i < (msg_ptr)->field_name##_count; ++__pb_i) {                     \
+                pb_validate_context_push_index(&(ctx_var), __pb_i);                                            \
+                CTYPE __pb_expected = (CTYPE)(VALUE_EXPR);                                                     \
+                if (!FUNC((msg_ptr)->field_name[__pb_i], &__pb_expected, (RULE_ENUM))) {                       \
+                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),            \
+                                      "Value constraint failed");                                              \
+                    if ((ctx_var).early_exit) { pb_validate_context_pop_index(&(ctx_var)); return false; }     \
+                }                                                                                              \
+                pb_validate_context_pop_index(&(ctx_var));                                                     \
+            }                                                                                                  \
+        } while (0)
+
     /* Rule types for internal use */
     typedef enum
     {

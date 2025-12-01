@@ -3,6 +3,7 @@ syntax = "proto3";
 package demo;
 
 import "generator/proto/validate.proto";
+import "generator/proto/nanopb.proto";
 import "google/protobuf/timestamp.proto";
 
 // Table of contents
@@ -23,6 +24,26 @@ message ChatMessage {
   ];
   ColoredPoint location = 4; // where it was sent from
   Color theme = 5 [(validate.rules).enum.defined_only = true];
+  repeated string tags = 7 [(validate.rules).repeated.min_items = 0, (validate.rules).repeated.max_items = 10,
+    (validate.rules).string.min_len = 1, (validate.rules).string.max_len = 20];
+    repeated string val = 9 [
+      (nanopb).max_count = 10,
+      (nanopb).max_size = 64,
+      (validate.rules).repeated = {
+          items: { string: { min_len: 3, max_len: 10 } }
+          unique: true
+      },
+      (validate.rules).repeated.min_items = 1,
+      (validate.rules).repeated.max_items = 5
+    ];
+    repeated string values = 8 [
+      (validate.rules).repeated = {
+          items: { string: { min_len: 3, max_len: 10 } }
+          unique: true
+      },
+      (validate.rules).repeated.min_items = 1,
+      (validate.rules).repeated.max_items = 5
+    ];
   // Use a well-known type to test import handling in flattener
   google.protobuf.Timestamp sent_at = 6;
 }

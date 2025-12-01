@@ -1,0 +1,90 @@
+/* Test proto file for repeated.items and repeated.unique validation */
+syntax = "proto2";
+package test;
+
+import "nanopb.proto";
+import "generator/proto/validate.proto";
+
+option (validate.validate) = true;
+
+/* Test message with repeated string with min_len/max_len items validation */
+message RepeatedStringItems {
+    repeated string values = 1 [
+        (nanopb).max_count = 10,
+        (nanopb).max_size = 64,
+        (validate.rules).repeated = {
+            items: {
+                string: {
+                    min_len: 3
+                    max_len: 10
+                }
+            }
+        }
+    ];
+}
+
+/* Test message with repeated int32 with gt/lt items validation */
+message RepeatedInt32Items {
+    repeated int32 values = 1 [
+        (nanopb).max_count = 10,
+        (validate.rules).repeated = {
+            items: {
+                int32: {
+                    gt: 0
+                    lt: 100
+                }
+            }
+        }
+    ];
+}
+
+/* Test message with repeated string with unique constraint */
+message RepeatedUniqueStrings {
+    repeated string values = 1 [
+        (nanopb).max_count = 10,
+        (nanopb).max_size = 64,
+        (validate.rules).repeated.unique = true
+    ];
+}
+
+/* Test message with repeated int32 with unique constraint */
+message RepeatedUniqueInt32 {
+    repeated int32 values = 1 [
+        (nanopb).max_count = 10,
+        (validate.rules).repeated.unique = true
+    ];
+}
+
+/* Test message with both items and unique constraints */
+message RepeatedBothConstraints {
+    repeated string values = 1 [
+        (nanopb).max_count = 10,
+        (nanopb).max_size = 64,
+        (validate.rules).repeated = {
+            items: {
+                string: {
+                    min_len: 2
+                }
+            }
+            unique: true
+        }
+    ];
+}
+
+/* Test message with combined min_items, max_items, items, and unique */
+message RepeatedAllConstraints {
+    repeated int32 numbers = 1 [
+        (nanopb).max_count = 20,
+        (validate.rules).repeated = {
+            min_items: 1
+            max_items: 10
+            items: {
+                int32: {
+                    gte: 0
+                    lte: 1000
+                }
+            }
+            unique: true
+        }
+    ];
+}
