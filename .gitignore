@@ -34,3 +34,4 @@ extra/poetry/build
 build/
 .idea
 .vscode/
+.venv/
