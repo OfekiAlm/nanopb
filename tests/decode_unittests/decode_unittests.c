@@ -39,6 +39,15 @@ bool callback_check(pb_istream_t *stream, const pb_field_t *field, void **arg)
     return true;
 }
 
+/* A callback that always fails - for testing error paths */
+bool failing_callback(pb_istream_t *stream, const pb_field_t *field, void **arg)
+{
+    PB_UNUSED(stream);
+    PB_UNUSED(field);
+    PB_UNUSED(arg);
+    return false;
+}
+
 int main()
 {
     int status = 0;
@@ -630,6 +639,27 @@ int main()
         TEST((s = S("\x03"), pb_decode_svarint(&s, &d) && d == -2));
         /* Test decoding zero */
         TEST((s = S("\x00"), pb_decode_svarint(&s, &d) && d == 0));
+    }
+
+    {
+        pb_istream_t s;
+        CallbackArray dest;
+
+        COMMENT("Testing pb_decode with failing callback")
+        dest.data.funcs.decode = &failing_callback;
+        dest.data.arg = NULL;
+
+        /* The failing callback should cause pb_decode to fail */
+        TEST((s = S("\x08\x55"), !pb_decode(&s, CallbackArray_fields, &dest)));
+    }
+
+    {
+        pb_istream_t s;
+
+        COMMENT("Testing pb_decode_fixed64 error case")
+        double d = 0.0;
+        /* Too short stream should fail */
+        TEST((s = S("\x00\x00\x00"), !pb_decode_fixed64(&s, &d)));
     }
 
     if (status != 0)

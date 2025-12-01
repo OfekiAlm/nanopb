@@ -36,6 +36,15 @@ bool crazyfieldcallback(pb_ostream_t *stream, const pb_field_t *field, void * co
     return pb_encode_varint(stream, *state);
 }
 
+/* A callback that always fails - for testing error paths */
+bool failingcallback(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
+{
+    (void)stream;
+    (void)field;
+    (void)arg;
+    return false;
+}
+
 /* Check that expression x writes data y.
  * Y is a string, which may contain null bytes. Null terminator is ignored.
  */
@@ -586,6 +595,47 @@ int main()
 
         uint64_t val64 = 0x123456789ABCDEF0ULL;
         TEST(WRITES(pb_encode_fixed64(&s, &val64), "\xF0\xDE\xBC\x9A\x78\x56\x34\x12"));
+    }
+
+    {
+        uint8_t buffer[100];
+        pb_ostream_t s;
+        CallbackArray msg;
+        
+        COMMENT("Test pb_encode with failing callback");
+        
+        msg.data.funcs.encode = &failingcallback;
+        msg.data.arg = NULL;
+        
+        /* The failing callback should cause pb_encode to fail */
+        s = pb_ostream_from_buffer(buffer, sizeof(buffer));
+        TEST(!pb_encode(&s, CallbackArray_fields, &msg));
+    }
+
+    {
+        uint8_t buffer[5];  /* Small buffer */
+        pb_ostream_t s;
+
+        COMMENT("Test pb_encode_string with insufficient buffer");
+
+        s = pb_ostream_from_buffer(buffer, sizeof(buffer));
+        /* Try to encode a string that's too long for the buffer */
+        TEST(!pb_encode_string(&s, (const uint8_t*)"abcdefghijklmnop", 16));
+    }
+
+    {
+        pb_ostream_t s;
+
+        COMMENT("Test PB_OSTREAM_SIZING")
+
+        /* Create a sizing stream using the macro */
+        s = (pb_ostream_t)PB_OSTREAM_SIZING;
+        TEST(s.callback == NULL);
+        
+        /* Test that we can use it to determine encoded size */
+        IntegerArray msg = {3, {1, 2, 3}};
+        TEST(pb_encode(&s, IntegerArray_fields, &msg));
+        TEST(s.bytes_written > 0);
     }
 
     if (status != 0)
