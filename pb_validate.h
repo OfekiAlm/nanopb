@@ -209,6 +209,36 @@ extern "C"
             }                                                                                                   \
         } while (0)
 
+    /* String format validation helpers for normal (non-callback) string fields.
+     * These macros validate email, hostname, IP address, and ASCII format.
+     */
+    #define PB_VALIDATE_STR_FORMAT(ctx_var, msg_ptr, field_name, RULE_ENUM, CONSTRAINT_ID, ERR_MSG)              \
+        do {                                                                                                    \
+            if (!pb_validate_string((msg_ptr)->field_name, (pb_size_t)strlen((msg_ptr)->field_name),           \
+                                    NULL, (RULE_ENUM))) {                                                       \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), (ERR_MSG));     \
+                if ((ctx_var).early_exit) return false;                                                         \
+            }                                                                                                   \
+        } while (0)
+
+    #define PB_VALIDATE_STR_ASCII(ctx_var, msg_ptr, field_name, CONSTRAINT_ID) \
+        PB_VALIDATE_STR_FORMAT(ctx_var, msg_ptr, field_name, PB_VALIDATE_RULE_ASCII, CONSTRAINT_ID, "String must contain only ASCII characters")
+
+    #define PB_VALIDATE_STR_EMAIL(ctx_var, msg_ptr, field_name, CONSTRAINT_ID) \
+        PB_VALIDATE_STR_FORMAT(ctx_var, msg_ptr, field_name, PB_VALIDATE_RULE_EMAIL, CONSTRAINT_ID, "String format validation failed")
+
+    #define PB_VALIDATE_STR_HOSTNAME(ctx_var, msg_ptr, field_name, CONSTRAINT_ID) \
+        PB_VALIDATE_STR_FORMAT(ctx_var, msg_ptr, field_name, PB_VALIDATE_RULE_HOSTNAME, CONSTRAINT_ID, "String format validation failed")
+
+    #define PB_VALIDATE_STR_IP(ctx_var, msg_ptr, field_name, CONSTRAINT_ID) \
+        PB_VALIDATE_STR_FORMAT(ctx_var, msg_ptr, field_name, PB_VALIDATE_RULE_IP, CONSTRAINT_ID, "String format validation failed")
+
+    #define PB_VALIDATE_STR_IPV4(ctx_var, msg_ptr, field_name, CONSTRAINT_ID) \
+        PB_VALIDATE_STR_FORMAT(ctx_var, msg_ptr, field_name, PB_VALIDATE_RULE_IPV4, CONSTRAINT_ID, "String format validation failed")
+
+    #define PB_VALIDATE_STR_IPV6(ctx_var, msg_ptr, field_name, CONSTRAINT_ID) \
+        PB_VALIDATE_STR_FORMAT(ctx_var, msg_ptr, field_name, PB_VALIDATE_RULE_IPV6, CONSTRAINT_ID, "String format validation failed")
+
     /* Generic string validation macro for format rules (email, hostname, ip, etc.)
      * that don't require a parameter value. For callback-based string fields.
      */

@@ -668,10 +668,7 @@ class ValidatorGenerator:
                 yield '    PB_VALIDATE_FIELD_BEGIN(ctx, "%s");\n' % field_name
                 
                 for rule in field_validator.rules:
-                    yield '    {\n'
-                    yield '        /* Rule: %s */\n' % rule.constraint_id
                     yield self._generate_rule_check(field, rule)
-                    yield '    }\n'
 
                 # Automatic recursion for submessages
                 try:
@@ -686,26 +683,19 @@ class ValidatorGenerator:
                             rules = getattr(field, 'rules', None)
                             if allocation == 'POINTER':
                                 # Pointer to submessage
-                                yield '    {\n'
-                                yield '        /* Recurse into submessage */\n'
-                                yield '        if (msg->%s) {\n' % field_name
-                                yield '            bool ok_nested = %s(msg->%s, violations);\n' % (sub_func, field_name)
-                                yield '            if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }\n'
-                                yield '        }\n'
+                                yield '    if (msg->%s) {\n' % field_name
+                                yield '        bool ok_nested = %s(msg->%s, violations);\n' % (sub_func, field_name)
+                                yield '        if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }\n'
                                 yield '    }\n'
                             else:
                                 # Inline submessage struct
                                 if rules == 'OPTIONAL':
-                                    yield '    {\n'
-                                    yield '        /* Recurse into submessage (optional) */\n'
-                                    yield '        if (msg->has_%s) {\n' % field_name
-                                    yield '            bool ok_nested = %s(&msg->%s, violations);\n' % (sub_func, field_name)
-                                    yield '            if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }\n'
-                                    yield '        }\n'
+                                    yield '    if (msg->has_%s) {\n' % field_name
+                                    yield '        bool ok_nested = %s(&msg->%s, violations);\n' % (sub_func, field_name)
+                                    yield '        if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }\n'
                                     yield '    }\n'
                                 else:
                                     yield '    {\n'
-                                    yield '        /* Recurse into submessage (singular) */\n'
                                     yield '        bool ok_nested = %s(&msg->%s, violations);\n' % (sub_func, field_name)
                                     yield '        if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }\n'
                                     yield '    }\n'
@@ -714,7 +704,7 @@ class ValidatorGenerator:
                     pass
                 
                 yield '    PB_VALIDATE_FIELD_END(ctx);\n'
-                yield '    \n'
+                yield '\n'
             
             # Also recurse into message-typed fields that have no field-level rules
             try:
@@ -742,30 +732,23 @@ class ValidatorGenerator:
                     yield '    /* Validate field: %s */\n' % fname
                     yield '    PB_VALIDATE_FIELD_BEGIN(ctx, "%s");\n' % fname
                     if allocation == 'POINTER':
-                        yield '    {\n'
-                        yield '        /* Recurse into submessage */\n'
-                        yield '        if (msg->%s) {\n' % fname
-                        yield '            bool ok_nested = %s(msg->%s, violations);\n' % (sub_func, fname)
-                        yield '            if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }\n'
-                        yield '        }\n'
+                        yield '    if (msg->%s) {\n' % fname
+                        yield '        bool ok_nested = %s(msg->%s, violations);\n' % (sub_func, fname)
+                        yield '        if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }\n'
                         yield '    }\n'
                     else:
                         if rules == 'OPTIONAL':
-                            yield '    {\n'
-                            yield '        /* Recurse into submessage (optional) */\n'
-                            yield '        if (msg->has_%s) {\n' % fname
-                            yield '            bool ok_nested = %s(&msg->%s, violations);\n' % (sub_func, fname)
-                            yield '            if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }\n'
-                            yield '        }\n'
+                            yield '    if (msg->has_%s) {\n' % fname
+                            yield '        bool ok_nested = %s(&msg->%s, violations);\n' % (sub_func, fname)
+                            yield '        if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }\n'
                             yield '    }\n'
                         else:
                             yield '    {\n'
-                            yield '        /* Recurse into submessage (singular) */\n'
                             yield '        bool ok_nested = %s(&msg->%s, violations);\n' % (sub_func, fname)
                             yield '        if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }\n'
                             yield '    }\n'
                     yield '    PB_VALIDATE_FIELD_END(ctx);\n'
-                    yield '    \n'
+                    yield '\n'
                 except Exception:
                     # Skip if field metadata is unexpected
                     pass
@@ -787,25 +770,21 @@ class ValidatorGenerator:
                     yield '            PB_VALIDATE_FIELD_BEGIN(ctx, "%s");\n' % field_name
                     
                     for rule in member_fv.rules:
-                        yield '            {\n'
-                        yield '                /* Rule: %s */\n' % rule.constraint_id
                         yield self._generate_oneof_rule_check(member_field, rule, oneof_name, oneof_obj)
-                        yield '            }\n'
                     
                     yield '            PB_VALIDATE_FIELD_END(ctx);\n'
                     yield '            break;\n'
                 
                 yield '        default:\n'
-                yield '            /* No oneof member set or unrecognized tag */\n'
                 yield '            break;\n'
                 yield '    }\n'
-                yield '    \n'
+                yield '\n'
 
             # Generate message-level validations
             for rule in validator.message_rules:
                 yield '    /* Message rule: %s */\n' % rule.constraint_id
                 yield self._generate_message_rule_check(validator.message, rule)
-                yield '    \n'
+                yield '\n'
             
             yield '    PB_VALIDATE_END(ctx, violations);\n'
             yield '}\n'
@@ -1057,51 +1036,40 @@ class ValidatorGenerator:
                 return self._wrap_optional(field,
                     '        PB_VALIDATE_STRING_ASCII(ctx, msg, %s, "%s");\n' % (field_name, rule.constraint_id)
                 )
-            return self._wrap_optional(field, 
-                '        {\n'
-                '            if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), NULL, PB_VALIDATE_RULE_ASCII)) {\n'
-                '                pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain only ASCII characters");\n'
-                '                if (ctx.early_exit) return false;\n'
-                '            }\n'
-                '        }\n' % (field_name, field_name, rule.constraint_id)
+            # Use macro for normal string fields
+            return self._wrap_optional(field,
+                '        PB_VALIDATE_STR_ASCII(ctx, msg, %s, "%s");\n' % (field_name, rule.constraint_id)
             )
         return ''
 
     def _gen_string_format(self, field: Any, rule: ValidationRule) -> str:
         field_name = field.name
         if 'string' in rule.constraint_id:
-            # Map rule types to macro names and rule enums
-            macro_map = {
+            # Map rule types to macro names for callback and normal string fields
+            callback_macro_map = {
                 RULE_EMAIL: 'PB_VALIDATE_STRING_EMAIL',
                 RULE_HOSTNAME: 'PB_VALIDATE_STRING_HOSTNAME',
                 RULE_IP: 'PB_VALIDATE_STRING_IP',
                 RULE_IPV4: 'PB_VALIDATE_STRING_IPV4',
                 RULE_IPV6: 'PB_VALIDATE_STRING_IPV6',
             }
-            enum_map = {
-                RULE_EMAIL: 'PB_VALIDATE_RULE_EMAIL',
-                RULE_HOSTNAME: 'PB_VALIDATE_RULE_HOSTNAME',
-                RULE_IP: 'PB_VALIDATE_RULE_IP',
-                RULE_IPV4: 'PB_VALIDATE_RULE_IPV4',
-                RULE_IPV6: 'PB_VALIDATE_RULE_IPV6',
+            normal_macro_map = {
+                RULE_EMAIL: 'PB_VALIDATE_STR_EMAIL',
+                RULE_HOSTNAME: 'PB_VALIDATE_STR_HOSTNAME',
+                RULE_IP: 'PB_VALIDATE_STR_IP',
+                RULE_IPV4: 'PB_VALIDATE_STR_IPV4',
+                RULE_IPV6: 'PB_VALIDATE_STR_IPV6',
             }
-            macro_name = macro_map.get(rule.rule_type)
-            rule_enum = enum_map.get(rule.rule_type)
-            if not macro_name or not rule_enum:
-                return ''
             if getattr(field, 'allocation', None) == 'CALLBACK':
-                # Use macro for callback string fields
-                return self._wrap_optional(field,
-                    '        %s(ctx, msg, %s, "%s");\n' % (macro_name, field_name, rule.constraint_id)
-                )
-            return self._wrap_optional(field, 
-                '        {\n'
-                '            if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), NULL, %s)) {\n'
-                '                pb_violations_add(violations, ctx.path_buffer, "%s", "String format validation failed");\n'
-                '                if (ctx.early_exit) return false;\n'
-                '            }\n'
-                '        }\n' % (field_name, field_name, rule_enum, rule.constraint_id)
+                macro_name = callback_macro_map.get(rule.rule_type)
+            else:
+                macro_name = normal_macro_map.get(rule.rule_type)
+            if not macro_name:
+                return ''
+            return self._wrap_optional(field,
+                '        %s(ctx, msg, %s, "%s");\n' % (macro_name, field_name, rule.constraint_id)
             )
+        return ''
         return ''
 
     def _gen_enum_defined(self, field: Any, rule: ValidationRule) -> str:
