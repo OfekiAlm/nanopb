@@ -1070,7 +1070,6 @@ class ValidatorGenerator:
                 '        %s(ctx, msg, %s, "%s");\n' % (macro_name, field_name, rule.constraint_id)
             )
         return ''
-        return ''
 
     def _gen_enum_defined(self, field: Any, rule: ValidationRule) -> str:
         # Only enforce when defined_only is true
