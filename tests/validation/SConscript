@@ -17,6 +17,10 @@ if '-ansi' in cflags:
     cflags = cflags.replace('-ansi', '')
 test_env.Replace(CFLAGS = cflags + ' -std=c99 ')
 
+# Prepend the build directory to CPPPATH so our generated headers are found
+# before any system-wide google/protobuf headers
+test_env.Prepend(CPPPATH = ['.'])
+
 # Build pb_validate.o without extra strict flags (avoid conversion warnings)
 test_env.Object("pb_validate.o", "$NANOPB/pb_validate.c")
 
