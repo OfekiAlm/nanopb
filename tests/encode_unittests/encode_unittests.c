@@ -39,9 +39,9 @@ bool crazyfieldcallback(pb_ostream_t *stream, const pb_field_t *field, void * co
 /* A callback that always fails - for testing error paths */
 bool failingcallback(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
 {
-    (void)stream;
-    (void)field;
-    (void)arg;
+    PB_UNUSED(stream);
+    PB_UNUSED(field);
+    PB_UNUSED(arg);
     return false;
 }
 

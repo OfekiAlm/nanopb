@@ -1,0 +1,2 @@
+# Hashes of file build rules.
+68d9a9222c98e74e12b3008371b269c2 CMakeFiles/nanopb_generator
