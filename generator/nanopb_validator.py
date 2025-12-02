@@ -1574,10 +1574,7 @@ class ValidatorGenerator:
             conditions = ['msg->%s != %s' % (field_access, v) for v in values]
             condition_str = ' && '.join(conditions)
             return (
-                '            if (!(%s)) {\n'
-                '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value in forbidden set");\n'
-                '                if (ctx.early_exit) return false;\n'
-                '            }\n'
+                '            if (!(%s)) { pb_violations_add(violations, ctx.path_buffer, "%s", "Value in forbidden set"); if (ctx.early_exit) return false; }\n'
             ) % (condition_str, rule.constraint_id)
 
     def _gen_oneof_enum_defined(self, field: Any, rule: ValidationRule, field_access: str) -> str:
