@@ -639,6 +639,54 @@ extern "C"
             }                                                                                                  \
         } while (0)
 
+    /* String in/not_in validation macros.
+     * These check if a string value is in or not in a list of allowed/forbidden values.
+     */
+    #define PB_VALIDATE_STR_IN(ctx_var, msg_ptr, field_name, values_arr, count, CONSTRAINT_ID)                   \
+        do {                                                                                                    \
+            bool __pb_valid = false;                                                                            \
+            for (size_t __pb_i = 0; __pb_i < (count); ++__pb_i) {                                               \
+                if (strcmp((msg_ptr)->field_name, (values_arr)[__pb_i]) == 0) {                                 \
+                    __pb_valid = true;                                                                          \
+                    break;                                                                                      \
+                }                                                                                               \
+            }                                                                                                   \
+            if (!__pb_valid) {                                                                                  \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),                 \
+                                  "Value must be one of allowed set");                                          \
+                if ((ctx_var).early_exit) return false;                                                         \
+            }                                                                                                   \
+        } while (0)
+
+    #define PB_VALIDATE_STR_NOT_IN(ctx_var, msg_ptr, field_name, values_arr, count, CONSTRAINT_ID)               \
+        do {                                                                                                    \
+            for (size_t __pb_i = 0; __pb_i < (count); ++__pb_i) {                                               \
+                if (strcmp((msg_ptr)->field_name, (values_arr)[__pb_i]) == 0) {                                 \
+                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),             \
+                                      "Value must not be one of forbidden set");                                \
+                    if ((ctx_var).early_exit) return false;                                                     \
+                    break;                                                                                      \
+                }                                                                                               \
+            }                                                                                                   \
+        } while (0)
+
+    /* Oneof switch/case macros for cleaner generated code. */
+    #define PB_VALIDATE_ONEOF_BEGIN(ctx_var, msg_ptr, oneof_name)                                                \
+        switch ((msg_ptr)->which_##oneof_name) {
+
+    #define PB_VALIDATE_ONEOF_CASE(tag_name)                                                                     \
+        case tag_name:
+
+    #define PB_VALIDATE_ONEOF_CASE_END()                                                                         \
+            break;
+
+    #define PB_VALIDATE_ONEOF_DEFAULT()                                                                          \
+        default:                                                                                                \
+            break;
+
+    #define PB_VALIDATE_ONEOF_END()                                                                              \
+        }
+
     /* Rule types for internal use */
     typedef enum
     {
