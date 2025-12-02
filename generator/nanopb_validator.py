@@ -762,16 +762,16 @@ class ValidatorGenerator:
                     # Generate case for this oneof member
                     # Tag constant format: <MESSAGE_NAME>_<field_name>_tag
                     tag_name = '%s_%s_tag' % (struct_name, field_name)
-                    yield '        PB_VALIDATE_ONEOF_CASE(%s)\n' % tag_name
-                    yield '            PB_VALIDATE_FIELD_BEGIN(ctx, "%s");\n' % field_name
+                    yield '    PB_VALIDATE_ONEOF_CASE(%s)\n' % tag_name
+                    yield '    PB_VALIDATE_FIELD_BEGIN(ctx, "%s");\n' % field_name
                     
                     for rule in member_fv.rules:
                         yield self._generate_oneof_rule_check(member_field, rule, oneof_name, oneof_obj)
                     
-                    yield '            PB_VALIDATE_FIELD_END(ctx);\n'
-                    yield '        PB_VALIDATE_ONEOF_CASE_END()\n'
+                    yield '    PB_VALIDATE_FIELD_END(ctx);\n'
+                    yield '    PB_VALIDATE_ONEOF_CASE_END()\n'
                 
-                yield '        PB_VALIDATE_ONEOF_DEFAULT()\n'
+                yield '    PB_VALIDATE_ONEOF_DEFAULT()\n'
                 yield '    PB_VALIDATE_ONEOF_END()\n'
                 yield '\n'
 
@@ -868,10 +868,8 @@ class ValidatorGenerator:
                         '        }\n') % (values_array, field_name, rule.constraint_id)
             # Use macro for normal string fields
             values_array = ', '.join('"%s"' % v for v in values)
-            return ('        {\n'
-                    '            static const char *__pb_allowed[] = { %s };\n'
-                    '            PB_VALIDATE_STR_IN(ctx, msg, %s, __pb_allowed, %d, "%s");\n'
-                    '        }\n') % (values_array, field_name, len(values), rule.constraint_id)
+            return ('    static const char *__pb_%s_in[] = { %s };\n'
+                    '    PB_VALIDATE_STR_IN(ctx, msg, %s, __pb_%s_in, %d, "%s");\n') % (field_name, values_array, field_name, field_name, len(values), rule.constraint_id)
         else:
             conditions = ['msg->%s == %s' % (field_name, v) for v in values]
             condition_str = ' || '.join(conditions)
@@ -903,10 +901,8 @@ class ValidatorGenerator:
                         '        }\n') % (values_array, field_name, rule.constraint_id)
             # Use macro for normal string fields
             values_array = ', '.join('"%s"' % v for v in values)
-            return ('        {\n'
-                    '            static const char *__pb_forbidden[] = { %s };\n'
-                    '            PB_VALIDATE_STR_NOT_IN(ctx, msg, %s, __pb_forbidden, %d, "%s");\n'
-                    '        }\n') % (values_array, field_name, len(values), rule.constraint_id)
+            return ('    static const char *__pb_%s_notin[] = { %s };\n'
+                    '    PB_VALIDATE_STR_NOT_IN(ctx, msg, %s, __pb_%s_notin, %d, "%s");\n') % (field_name, values_array, field_name, field_name, len(values), rule.constraint_id)
         else:
             conditions = ['msg->%s != %s' % (field_name, v) for v in values]
             condition_str = ' && '.join(conditions)
@@ -1077,11 +1073,9 @@ class ValidatorGenerator:
                 arr_values = ', '.join(str(v) for v in enum_vals)
                 field_name = field.name
                 body = (
-                    '        {\n'
-                    '            static const int __pb_defined_vals[] = { %s };\n'
-                    '            PB_VALIDATE_ENUM_DEFINED_ONLY(ctx, msg, %s, __pb_defined_vals, "%s");\n'
-                    '        }\n'
-                ) % (arr_values, field_name, rule.constraint_id)
+                    '    static const int __pb_%s_vals[] = { %s };\n'
+                    '    PB_VALIDATE_ENUM_DEFINED_ONLY(ctx, msg, %s, __pb_%s_vals, "%s");\n'
+                ) % (field_name, arr_values, field_name, field_name, rule.constraint_id)
                 return self._wrap_optional(field, body)
         except Exception:
             # Fallback: no-op if enum definition not found
@@ -1327,10 +1321,8 @@ class ValidatorGenerator:
         # Build array of type URLs
         escaped_values = ['"%s"' % url for url in values]
         urls_array = ', '.join(escaped_values)
-        code = '        {\n'
-        code += '            static const char *__pb_allowed_urls[] = { %s };\n' % urls_array
-        code += '            PB_VALIDATE_ANY_IN(ctx, msg, %s, __pb_allowed_urls, %d, "%s");\n' % (field_name, len(values), rule.constraint_id)
-        code += '        }\n'
+        code = '    static const char *__pb_%s_urls_in[] = { %s };\n' % (field_name, urls_array)
+        code += '    PB_VALIDATE_ANY_IN(ctx, msg, %s, __pb_%s_urls_in, %d, "%s");\n' % (field_name, field_name, len(values), rule.constraint_id)
         return code
 
     def _gen_any_not_in(self, field: Any, rule: ValidationRule) -> str:
@@ -1342,10 +1334,8 @@ class ValidatorGenerator:
         # Build array of type URLs
         escaped_values = ['"%s"' % url for url in values]
         urls_array = ', '.join(escaped_values)
-        code = '        {\n'
-        code += '            static const char *__pb_disallowed_urls[] = { %s };\n' % urls_array
-        code += '            PB_VALIDATE_ANY_NOT_IN(ctx, msg, %s, __pb_disallowed_urls, %d, "%s");\n' % (field_name, len(values), rule.constraint_id)
-        code += '        }\n'
+        code = '    static const char *__pb_%s_urls_notin[] = { %s };\n' % (field_name, urls_array)
+        code += '    PB_VALIDATE_ANY_NOT_IN(ctx, msg, %s, __pb_%s_urls_notin, %d, "%s");\n' % (field_name, field_name, len(values), rule.constraint_id)
         return code
 
     def _generate_rule_check(self, field: Any, rule: ValidationRule):
@@ -1466,11 +1456,11 @@ class ValidatorGenerator:
 
         if anonymous:
             return (
-                '            PB_VALIDATE_NUMERIC_GENERIC(ctx, msg, %s, %s, %s, %s, %s, "%s");\n'
+                '    PB_VALIDATE_NUMERIC_GENERIC(ctx, msg, %s, %s, %s, %s, %s, "%s");\n'
             ) % (field_name, ctype, validator_func, rule_enum, value, rule.constraint_id)
         else:
             return (
-                '            PB_VALIDATE_ONEOF_NUMERIC(ctx, msg, %s, %s, %s, %s, %s, %s, "%s");\n'
+                '    PB_VALIDATE_ONEOF_NUMERIC(ctx, msg, %s, %s, %s, %s, %s, %s, "%s");\n'
             ) % (oneof_name, field_name, ctype, validator_func, rule_enum, value, rule.constraint_id)
 
     def _gen_oneof_min_len(self, field: Any, rule: ValidationRule, oneof_name: str, field_name: str, anonymous: bool) -> str:
@@ -1479,20 +1469,20 @@ class ValidatorGenerator:
         if 'string' in rule.constraint_id:
             if anonymous:
                 return (
-                    '            PB_VALIDATE_STR_MIN_LEN(ctx, msg, %s, %d, "%s");\n'
+                    '    PB_VALIDATE_STR_MIN_LEN(ctx, msg, %s, %d, "%s");\n'
                 ) % (field_name, min_len, rule.constraint_id)
             else:
                 return (
-                    '            PB_VALIDATE_ONEOF_STR_MIN_LEN(ctx, msg, %s, %s, %d, "%s");\n'
+                    '    PB_VALIDATE_ONEOF_STR_MIN_LEN(ctx, msg, %s, %s, %d, "%s");\n'
                 ) % (oneof_name, field_name, min_len, rule.constraint_id)
         else:  # bytes
             if anonymous:
                 return (
-                    '            PB_VALIDATE_BYTES_MIN_LEN(ctx, msg, %s, %d, "%s");\n'
+                    '    PB_VALIDATE_BYTES_MIN_LEN(ctx, msg, %s, %d, "%s");\n'
                 ) % (field_name, min_len, rule.constraint_id)
             else:
                 return (
-                    '            PB_VALIDATE_ONEOF_BYTES_MIN_LEN(ctx, msg, %s, %s, %d, "%s");\n'
+                    '    PB_VALIDATE_ONEOF_BYTES_MIN_LEN(ctx, msg, %s, %s, %d, "%s");\n'
                 ) % (oneof_name, field_name, min_len, rule.constraint_id)
 
     def _gen_oneof_max_len(self, field: Any, rule: ValidationRule, oneof_name: str, field_name: str, anonymous: bool) -> str:
@@ -1501,20 +1491,20 @@ class ValidatorGenerator:
         if 'string' in rule.constraint_id:
             if anonymous:
                 return (
-                    '            PB_VALIDATE_STR_MAX_LEN(ctx, msg, %s, %d, "%s");\n'
+                    '    PB_VALIDATE_STR_MAX_LEN(ctx, msg, %s, %d, "%s");\n'
                 ) % (field_name, max_len, rule.constraint_id)
             else:
                 return (
-                    '            PB_VALIDATE_ONEOF_STR_MAX_LEN(ctx, msg, %s, %s, %d, "%s");\n'
+                    '    PB_VALIDATE_ONEOF_STR_MAX_LEN(ctx, msg, %s, %s, %d, "%s");\n'
                 ) % (oneof_name, field_name, max_len, rule.constraint_id)
         else:  # bytes
             if anonymous:
                 return (
-                    '            PB_VALIDATE_BYTES_MAX_LEN(ctx, msg, %s, %d, "%s");\n'
+                    '    PB_VALIDATE_BYTES_MAX_LEN(ctx, msg, %s, %d, "%s");\n'
                 ) % (field_name, max_len, rule.constraint_id)
             else:
                 return (
-                    '            PB_VALIDATE_ONEOF_BYTES_MAX_LEN(ctx, msg, %s, %s, %d, "%s");\n'
+                    '    PB_VALIDATE_ONEOF_BYTES_MAX_LEN(ctx, msg, %s, %s, %d, "%s");\n'
                 ) % (oneof_name, field_name, max_len, rule.constraint_id)
 
     def _gen_oneof_prefix(self, field: Any, rule: ValidationRule, oneof_name: str, field_name: str, anonymous: bool) -> str:
@@ -1524,11 +1514,11 @@ class ValidatorGenerator:
             escaped_prefix = self._escape_c_string(prefix)
             if anonymous:
                 return (
-                    '            PB_VALIDATE_STR_PREFIX(ctx, msg, %s, "%s", "%s");\n'
+                    '    PB_VALIDATE_STR_PREFIX(ctx, msg, %s, "%s", "%s");\n'
                 ) % (field_name, escaped_prefix, rule.constraint_id)
             else:
                 return (
-                    '            PB_VALIDATE_ONEOF_STR_PREFIX(ctx, msg, %s, %s, "%s", "%s");\n'
+                    '    PB_VALIDATE_ONEOF_STR_PREFIX(ctx, msg, %s, %s, "%s", "%s");\n'
                 ) % (oneof_name, field_name, escaped_prefix, rule.constraint_id)
         return ''
 
@@ -1539,11 +1529,11 @@ class ValidatorGenerator:
             escaped_suffix = self._escape_c_string(suffix)
             if anonymous:
                 return (
-                    '            PB_VALIDATE_STR_SUFFIX(ctx, msg, %s, "%s", "%s");\n'
+                    '    PB_VALIDATE_STR_SUFFIX(ctx, msg, %s, "%s", "%s");\n'
                 ) % (field_name, escaped_suffix, rule.constraint_id)
             else:
                 return (
-                    '            PB_VALIDATE_ONEOF_STR_SUFFIX(ctx, msg, %s, %s, "%s", "%s");\n'
+                    '    PB_VALIDATE_ONEOF_STR_SUFFIX(ctx, msg, %s, %s, "%s", "%s");\n'
                 ) % (oneof_name, field_name, escaped_suffix, rule.constraint_id)
         return ''
 
@@ -1554,11 +1544,11 @@ class ValidatorGenerator:
             escaped_contains = self._escape_c_string(contains)
             if anonymous:
                 return (
-                    '            PB_VALIDATE_STR_CONTAINS(ctx, msg, %s, "%s", "%s");\n'
+                    '    PB_VALIDATE_STR_CONTAINS(ctx, msg, %s, "%s", "%s");\n'
                 ) % (field_name, escaped_contains, rule.constraint_id)
             else:
                 return (
-                    '            PB_VALIDATE_ONEOF_STR_CONTAINS(ctx, msg, %s, %s, "%s", "%s");\n'
+                    '    PB_VALIDATE_ONEOF_STR_CONTAINS(ctx, msg, %s, %s, "%s", "%s");\n'
                 ) % (oneof_name, field_name, escaped_contains, rule.constraint_id)
         return ''
 
@@ -1567,11 +1557,11 @@ class ValidatorGenerator:
         if 'string' in rule.constraint_id:
             if anonymous:
                 return (
-                    '            PB_VALIDATE_STR_ASCII(ctx, msg, %s, "%s");\n'
+                    '    PB_VALIDATE_STR_ASCII(ctx, msg, %s, "%s");\n'
                 ) % (field_name, rule.constraint_id)
             else:
                 return (
-                    '            PB_VALIDATE_ONEOF_STR_FORMAT(ctx, msg, %s, %s, PB_VALIDATE_RULE_ASCII, "%s", "String must contain only ASCII characters");\n'
+                    '    PB_VALIDATE_ONEOF_STR_FORMAT(ctx, msg, %s, %s, PB_VALIDATE_RULE_ASCII, "%s", "String must contain only ASCII characters");\n'
                 ) % (oneof_name, field_name, rule.constraint_id)
         return ''
 
@@ -1590,11 +1580,11 @@ class ValidatorGenerator:
                 return ''
             if anonymous:
                 return (
-                    '            %s(ctx, msg, %s, "%s");\n'
+                    '    %s(ctx, msg, %s, "%s");\n'
                 ) % (macro_name, field_name, rule.constraint_id)
             else:
                 return (
-                    '            PB_VALIDATE_ONEOF_STR_FORMAT(ctx, msg, %s, %s, %s, "%s", "String format validation failed");\n'
+                    '    PB_VALIDATE_ONEOF_STR_FORMAT(ctx, msg, %s, %s, %s, "%s", "String format validation failed");\n'
                 ) % (oneof_name, field_name, rule_enum, rule.constraint_id)
         return ''
 
@@ -1605,24 +1595,22 @@ class ValidatorGenerator:
             escaped_values = [self._escape_c_string(v) for v in values]
             values_array = ', '.join('"%s"' % v for v in escaped_values)
             if anonymous:
-                return ('            {\n'
-                        '                static const char *__pb_allowed[] = { %s };\n'
-                        '                PB_VALIDATE_STR_IN(ctx, msg, %s, __pb_allowed, %d, "%s");\n'
-                        '            }\n') % (values_array, field_name, len(values), rule.constraint_id)
+                return ('    static const char *__pb_%s_in[] = { %s };\n'
+                        '    PB_VALIDATE_STR_IN(ctx, msg, %s, __pb_%s_in, %d, "%s");\n') % (field_name, values_array, field_name, field_name, len(values), rule.constraint_id)
             else:
                 # Build condition for non-anonymous oneof (harder to use macro)
                 field_access = '%s.%s' % (oneof_name, field_name)
                 conditions = ['strcmp(msg->%s, "%s") == 0' % (field_access, v) for v in escaped_values]
                 condition_str = ' || '.join(conditions)
                 return (
-                    '            if (!(%s)) { pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of allowed set"); if (ctx.early_exit) return false; }\n'
+                    '    if (!(%s)) { pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of allowed set"); if (ctx.early_exit) return false; }\n'
                 ) % (condition_str, rule.constraint_id)
         else:
             field_access = field_name if anonymous else '%s.%s' % (oneof_name, field_name)
             conditions = ['msg->%s == %s' % (field_access, v) for v in values]
             condition_str = ' || '.join(conditions)
             return (
-                '            if (!(%s)) { pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of allowed set"); if (ctx.early_exit) return false; }\n'
+                '    if (!(%s)) { pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of allowed set"); if (ctx.early_exit) return false; }\n'
             ) % (condition_str, rule.constraint_id)
 
     def _gen_oneof_not_in(self, field: Any, rule: ValidationRule, oneof_name: str, field_name: str, anonymous: bool) -> str:
@@ -1632,24 +1620,22 @@ class ValidatorGenerator:
             escaped_values = [self._escape_c_string(v) for v in values]
             values_array = ', '.join('"%s"' % v for v in escaped_values)
             if anonymous:
-                return ('            {\n'
-                        '                static const char *__pb_forbidden[] = { %s };\n'
-                        '                PB_VALIDATE_STR_NOT_IN(ctx, msg, %s, __pb_forbidden, %d, "%s");\n'
-                        '            }\n') % (values_array, field_name, len(values), rule.constraint_id)
+                return ('    static const char *__pb_%s_notin[] = { %s };\n'
+                        '    PB_VALIDATE_STR_NOT_IN(ctx, msg, %s, __pb_%s_notin, %d, "%s");\n') % (field_name, values_array, field_name, field_name, len(values), rule.constraint_id)
             else:
                 # Build condition for non-anonymous oneof (harder to use macro)
                 field_access = '%s.%s' % (oneof_name, field_name)
                 conditions = ['strcmp(msg->%s, "%s") != 0' % (field_access, v) for v in escaped_values]
                 condition_str = ' && '.join(conditions)
                 return (
-                    '            if (!(%s)) { pb_violations_add(violations, ctx.path_buffer, "%s", "Value in forbidden set"); if (ctx.early_exit) return false; }\n'
+                    '    if (!(%s)) { pb_violations_add(violations, ctx.path_buffer, "%s", "Value in forbidden set"); if (ctx.early_exit) return false; }\n'
                 ) % (condition_str, rule.constraint_id)
         else:
             field_access = field_name if anonymous else '%s.%s' % (oneof_name, field_name)
             conditions = ['msg->%s != %s' % (field_access, v) for v in values]
             condition_str = ' && '.join(conditions)
             return (
-                '            if (!(%s)) { pb_violations_add(violations, ctx.path_buffer, "%s", "Value in forbidden set"); if (ctx.early_exit) return false; }\n'
+                '    if (!(%s)) { pb_violations_add(violations, ctx.path_buffer, "%s", "Value in forbidden set"); if (ctx.early_exit) return false; }\n'
             ) % (condition_str, rule.constraint_id)
 
     def _gen_oneof_enum_defined(self, field: Any, rule: ValidationRule, oneof_name: str, field_name: str, anonymous: bool) -> str:
@@ -1670,22 +1656,18 @@ class ValidatorGenerator:
                 arr_values = ', '.join(str(v) for v in enum_vals)
                 if anonymous:
                     return (
-                        '            {\n'
-                        '                static const int __pb_defined_vals[] = { %s };\n'
-                        '                PB_VALIDATE_ENUM_DEFINED_ONLY(ctx, msg, %s, __pb_defined_vals, "%s");\n'
-                        '            }\n'
-                    ) % (arr_values, field_name, rule.constraint_id)
+                        '    static const int __pb_%s_vals[] = { %s };\n'
+                        '    PB_VALIDATE_ENUM_DEFINED_ONLY(ctx, msg, %s, __pb_%s_vals, "%s");\n'
+                    ) % (field_name, arr_values, field_name, field_name, rule.constraint_id)
                 else:
                     field_access = '%s.%s' % (oneof_name, field_name)
                     return (
-                        '            {\n'
-                        '                static const int __pb_defined_vals[] = { %s };\n'
-                        '                if (!pb_validate_enum_defined_only((int)msg->%s, __pb_defined_vals, (pb_size_t)(sizeof(__pb_defined_vals)/sizeof(__pb_defined_vals[0])))) {\n'
-                        '                    pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be a defined enum value");\n'
-                        '                    if (ctx.early_exit) return false;\n'
-                        '                }\n'
-                        '            }\n'
-                    ) % (arr_values, field_access, rule.constraint_id)
+                        '    static const int __pb_%s_vals[] = { %s };\n'
+                        '    if (!pb_validate_enum_defined_only((int)msg->%s, __pb_%s_vals, (pb_size_t)(sizeof(__pb_%s_vals)/sizeof(__pb_%s_vals[0])))) {\n'
+                        '        pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be a defined enum value");\n'
+                        '        if (ctx.early_exit) return false;\n'
+                        '    }\n'
+                    ) % (field_name, arr_values, field_access, field_name, field_name, field_name, rule.constraint_id)
         except Exception:
             pass
         return ''
