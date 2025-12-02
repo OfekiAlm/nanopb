@@ -682,23 +682,12 @@ class ValidatorGenerator:
                             allocation = getattr(field, 'allocation', None)
                             rules = getattr(field, 'rules', None)
                             if allocation == 'POINTER':
-                                # Pointer to submessage
-                                yield '    if (msg->%s) {\n' % field_name
-                                yield '        bool ok_nested = %s(msg->%s, violations);\n' % (sub_func, field_name)
-                                yield '        if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }\n'
-                                yield '    }\n'
+                                yield '    PB_VALIDATE_NESTED_MSG_POINTER(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
                             else:
-                                # Inline submessage struct
                                 if rules == 'OPTIONAL':
-                                    yield '    if (msg->has_%s) {\n' % field_name
-                                    yield '        bool ok_nested = %s(&msg->%s, violations);\n' % (sub_func, field_name)
-                                    yield '        if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }\n'
-                                    yield '    }\n'
+                                    yield '    PB_VALIDATE_NESTED_MSG_OPTIONAL(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
                                 else:
-                                    yield '    {\n'
-                                    yield '        bool ok_nested = %s(&msg->%s, violations);\n' % (sub_func, field_name)
-                                    yield '        if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }\n'
-                                    yield '    }\n'
+                                    yield '    PB_VALIDATE_NESTED_MSG(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
                 except Exception:
                     # If field shape is unexpected, skip recursion silently
                     pass
@@ -732,21 +721,12 @@ class ValidatorGenerator:
                     yield '    /* Validate field: %s */\n' % fname
                     yield '    PB_VALIDATE_FIELD_BEGIN(ctx, "%s");\n' % fname
                     if allocation == 'POINTER':
-                        yield '    if (msg->%s) {\n' % fname
-                        yield '        bool ok_nested = %s(msg->%s, violations);\n' % (sub_func, fname)
-                        yield '        if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }\n'
-                        yield '    }\n'
+                        yield '    PB_VALIDATE_NESTED_MSG_POINTER(ctx, %s, msg, %s, violations);\n' % (sub_func, fname)
                     else:
                         if rules == 'OPTIONAL':
-                            yield '    if (msg->has_%s) {\n' % fname
-                            yield '        bool ok_nested = %s(&msg->%s, violations);\n' % (sub_func, fname)
-                            yield '        if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }\n'
-                            yield '    }\n'
+                            yield '    PB_VALIDATE_NESTED_MSG_OPTIONAL(ctx, %s, msg, %s, violations);\n' % (sub_func, fname)
                         else:
-                            yield '    {\n'
-                            yield '        bool ok_nested = %s(&msg->%s, violations);\n' % (sub_func, fname)
-                            yield '        if (!ok_nested && ctx.early_exit) { pb_validate_context_pop_field(&ctx); return false; }\n'
-                            yield '    }\n'
+                            yield '    PB_VALIDATE_NESTED_MSG(ctx, %s, msg, %s, violations);\n' % (sub_func, fname)
                     yield '    PB_VALIDATE_FIELD_END(ctx);\n'
                     yield '\n'
                 except Exception:
@@ -938,10 +918,7 @@ class ValidatorGenerator:
             )
         else:  # bytes
             return self._wrap_optional(field,
-                '        if (msg->%s.size < %d) {\n'
-                '            pb_violations_add(violations, ctx.path_buffer, "%s", "Bytes too short");\n'
-                '            if (ctx.early_exit) return false;\n'
-                '        }\n' % (field_name, min_len, rule.constraint_id)
+                '        PB_VALIDATE_BYTES_MIN_LEN(ctx, msg, %s, %d, "%s");\n' % (field_name, min_len, rule.constraint_id)
             )
 
     def _gen_max_len(self, field: Any, rule: ValidationRule) -> str:
@@ -959,10 +936,7 @@ class ValidatorGenerator:
             )
         else:  # bytes
             return self._wrap_optional(field,
-                '        if (msg->%s.size > %d) {\n'
-                '            pb_violations_add(violations, ctx.path_buffer, "%s", "Bytes too long");\n'
-                '            if (ctx.early_exit) return false;\n'
-                '        }\n' % (field_name, max_len, rule.constraint_id)
+                '        PB_VALIDATE_BYTES_MAX_LEN(ctx, msg, %s, %d, "%s");\n' % (field_name, max_len, rule.constraint_id)
             )
 
     def _gen_prefix(self, field: Any, rule: ValidationRule) -> str:
@@ -1092,10 +1066,7 @@ class ValidatorGenerator:
                 body = (
                     '        {\n'
                     '            static const int __pb_defined_vals[] = { %s };\n'
-                    '            if (!pb_validate_enum_defined_only((int)msg->%s, __pb_defined_vals, (pb_size_t)(sizeof(__pb_defined_vals)/sizeof(__pb_defined_vals[0])))) {\n'
-                    '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be a defined enum value");\n'
-                    '                if (ctx.early_exit) return false;\n'
-                    '            }\n'
+                    '            PB_VALIDATE_ENUM_DEFINED_ONLY(ctx, msg, %s, __pb_defined_vals, "%s");\n'
                     '        }\n'
                 ) % (arr_values, field_name, rule.constraint_id)
                 return self._wrap_optional(field, body)
@@ -1340,16 +1311,12 @@ class ValidatorGenerator:
             return ''
         
         field_name = field.name
-        code = '        /* Validate Any type_url is in allowed list */\n'
-        code += '        if (msg->has_%s) {\n' % field_name
-        code += '            const char *type_url = (const char *)msg->%s.type_url;\n' % field_name
-        code += '            bool type_url_valid = false;\n'
-        for url in values:
-            code += '            if (type_url && strcmp(type_url, "%s") == 0) type_url_valid = true;\n' % url
-        code += '            if (!type_url_valid) {\n'
-        code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "type_url not in allowed list");\n' % rule.constraint_id
-        code += '                if (ctx.early_exit) return false;\n'
-        code += '            }\n'
+        # Build array of type URLs
+        escaped_values = ['"%s"' % url for url in values]
+        urls_array = ', '.join(escaped_values)
+        code = '        {\n'
+        code += '            static const char *__pb_allowed_urls[] = { %s };\n' % urls_array
+        code += '            PB_VALIDATE_ANY_IN(ctx, msg, %s, __pb_allowed_urls, %d, "%s");\n' % (field_name, len(values), rule.constraint_id)
         code += '        }\n'
         return code
 
@@ -1359,14 +1326,12 @@ class ValidatorGenerator:
             return ''
         
         field_name = field.name
-        code = '        /* Validate Any type_url is not in disallowed list */\n'
-        code += '        if (msg->has_%s) {\n' % field_name
-        code += '            const char *type_url = (const char *)msg->%s.type_url;\n' % field_name
-        for url in values:
-            code += '            if (type_url && strcmp(type_url, "%s") == 0) {\n' % url
-            code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "type_url in disallowed list");\n' % rule.constraint_id
-            code += '                if (ctx.early_exit) return false;\n'
-            code += '            }\n'
+        # Build array of type URLs
+        escaped_values = ['"%s"' % url for url in values]
+        urls_array = ', '.join(escaped_values)
+        code = '        {\n'
+        code += '            static const char *__pb_disallowed_urls[] = { %s };\n' % urls_array
+        code += '            PB_VALIDATE_ANY_NOT_IN(ctx, msg, %s, __pb_disallowed_urls, %d, "%s");\n' % (field_name, len(values), rule.constraint_id)
         code += '        }\n'
         return code
 
@@ -1495,13 +1460,7 @@ class ValidatorGenerator:
             return ''
 
         return (
-            '            {\n'
-            '                %s expected = (%s)%s;\n'
-            '                if (!%s(msg->%s, &expected, %s)) {\n'
-            '                    pb_violations_add(violations, ctx.path_buffer, "%s", "Value constraint failed");\n'
-            '                    if (ctx.early_exit) return false;\n'
-            '                }\n'
-            '            }\n'
+            '            { %s __pb_exp = (%s)%s; if (!%s(msg->%s, &__pb_exp, %s)) { pb_violations_add(violations, ctx.path_buffer, "%s", "Value constraint failed"); if (ctx.early_exit) return false; } }\n'
         ) % (ctype, ctype, value, validator_func, field_access, rule_enum, rule.constraint_id)
 
     def _gen_oneof_min_len(self, field: Any, rule: ValidationRule, field_access: str) -> str:
@@ -1509,20 +1468,11 @@ class ValidatorGenerator:
         min_len = rule.params.get('value', 0)
         if 'string' in rule.constraint_id:
             return (
-                '            {\n'
-                '                uint32_t min_len = %d;\n'
-                '                if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), &min_len, PB_VALIDATE_RULE_MIN_LEN)) {\n'
-                '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String too short");\n'
-                '                    if (ctx.early_exit) return false;\n'
-                '                }\n'
-                '            }\n'
+                '            { uint32_t __pb_min = %d; if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), &__pb_min, PB_VALIDATE_RULE_MIN_LEN)) { pb_violations_add(violations, ctx.path_buffer, "%s", "String too short"); if (ctx.early_exit) return false; } }\n'
             ) % (min_len, field_access, field_access, rule.constraint_id)
         else:  # bytes
             return (
-                '            if (msg->%s.size < %d) {\n'
-                '                pb_violations_add(violations, ctx.path_buffer, "%s", "Bytes too short");\n'
-                '                if (ctx.early_exit) return false;\n'
-                '            }\n'
+                '            if (msg->%s.size < %d) { pb_violations_add(violations, ctx.path_buffer, "%s", "Bytes too short"); if (ctx.early_exit) return false; }\n'
             ) % (field_access, min_len, rule.constraint_id)
 
     def _gen_oneof_max_len(self, field: Any, rule: ValidationRule, field_access: str) -> str:
@@ -1530,20 +1480,11 @@ class ValidatorGenerator:
         max_len = rule.params.get('value', 0)
         if 'string' in rule.constraint_id:
             return (
-                '            {\n'
-                '                uint32_t max_len = %d;\n'
-                '                if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), &max_len, PB_VALIDATE_RULE_MAX_LEN)) {\n'
-                '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String too long");\n'
-                '                    if (ctx.early_exit) return false;\n'
-                '                }\n'
-                '            }\n'
+                '            { uint32_t __pb_max = %d; if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), &__pb_max, PB_VALIDATE_RULE_MAX_LEN)) { pb_violations_add(violations, ctx.path_buffer, "%s", "String too long"); if (ctx.early_exit) return false; } }\n'
             ) % (max_len, field_access, field_access, rule.constraint_id)
         else:  # bytes
             return (
-                '            if (msg->%s.size > %d) {\n'
-                '                pb_violations_add(violations, ctx.path_buffer, "%s", "Bytes too long");\n'
-                '                if (ctx.early_exit) return false;\n'
-                '            }\n'
+                '            if (msg->%s.size > %d) { pb_violations_add(violations, ctx.path_buffer, "%s", "Bytes too long"); if (ctx.early_exit) return false; }\n'
             ) % (field_access, max_len, rule.constraint_id)
 
     def _gen_oneof_prefix(self, field: Any, rule: ValidationRule, field_access: str) -> str:
@@ -1552,13 +1493,7 @@ class ValidatorGenerator:
         if 'string' in rule.constraint_id:
             escaped_prefix = self._escape_c_string(prefix)
             return (
-                '            {\n'
-                '                const char *prefix = "%s";\n'
-                '                if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), prefix, PB_VALIDATE_RULE_PREFIX)) {\n'
-                '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must start with specified prefix");\n'
-                '                    if (ctx.early_exit) return false;\n'
-                '                }\n'
-                '            }\n'
+                '            { const char *__pb_p = "%s"; if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), __pb_p, PB_VALIDATE_RULE_PREFIX)) { pb_violations_add(violations, ctx.path_buffer, "%s", "String must start with specified prefix"); if (ctx.early_exit) return false; } }\n'
             ) % (escaped_prefix, field_access, field_access, rule.constraint_id)
         return ''
 
@@ -1568,13 +1503,7 @@ class ValidatorGenerator:
         if 'string' in rule.constraint_id:
             escaped_suffix = self._escape_c_string(suffix)
             return (
-                '            {\n'
-                '                const char *suffix = "%s";\n'
-                '                if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), suffix, PB_VALIDATE_RULE_SUFFIX)) {\n'
-                '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must end with specified suffix");\n'
-                '                    if (ctx.early_exit) return false;\n'
-                '                }\n'
-                '            }\n'
+                '            { const char *__pb_s = "%s"; if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), __pb_s, PB_VALIDATE_RULE_SUFFIX)) { pb_violations_add(violations, ctx.path_buffer, "%s", "String must end with specified suffix"); if (ctx.early_exit) return false; } }\n'
             ) % (escaped_suffix, field_access, field_access, rule.constraint_id)
         return ''
 
@@ -1584,13 +1513,7 @@ class ValidatorGenerator:
         if 'string' in rule.constraint_id:
             escaped_contains = self._escape_c_string(contains)
             return (
-                '            {\n'
-                '                const char *needle = "%s";\n'
-                '                if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), needle, PB_VALIDATE_RULE_CONTAINS)) {\n'
-                '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain specified substring");\n'
-                '                    if (ctx.early_exit) return false;\n'
-                '                }\n'
-                '            }\n'
+                '            { const char *__pb_n = "%s"; if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), __pb_n, PB_VALIDATE_RULE_CONTAINS)) { pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain specified substring"); if (ctx.early_exit) return false; } }\n'
             ) % (escaped_contains, field_access, field_access, rule.constraint_id)
         return ''
 
@@ -1598,12 +1521,7 @@ class ValidatorGenerator:
         """Generate ascii validation for oneof string member."""
         if 'string' in rule.constraint_id:
             return (
-                '            {\n'
-                '                if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), NULL, PB_VALIDATE_RULE_ASCII)) {\n'
-                '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain only ASCII characters");\n'
-                '                    if (ctx.early_exit) return false;\n'
-                '                }\n'
-                '            }\n'
+                '            if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), NULL, PB_VALIDATE_RULE_ASCII)) { pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain only ASCII characters"); if (ctx.early_exit) return false; }\n'
             ) % (field_access, field_access, rule.constraint_id)
         return ''
 
@@ -1621,12 +1539,7 @@ class ValidatorGenerator:
             if not rule_enum:
                 return ''
             return (
-                '            {\n'
-                '                if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), NULL, %s)) {\n'
-                '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String format validation failed");\n'
-                '                    if (ctx.early_exit) return false;\n'
-                '                }\n'
-                '            }\n'
+                '            if (!pb_validate_string(msg->%s, (pb_size_t)strlen(msg->%s), NULL, %s)) { pb_violations_add(violations, ctx.path_buffer, "%s", "String format validation failed"); if (ctx.early_exit) return false; }\n'
             ) % (field_access, field_access, rule_enum, rule.constraint_id)
         return ''
 
@@ -1638,19 +1551,13 @@ class ValidatorGenerator:
             conditions = ['strcmp(msg->%s, "%s") == 0' % (field_access, v) for v in escaped_values]
             condition_str = ' || '.join(conditions)
             return (
-                '            if (!(%s)) {\n'
-                '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of allowed set");\n'
-                '                if (ctx.early_exit) return false;\n'
-                '            }\n'
+                '            if (!(%s)) { pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of allowed set"); if (ctx.early_exit) return false; }\n'
             ) % (condition_str, rule.constraint_id)
         else:
             conditions = ['msg->%s == %s' % (field_access, v) for v in values]
             condition_str = ' || '.join(conditions)
             return (
-                '            if (!(%s)) {\n'
-                '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of allowed set");\n'
-                '                if (ctx.early_exit) return false;\n'
-                '            }\n'
+                '            if (!(%s)) { pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of allowed set"); if (ctx.early_exit) return false; }\n'
             ) % (condition_str, rule.constraint_id)
 
     def _gen_oneof_not_in(self, field: Any, rule: ValidationRule, field_access: str) -> str:
@@ -1661,10 +1568,7 @@ class ValidatorGenerator:
             conditions = ['strcmp(msg->%s, "%s") != 0' % (field_access, v) for v in escaped_values]
             condition_str = ' && '.join(conditions)
             return (
-                '            if (!(%s)) {\n'
-                '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value in forbidden set");\n'
-                '                if (ctx.early_exit) return false;\n'
-                '            }\n'
+                '            if (!(%s)) { pb_violations_add(violations, ctx.path_buffer, "%s", "Value in forbidden set"); if (ctx.early_exit) return false; }\n'
             ) % (condition_str, rule.constraint_id)
         else:
             conditions = ['msg->%s != %s' % (field_access, v) for v in values]

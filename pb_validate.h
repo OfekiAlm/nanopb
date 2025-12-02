@@ -443,6 +443,202 @@ extern "C"
             }                                                                                                  \
         } while (0)
 
+    /* Bytes length validation macros. */
+    #define PB_VALIDATE_BYTES_MIN_LEN(ctx_var, msg_ptr, field_name, MIN_LEN, CONSTRAINT_ID)                     \
+        do {                                                                                                   \
+            if ((msg_ptr)->field_name.size < (MIN_LEN)) {                                                      \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "Bytes too short"); \
+                if ((ctx_var).early_exit) return false;                                                        \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_BYTES_MAX_LEN(ctx_var, msg_ptr, field_name, MAX_LEN, CONSTRAINT_ID)                     \
+        do {                                                                                                   \
+            if ((msg_ptr)->field_name.size > (MAX_LEN)) {                                                      \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "Bytes too long"); \
+                if ((ctx_var).early_exit) return false;                                                        \
+            }                                                                                                  \
+        } while (0)
+
+    /* Enum defined_only validation macro.
+     * values_arr must be an array of valid enum values.
+     */
+    #define PB_VALIDATE_ENUM_DEFINED_ONLY(ctx_var, msg_ptr, field_name, values_arr, CONSTRAINT_ID)              \
+        do {                                                                                                   \
+            if (!pb_validate_enum_defined_only((int)(msg_ptr)->field_name, (values_arr),                       \
+                    (pb_size_t)(sizeof(values_arr)/sizeof((values_arr)[0])))) {                                \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),                \
+                                  "Value must be a defined enum value");                                       \
+                if ((ctx_var).early_exit) return false;                                                        \
+            }                                                                                                  \
+        } while (0)
+
+    /* Nested message validation macros. */
+    #define PB_VALIDATE_NESTED_MSG(ctx_var, validate_func, msg_ptr, field_name, violations_ptr)                 \
+        do {                                                                                                   \
+            bool __pb_ok_nested = validate_func(&(msg_ptr)->field_name, (violations_ptr));                     \
+            if (!__pb_ok_nested && (ctx_var).early_exit) {                                                     \
+                pb_validate_context_pop_field(&(ctx_var));                                                     \
+                return false;                                                                                  \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_NESTED_MSG_OPTIONAL(ctx_var, validate_func, msg_ptr, field_name, violations_ptr)        \
+        do {                                                                                                   \
+            if ((msg_ptr)->has_##field_name) {                                                                 \
+                bool __pb_ok_nested = validate_func(&(msg_ptr)->field_name, (violations_ptr));                 \
+                if (!__pb_ok_nested && (ctx_var).early_exit) {                                                 \
+                    pb_validate_context_pop_field(&(ctx_var));                                                 \
+                    return false;                                                                              \
+                }                                                                                              \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_NESTED_MSG_POINTER(ctx_var, validate_func, msg_ptr, field_name, violations_ptr)         \
+        do {                                                                                                   \
+            if ((msg_ptr)->field_name) {                                                                       \
+                bool __pb_ok_nested = validate_func((msg_ptr)->field_name, (violations_ptr));                  \
+                if (!__pb_ok_nested && (ctx_var).early_exit) {                                                 \
+                    pb_validate_context_pop_field(&(ctx_var));                                                 \
+                    return false;                                                                              \
+                }                                                                                              \
+            }                                                                                                  \
+        } while (0)
+
+    /* Oneof member validation macros.
+     * These operate on oneof member fields accessed via msg->oneof_name.field_name
+     */
+    #define PB_VALIDATE_ONEOF_NUMERIC(ctx_var, msg_ptr, oneof_name, field_name, CTYPE, FUNC, RULE_ENUM, VALUE_EXPR, CONSTRAINT_ID) \
+        do {                                                                                                   \
+            CTYPE __pb_expected = (CTYPE)(VALUE_EXPR);                                                         \
+            if (!FUNC((msg_ptr)->oneof_name.field_name, &__pb_expected, (RULE_ENUM))) {                        \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),                \
+                                  "Value constraint failed");                                                  \
+                if ((ctx_var).early_exit) return false;                                                        \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_ONEOF_STR_MIN_LEN(ctx_var, msg_ptr, oneof_name, field_name, MIN_LEN, CONSTRAINT_ID)     \
+        do {                                                                                                   \
+            uint32_t __pb_min_len = (MIN_LEN);                                                                 \
+            if (!pb_validate_string((msg_ptr)->oneof_name.field_name,                                          \
+                    (pb_size_t)strlen((msg_ptr)->oneof_name.field_name),                                       \
+                    &__pb_min_len, PB_VALIDATE_RULE_MIN_LEN)) {                                                \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "String too short"); \
+                if ((ctx_var).early_exit) return false;                                                        \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_ONEOF_STR_MAX_LEN(ctx_var, msg_ptr, oneof_name, field_name, MAX_LEN, CONSTRAINT_ID)     \
+        do {                                                                                                   \
+            uint32_t __pb_max_len = (MAX_LEN);                                                                 \
+            if (!pb_validate_string((msg_ptr)->oneof_name.field_name,                                          \
+                    (pb_size_t)strlen((msg_ptr)->oneof_name.field_name),                                       \
+                    &__pb_max_len, PB_VALIDATE_RULE_MAX_LEN)) {                                                \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "String too long"); \
+                if ((ctx_var).early_exit) return false;                                                        \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_ONEOF_STR_PREFIX(ctx_var, msg_ptr, oneof_name, field_name, PREFIX_STR, CONSTRAINT_ID)   \
+        do {                                                                                                   \
+            const char *__pb_prefix = (PREFIX_STR);                                                            \
+            if (!pb_validate_string((msg_ptr)->oneof_name.field_name,                                          \
+                    (pb_size_t)strlen((msg_ptr)->oneof_name.field_name),                                       \
+                    __pb_prefix, PB_VALIDATE_RULE_PREFIX)) {                                                   \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),                \
+                                  "String must start with specified prefix");                                  \
+                if ((ctx_var).early_exit) return false;                                                        \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_ONEOF_STR_SUFFIX(ctx_var, msg_ptr, oneof_name, field_name, SUFFIX_STR, CONSTRAINT_ID)   \
+        do {                                                                                                   \
+            const char *__pb_suffix = (SUFFIX_STR);                                                            \
+            if (!pb_validate_string((msg_ptr)->oneof_name.field_name,                                          \
+                    (pb_size_t)strlen((msg_ptr)->oneof_name.field_name),                                       \
+                    __pb_suffix, PB_VALIDATE_RULE_SUFFIX)) {                                                   \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),                \
+                                  "String must end with specified suffix");                                    \
+                if ((ctx_var).early_exit) return false;                                                        \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_ONEOF_STR_CONTAINS(ctx_var, msg_ptr, oneof_name, field_name, NEEDLE_STR, CONSTRAINT_ID) \
+        do {                                                                                                   \
+            const char *__pb_needle = (NEEDLE_STR);                                                            \
+            if (!pb_validate_string((msg_ptr)->oneof_name.field_name,                                          \
+                    (pb_size_t)strlen((msg_ptr)->oneof_name.field_name),                                       \
+                    __pb_needle, PB_VALIDATE_RULE_CONTAINS)) {                                                 \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),                \
+                                  "String must contain specified substring");                                  \
+                if ((ctx_var).early_exit) return false;                                                        \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_ONEOF_STR_FORMAT(ctx_var, msg_ptr, oneof_name, field_name, RULE_ENUM, CONSTRAINT_ID, ERR_MSG) \
+        do {                                                                                                   \
+            if (!pb_validate_string((msg_ptr)->oneof_name.field_name,                                          \
+                    (pb_size_t)strlen((msg_ptr)->oneof_name.field_name),                                       \
+                    NULL, (RULE_ENUM))) {                                                                      \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), (ERR_MSG));    \
+                if ((ctx_var).early_exit) return false;                                                        \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_ONEOF_BYTES_MIN_LEN(ctx_var, msg_ptr, oneof_name, field_name, MIN_LEN, CONSTRAINT_ID)   \
+        do {                                                                                                   \
+            if ((msg_ptr)->oneof_name.field_name.size < (MIN_LEN)) {                                           \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "Bytes too short"); \
+                if ((ctx_var).early_exit) return false;                                                        \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_ONEOF_BYTES_MAX_LEN(ctx_var, msg_ptr, oneof_name, field_name, MAX_LEN, CONSTRAINT_ID)   \
+        do {                                                                                                   \
+            if ((msg_ptr)->oneof_name.field_name.size > (MAX_LEN)) {                                           \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "Bytes too long"); \
+                if ((ctx_var).early_exit) return false;                                                        \
+            }                                                                                                  \
+        } while (0)
+
+    /* Any field validation macros - these check type_url against allowed/disallowed lists.
+     * Note: type_urls is an array of const char*, count is the number of entries.
+     */
+    #define PB_VALIDATE_ANY_IN(ctx_var, msg_ptr, field_name, type_urls, count, CONSTRAINT_ID)                   \
+        do {                                                                                                   \
+            if ((msg_ptr)->has_##field_name) {                                                                 \
+                const char *__pb_type_url = (const char *)(msg_ptr)->field_name.type_url;                      \
+                bool __pb_valid = false;                                                                       \
+                for (size_t __pb_i = 0; __pb_i < (count); ++__pb_i) {                                          \
+                    if (__pb_type_url && strcmp(__pb_type_url, (type_urls)[__pb_i]) == 0) {                    \
+                        __pb_valid = true;                                                                     \
+                        break;                                                                                 \
+                    }                                                                                          \
+                }                                                                                              \
+                if (!__pb_valid) {                                                                             \
+                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),            \
+                                      "type_url not in allowed list");                                         \
+                    if ((ctx_var).early_exit) return false;                                                    \
+                }                                                                                              \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_ANY_NOT_IN(ctx_var, msg_ptr, field_name, type_urls, count, CONSTRAINT_ID)               \
+        do {                                                                                                   \
+            if ((msg_ptr)->has_##field_name) {                                                                 \
+                const char *__pb_type_url = (const char *)(msg_ptr)->field_name.type_url;                      \
+                for (size_t __pb_i = 0; __pb_i < (count); ++__pb_i) {                                          \
+                    if (__pb_type_url && strcmp(__pb_type_url, (type_urls)[__pb_i]) == 0) {                    \
+                        pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),        \
+                                          "type_url in disallowed list");                                      \
+                        if ((ctx_var).early_exit) return false;                                                \
+                        break;                                                                                 \
+                    }                                                                                          \
+                }                                                                                              \
+            }                                                                                                  \
+        } while (0)
+
     /* Rule types for internal use */
     typedef enum
     {
