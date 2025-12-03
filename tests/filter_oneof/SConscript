@@ -1,0 +1,53 @@
+# Build and run filter_oneof test suite
+# Tests filter_tcp/filter_udp validation with oneof fields
+
+Import("env")
+
+# Clone environment to set validation-specific options
+test_env = env.Clone()
+
+# Enable validation code generation via NANOPBFLAGS
+test_env.Replace(NANOPBFLAGS = "--validate,-x,validate.proto")
+
+# Remove -ansi flag since pb_validate.h requires C99 features (inline)
+cflags = str(test_env.get('CFLAGS', ''))
+if '-ansi' in cflags:
+    cflags = cflags.replace('-ansi', '')
+test_env.Replace(CFLAGS = cflags + ' -std=c99 ')
+
+# Prepend the build directory to CPPPATH
+test_env.Prepend(CPPPATH = ['.'])
+
+# Build proto_filter.o
+test_env.Object("proto_filter.o", "$NANOPB/proto_filter.c")
+
+# Build pb_validate.o
+test_env.Object("pb_validate.o", "$NANOPB/pb_validate.c")
+
+# Generate nanopb sources for the proto file
+pb_files = test_env.NanopbProto("filter_oneof")
+pb_sources = ["filter_oneof.pb.c"]
+
+# Mark _validate.c as side effect of the proto compilation
+validate_c = "filter_oneof_validate.c"
+validate_h = "filter_oneof_validate.h"
+test_env.SideEffect(validate_c, pb_files)
+test_env.SideEffect(validate_h, pb_files)
+validate_sources = [validate_c]
+
+# All C source files for the test binary
+sources = ["test_filter_oneof.c"] + pb_sources + validate_sources
+
+# Build the test binary
+test_prog = test_env.Program(
+    sources + [
+        "$COMMON/pb_encode.o",
+        "$COMMON/pb_decode.o",
+        "$COMMON/pb_common.o",
+        "pb_validate.o",
+        "proto_filter.o"
+    ]
+)
+
+# Run the test
+test_env.RunTest(test_prog)
