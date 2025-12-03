@@ -1,11 +1,10 @@
 /*
- * Test filter_tcp/filter_udp validation with oneof-based messages
+ * Test oneof validation with nanopb generated validators
  * 
- * This test exercises the full validation flow through proto_filter:
+ * This test exercises validation of messages with oneof fields:
  * - Constructs messages with header opcode + oneof payload
- * - Serializes them to bytes
- * - Calls filter_tcp/filter_udp to decode and validate
- * - Asserts valid cases pass and invalid cases fail
+ * - Calls generated pb_validate_* functions directly
+ * - Asserts valid cases pass and invalid cases fail with correct violations
  *
  * Note: This test uses strcpy() for string literals that are known to be
  * within the nanopb max_size bounds (64 or 128 bytes). All test strings
@@ -21,7 +20,6 @@
 #include "pb_encode.h"
 #include "pb_decode.h"
 #include "pb_validate.h"
-#include "proto_filter.h"
 
 /* Include generated headers */
 #include "filter_oneof.pb.h"
@@ -36,63 +34,46 @@ static int tests_failed = 0;
     printf("  Testing: %s\n", name); \
 } while(0)
 
-#define EXPECT_FILTER_OK(result, msg) do { \
-    if (result == PROTO_FILTER_OK) { \
+#define EXPECT_VALID(result, msg) do { \
+    if (result) { \
         tests_passed++; \
-        printf("    [PASS] Valid message accepted: %s\n", msg); \
+        printf("    [PASS] Valid message accepted\n"); \
     } else { \
         tests_failed++; \
-        printf("    [FAIL] Expected PROTO_FILTER_OK, got %d: %s\n", result, msg); \
+        printf("    [FAIL] Expected valid, got invalid: %s\n", msg); \
     } \
 } while(0)
 
-#define EXPECT_FILTER_INVALID(result, msg) do { \
-    if (result == PROTO_FILTER_ERR_DECODE) { \
+#define EXPECT_INVALID(result, msg) do { \
+    if (!result) { \
         tests_passed++; \
-        printf("    [PASS] Invalid message rejected: %s\n", msg); \
+        printf("    [PASS] Invalid message rejected\n"); \
     } else { \
         tests_failed++; \
-        printf("    [FAIL] Expected PROTO_FILTER_ERR_DECODE, got %d: %s\n", result, msg); \
+        printf("    [FAIL] Expected invalid, got valid: %s\n", msg); \
     } \
 } while(0)
 
-/* Validator adapter for proto_filter */
-static bool validate_filter_oneof_message(const void *msg, pb_violations_t *violations)
-{
-    return pb_validate_FilterOneofMessage((const FilterOneofMessage *)msg, violations);
-}
-
-/* proto_filter spec for FilterOneofMessage */
-static const proto_filter_spec_t filter_oneof_spec = {
-    .msg_desc = &FilterOneofMessage_msg,
-    .msg_size = sizeof(FilterOneofMessage),
-    .validate = validate_filter_oneof_message,
-    .prepare_decode = NULL
-};
-
-/* Helper to encode a message and return buffer + size */
-static bool encode_message(const FilterOneofMessage *msg, uint8_t *buffer, size_t buffer_size, size_t *out_size)
-{
-    pb_ostream_t stream = pb_ostream_from_buffer(buffer, buffer_size);
-    if (!pb_encode(&stream, &FilterOneofMessage_msg, msg))
-    {
-        printf("      [ERROR] Encoding failed: %s\n", PB_GET_ERROR(&stream));
-        return false;
-    }
-    *out_size = stream.bytes_written;
-    return true;
-}
+#define EXPECT_VIOLATION(viol, expected_id) do { \
+    if (pb_violations_has_any(&viol) && \
+        viol.violations[0].constraint_id != NULL && \
+        strcmp(viol.violations[0].constraint_id, expected_id) == 0) { \
+        tests_passed++; \
+        printf("    [PASS] Got expected violation: %s\n", expected_id); \
+    } else { \
+        tests_failed++; \
+        const char *got = (pb_violations_has_any(&viol) && viol.violations[0].constraint_id) ? \
+                          viol.violations[0].constraint_id : "(none)"; \
+        printf("    [FAIL] Expected violation '%s', got '%s'\n", expected_id, got); \
+    } \
+} while(0)
 
 int main(void)
 {
-    printf("===== Testing filter_tcp/filter_udp with oneof validation =====\n\n");
+    printf("===== Testing oneof validation =====\n\n");
 
-    /* Register the filter spec */
-    proto_filter_register(&filter_oneof_spec);
-
-    uint8_t buffer[1024];
-    size_t size;
-    int result;
+    pb_violations_t viol;
+    bool ok;
 
     /* Test 1: Valid auth_username (opcode=1) */
     TEST("Valid auth_username - opcode 1 with valid username (>= 3 chars)");
@@ -102,16 +83,9 @@ int main(void)
         msg.which_payload = FilterOneofMessage_auth_username_tag;
         strcpy(msg.payload.auth_username, "alice");  /* >= 3 chars: valid */
 
-        if (encode_message(&msg, buffer, sizeof(buffer), &size))
-        {
-            result = filter_tcp(NULL, (char *)buffer, size, true);
-            EXPECT_FILTER_OK(result, "valid auth_username with good length");
-        }
-        else
-        {
-            tests_failed++;
-            printf("    [FAIL] Failed to encode message\n");
-        }
+        pb_violations_init(&viol);
+        ok = pb_validate_FilterOneofMessage(&msg, &viol);
+        EXPECT_VALID(ok, "valid auth_username with good length");
     }
 
     /* Test 2: Invalid auth_username - too short */
@@ -122,16 +96,10 @@ int main(void)
         msg.which_payload = FilterOneofMessage_auth_username_tag;
         strcpy(msg.payload.auth_username, "ab");  /* < 3 chars: invalid */
 
-        if (encode_message(&msg, buffer, sizeof(buffer), &size))
-        {
-            result = filter_tcp(NULL, (char *)buffer, size, true);
-            EXPECT_FILTER_INVALID(result, "username too short should fail validation");
-        }
-        else
-        {
-            tests_failed++;
-            printf("    [FAIL] Failed to encode message\n");
-        }
+        pb_violations_init(&viol);
+        ok = pb_validate_FilterOneofMessage(&msg, &viol);
+        EXPECT_INVALID(ok, "username too short should fail validation");
+        EXPECT_VIOLATION(viol, "string.min_len");
     }
 
     /* Test 3: Invalid auth_username - empty string */
@@ -142,16 +110,10 @@ int main(void)
         msg.which_payload = FilterOneofMessage_auth_username_tag;
         strcpy(msg.payload.auth_username, "");  /* empty: invalid */
 
-        if (encode_message(&msg, buffer, sizeof(buffer), &size))
-        {
-            result = filter_tcp(NULL, (char *)buffer, size, true);
-            EXPECT_FILTER_INVALID(result, "empty username should fail validation");
-        }
-        else
-        {
-            tests_failed++;
-            printf("    [FAIL] Failed to encode message\n");
-        }
+        pb_violations_init(&viol);
+        ok = pb_validate_FilterOneofMessage(&msg, &viol);
+        EXPECT_INVALID(ok, "empty username should fail validation");
+        EXPECT_VIOLATION(viol, "string.min_len");
     }
 
     /* Test 4: Valid data_value (opcode=2) */
@@ -162,16 +124,9 @@ int main(void)
         msg.which_payload = FilterOneofMessage_data_value_tag;
         msg.payload.data_value = 42;  /* >= 0: valid */
 
-        if (encode_message(&msg, buffer, sizeof(buffer), &size))
-        {
-            result = filter_udp(NULL, (char *)buffer, size, false);
-            EXPECT_FILTER_OK(result, "valid data_value with non-negative value");
-        }
-        else
-        {
-            tests_failed++;
-            printf("    [FAIL] Failed to encode message\n");
-        }
+        pb_violations_init(&viol);
+        ok = pb_validate_FilterOneofMessage(&msg, &viol);
+        EXPECT_VALID(ok, "valid data_value with non-negative value");
     }
 
     /* Test 5: Invalid data_value - negative value */
@@ -182,16 +137,10 @@ int main(void)
         msg.which_payload = FilterOneofMessage_data_value_tag;
         msg.payload.data_value = -10;  /* < 0: invalid */
 
-        if (encode_message(&msg, buffer, sizeof(buffer), &size))
-        {
-            result = filter_udp(NULL, (char *)buffer, size, false);
-            EXPECT_FILTER_INVALID(result, "negative value should fail validation");
-        }
-        else
-        {
-            tests_failed++;
-            printf("    [FAIL] Failed to encode message\n");
-        }
+        pb_violations_init(&viol);
+        ok = pb_validate_FilterOneofMessage(&msg, &viol);
+        EXPECT_INVALID(ok, "negative value should fail validation");
+        EXPECT_VIOLATION(viol, "int32.gte");
     }
 
     /* Test 6: Valid StatusPayload (opcode=3) - nested message 
@@ -208,37 +157,23 @@ int main(void)
         msg.payload.status.status_code = 200;  /* 0-999 range */
         strcpy(msg.payload.status.status_message, "OK");  /* ASCII */
 
-        if (encode_message(&msg, buffer, sizeof(buffer), &size))
-        {
-            result = filter_tcp(NULL, (char *)buffer, size, true);
-            /* This passes because nested message validation is not auto-generated */
-            EXPECT_FILTER_OK(result, "nested message in oneof (no auto-validation)");
-        }
-        else
-        {
-            tests_failed++;
-            printf("    [FAIL] Failed to encode message\n");
-        }
+        pb_violations_init(&viol);
+        ok = pb_validate_FilterOneofMessage(&msg, &viol);
+        /* This passes because nested message validation is not auto-generated */
+        EXPECT_VALID(ok, "nested message in oneof (no auto-validation)");
     }
 
     /* Test 7: Demonstrate nested message validation can be called manually */
-    TEST("Manual validation of StatusPayload");
+    TEST("Manual validation of StatusPayload - invalid");
     {
         StatusPayload status = StatusPayload_init_zero;
         status.status_code = 1000;  /* > 999: invalid */
         strcpy(status.status_message, "Error");
 
-        pb_violations_t viol;
         pb_violations_init(&viol);
-        bool ok = pb_validate_StatusPayload(&status, &viol);
-        
-        if (!ok) {
-            tests_passed++;
-            printf("    [PASS] Manual validation correctly rejects invalid StatusPayload\n");
-        } else {
-            tests_failed++;
-            printf("    [FAIL] Manual validation should have rejected invalid StatusPayload\n");
-        }
+        ok = pb_validate_StatusPayload(&status, &viol);
+        EXPECT_INVALID(ok, "StatusPayload with out-of-range status_code");
+        EXPECT_VIOLATION(viol, "int32.lte");
     }
 
     /* Test 8: Demonstrate valid StatusPayload via manual validation */
@@ -248,17 +183,9 @@ int main(void)
         status.status_code = 200;  /* 0-999: valid */
         strcpy(status.status_message, "OK");  /* ASCII: valid */
 
-        pb_violations_t viol;
         pb_violations_init(&viol);
-        bool ok = pb_validate_StatusPayload(&status, &viol);
-        
-        if (ok) {
-            tests_passed++;
-            printf("    [PASS] Manual validation correctly accepts valid StatusPayload\n");
-        } else {
-            tests_failed++;
-            printf("    [FAIL] Manual validation should have accepted valid StatusPayload\n");
-        }
+        ok = pb_validate_StatusPayload(&status, &viol);
+        EXPECT_VALID(ok, "valid StatusPayload");
     }
 
     /* Test 9: Invalid opcode */
@@ -269,16 +196,10 @@ int main(void)
         msg.which_payload = FilterOneofMessage_auth_username_tag;
         strcpy(msg.payload.auth_username, "alice");
 
-        if (encode_message(&msg, buffer, sizeof(buffer), &size))
-        {
-            result = filter_tcp(NULL, (char *)buffer, size, true);
-            EXPECT_FILTER_INVALID(result, "opcode out of range should fail validation");
-        }
-        else
-        {
-            tests_failed++;
-            printf("    [FAIL] Failed to encode message\n");
-        }
+        pb_violations_init(&viol);
+        ok = pb_validate_FilterOneofMessage(&msg, &viol);
+        EXPECT_INVALID(ok, "opcode out of range should fail validation");
+        EXPECT_VIOLATION(viol, "int32.gte");
     }
 
     /* Test 10: Valid edge case - opcode at boundary */
@@ -290,16 +211,9 @@ int main(void)
         msg.payload.status.status_code = 0;  /* min valid value */
         strcpy(msg.payload.status.status_message, "");  /* empty is valid ASCII */
 
-        if (encode_message(&msg, buffer, sizeof(buffer), &size))
-        {
-            result = filter_udp(NULL, (char *)buffer, size, true);
-            EXPECT_FILTER_OK(result, "boundary values should pass validation");
-        }
-        else
-        {
-            tests_failed++;
-            printf("    [FAIL] Failed to encode message\n");
-        }
+        pb_violations_init(&viol);
+        ok = pb_validate_FilterOneofMessage(&msg, &viol);
+        EXPECT_VALID(ok, "boundary values should pass validation");
     }
 
     /* Summary */

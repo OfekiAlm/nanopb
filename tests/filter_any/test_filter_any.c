@@ -1,11 +1,11 @@
 /*
- * Test filter_tcp/filter_udp validation with google.protobuf.Any fields
+ * Test google.protobuf.Any validation with nanopb generated validators
  * 
- * This test exercises the full validation flow through proto_filter with Any:
+ * This test exercises validation of messages with Any fields:
  * - Packs payload messages into Any fields
- * - Serializes them to bytes
- * - Calls filter_tcp/filter_udp to decode and validate
- * - Asserts valid Any payloads pass and invalid ones fail
+ * - Calls generated pb_validate_* functions directly
+ * - Tests any.in (whitelist) and any.not_in (blacklist) validation
+ * - Asserts valid Any payloads pass and invalid ones fail with correct violations
  *
  * Note: This test uses strcpy() for string literals that are known to be
  * within the nanopb max_size bounds (128 or 256 bytes). All test strings
@@ -23,7 +23,6 @@
 #include "pb_encode.h"
 #include "pb_decode.h"
 #include "pb_validate.h"
-#include "proto_filter.h"
 
 /* Include generated headers */
 #include "filter_any.pb.h"
@@ -39,51 +38,39 @@ static int tests_failed = 0;
     printf("  Testing: %s\n", name); \
 } while(0)
 
-#define EXPECT_FILTER_OK(result, msg) do { \
-    if (result == PROTO_FILTER_OK) { \
+#define EXPECT_VALID(result, msg) do { \
+    if (result) { \
         tests_passed++; \
-        printf("    [PASS] Valid message accepted: %s\n", msg); \
+        printf("    [PASS] Valid message accepted\n"); \
     } else { \
         tests_failed++; \
-        printf("    [FAIL] Expected PROTO_FILTER_OK, got %d: %s\n", result, msg); \
+        printf("    [FAIL] Expected valid, got invalid: %s\n", msg); \
     } \
 } while(0)
 
-#define EXPECT_FILTER_INVALID(result, msg) do { \
-    if (result == PROTO_FILTER_ERR_DECODE) { \
+#define EXPECT_INVALID(result, msg) do { \
+    if (!result) { \
         tests_passed++; \
-        printf("    [PASS] Invalid message rejected: %s\n", msg); \
+        printf("    [PASS] Invalid message rejected\n"); \
     } else { \
         tests_failed++; \
-        printf("    [FAIL] Expected PROTO_FILTER_ERR_DECODE, got %d: %s\n", result, msg); \
+        printf("    [FAIL] Expected invalid, got valid: %s\n", msg); \
     } \
 } while(0)
 
-/* Validator adapters for proto_filter */
-static bool validate_filter_any_allowed(const void *msg, pb_violations_t *violations)
-{
-    return pb_validate_FilterAnyAllowed((const FilterAnyAllowed *)msg, violations);
-}
-
-static bool validate_filter_any_disallowed(const void *msg, pb_violations_t *violations)
-{
-    return pb_validate_FilterAnyDisallowed((const FilterAnyDisallowed *)msg, violations);
-}
-
-/* proto_filter specs */
-static const proto_filter_spec_t filter_any_allowed_spec = {
-    .msg_desc = &FilterAnyAllowed_msg,
-    .msg_size = sizeof(FilterAnyAllowed),
-    .validate = validate_filter_any_allowed,
-    .prepare_decode = NULL
-};
-
-static const proto_filter_spec_t filter_any_disallowed_spec = {
-    .msg_desc = &FilterAnyDisallowed_msg,
-    .msg_size = sizeof(FilterAnyDisallowed),
-    .validate = validate_filter_any_disallowed,
-    .prepare_decode = NULL
-};
+#define EXPECT_VIOLATION(viol, expected_id) do { \
+    if (pb_violations_has_any(&viol) && \
+        viol.violations[0].constraint_id != NULL && \
+        strcmp(viol.violations[0].constraint_id, expected_id) == 0) { \
+        tests_passed++; \
+        printf("    [PASS] Got expected violation: %s\n", expected_id); \
+    } else { \
+        tests_failed++; \
+        const char *got = (pb_violations_has_any(&viol) && viol.violations[0].constraint_id) ? \
+                          viol.violations[0].constraint_id : "(none)"; \
+        printf("    [FAIL] Expected violation '%s', got '%s'\n", expected_id, got); \
+    } \
+} while(0)
 
 /* Helper to pack a message into Any */
 static bool pack_any(google_protobuf_Any *any, const char *type_url, 
@@ -115,47 +102,15 @@ static bool pack_any(google_protobuf_Any *any, const char *type_url,
     return true;
 }
 
-/* Helper to encode a FilterAnyAllowed message and return buffer + size */
-static bool encode_allowed_message(const FilterAnyAllowed *msg, uint8_t *buffer, 
-                                    size_t buffer_size, size_t *out_size)
-{
-    pb_ostream_t stream = pb_ostream_from_buffer(buffer, buffer_size);
-    if (!pb_encode(&stream, &FilterAnyAllowed_msg, msg))
-    {
-        printf("      [ERROR] Encoding FilterAnyAllowed failed: %s\n", PB_GET_ERROR(&stream));
-        return false;
-    }
-    *out_size = stream.bytes_written;
-    return true;
-}
-
-/* Helper to encode a FilterAnyDisallowed message and return buffer + size */
-static bool encode_disallowed_message(const FilterAnyDisallowed *msg, uint8_t *buffer,
-                                       size_t buffer_size, size_t *out_size)
-{
-    pb_ostream_t stream = pb_ostream_from_buffer(buffer, buffer_size);
-    if (!pb_encode(&stream, &FilterAnyDisallowed_msg, msg))
-    {
-        printf("      [ERROR] Encoding FilterAnyDisallowed failed: %s\n", PB_GET_ERROR(&stream));
-        return false;
-    }
-    *out_size = stream.bytes_written;
-    return true;
-}
-
 int main(void)
 {
-    printf("===== Testing filter_tcp/filter_udp with Any validation =====\n\n");
+    printf("===== Testing Any validation =====\n\n");
 
-    uint8_t buffer[1024];
-    size_t size;
-    int result;
+    pb_violations_t viol;
+    bool ok;
 
     /* ===== Test FilterAnyAllowed (any.in validation) ===== */
     printf("\n--- Testing FilterAnyAllowed (any.in) ---\n\n");
-
-    /* Register the allowed filter spec */
-    proto_filter_register(&filter_any_allowed_spec);
 
     /* Test 1: Valid UserInfo in Any (allowed type) */
     TEST("Valid Any - UserInfo (allowed type) with valid fields");
@@ -166,25 +121,12 @@ int main(void)
         user.age = 25;  /* 0-150: valid */
 
         FilterAnyAllowed msg = FilterAnyAllowed_init_zero;
-        msg.has_payload = true;  /* Set the has_ field */
-        if (pack_any(&msg.payload, "type.googleapis.com/UserInfo", &UserInfo_msg, &user))
-        {
-            if (encode_allowed_message(&msg, buffer, sizeof(buffer), &size))
-            {
-                result = filter_tcp(NULL, (char *)buffer, size, true);
-                EXPECT_FILTER_OK(result, "valid UserInfo in allowed Any");
-            }
-            else
-            {
-                tests_failed++;
-                printf("    [FAIL] Failed to encode message\n");
-            }
-        }
-        else
-        {
-            tests_failed++;
-            printf("    [FAIL] Failed to pack Any\n");
-        }
+        msg.has_payload = true;
+        pack_any(&msg.payload, "type.googleapis.com/UserInfo", &UserInfo_msg, &user);
+
+        pb_violations_init(&viol);
+        ok = pb_validate_FilterAnyAllowed(&msg, &viol);
+        EXPECT_VALID(ok, "valid UserInfo in allowed Any");
     }
 
     /* Test 2: Valid ProductInfo in Any (allowed type) */
@@ -196,25 +138,12 @@ int main(void)
         product.price = 19.99;  /* >= 0: valid */
 
         FilterAnyAllowed msg = FilterAnyAllowed_init_zero;
-        msg.has_payload = true;  /* Set the has_ field */
-        if (pack_any(&msg.payload, "type.googleapis.com/ProductInfo", &ProductInfo_msg, &product))
-        {
-            if (encode_allowed_message(&msg, buffer, sizeof(buffer), &size))
-            {
-                result = filter_udp(NULL, (char *)buffer, size, false);
-                EXPECT_FILTER_OK(result, "valid ProductInfo in allowed Any");
-            }
-            else
-            {
-                tests_failed++;
-                printf("    [FAIL] Failed to encode message\n");
-            }
-        }
-        else
-        {
-            tests_failed++;
-            printf("    [FAIL] Failed to pack Any\n");
-        }
+        msg.has_payload = true;
+        pack_any(&msg.payload, "type.googleapis.com/ProductInfo", &ProductInfo_msg, &product);
+
+        pb_violations_init(&viol);
+        ok = pb_validate_FilterAnyAllowed(&msg, &viol);
+        EXPECT_VALID(ok, "valid ProductInfo in allowed Any");
     }
 
     /* Test 3: Invalid - OrderInfo not in allowed list */
@@ -225,25 +154,13 @@ int main(void)
         order.total = 99.99;
 
         FilterAnyAllowed msg = FilterAnyAllowed_init_zero;
-        msg.has_payload = true;  /* Set the has_ field */
-        if (pack_any(&msg.payload, "type.googleapis.com/OrderInfo", &OrderInfo_msg, &order))
-        {
-            if (encode_allowed_message(&msg, buffer, sizeof(buffer), &size))
-            {
-                result = filter_tcp(NULL, (char *)buffer, size, true);
-                EXPECT_FILTER_INVALID(result, "OrderInfo not in allowed type list should fail");
-            }
-            else
-            {
-                tests_failed++;
-                printf("    [FAIL] Failed to encode message\n");
-            }
-        }
-        else
-        {
-            tests_failed++;
-            printf("    [FAIL] Failed to pack Any\n");
-        }
+        msg.has_payload = true;
+        pack_any(&msg.payload, "type.googleapis.com/OrderInfo", &OrderInfo_msg, &order);
+
+        pb_violations_init(&viol);
+        ok = pb_validate_FilterAnyAllowed(&msg, &viol);
+        EXPECT_INVALID(ok, "OrderInfo not in allowed type list should fail");
+        EXPECT_VIOLATION(viol, "any.in");
     }
 
     /* Test 4: Invalid - Unknown type not in allowed list */
@@ -255,33 +172,18 @@ int main(void)
         user.age = 30;
 
         FilterAnyAllowed msg = FilterAnyAllowed_init_zero;
-        msg.has_payload = true;  /* Set the has_ field */
+        msg.has_payload = true;
         /* Use wrong type_url */
-        if (pack_any(&msg.payload, "type.googleapis.com/UnknownType", &UserInfo_msg, &user))
-        {
-            if (encode_allowed_message(&msg, buffer, sizeof(buffer), &size))
-            {
-                result = filter_tcp(NULL, (char *)buffer, size, true);
-                EXPECT_FILTER_INVALID(result, "unknown type not in allowed list should fail");
-            }
-            else
-            {
-                tests_failed++;
-                printf("    [FAIL] Failed to encode message\n");
-            }
-        }
-        else
-        {
-            tests_failed++;
-            printf("    [FAIL] Failed to pack Any\n");
-        }
+        pack_any(&msg.payload, "type.googleapis.com/UnknownType", &UserInfo_msg, &user);
+
+        pb_violations_init(&viol);
+        ok = pb_validate_FilterAnyAllowed(&msg, &viol);
+        EXPECT_INVALID(ok, "unknown type not in allowed list should fail");
+        EXPECT_VIOLATION(viol, "any.in");
     }
 
     /* ===== Test FilterAnyDisallowed (any.not_in validation) ===== */
     printf("\n--- Testing FilterAnyDisallowed (any.not_in) ---\n\n");
-
-    /* Register the disallowed filter spec */
-    proto_filter_register(&filter_any_disallowed_spec);
 
     /* Test 5: Valid - UserInfo (not in disallowed list) */
     TEST("Valid Any - UserInfo (not in disallowed list)");
@@ -292,25 +194,12 @@ int main(void)
         user.age = 40;
 
         FilterAnyDisallowed msg = FilterAnyDisallowed_init_zero;
-        msg.has_payload = true;  /* Set the has_ field */
-        if (pack_any(&msg.payload, "type.googleapis.com/UserInfo", &UserInfo_msg, &user))
-        {
-            if (encode_disallowed_message(&msg, buffer, sizeof(buffer), &size))
-            {
-                result = filter_tcp(NULL, (char *)buffer, size, true);
-                EXPECT_FILTER_OK(result, "UserInfo not in disallowed list should pass");
-            }
-            else
-            {
-                tests_failed++;
-                printf("    [FAIL] Failed to encode message\n");
-            }
-        }
-        else
-        {
-            tests_failed++;
-            printf("    [FAIL] Failed to pack Any\n");
-        }
+        msg.has_payload = true;
+        pack_any(&msg.payload, "type.googleapis.com/UserInfo", &UserInfo_msg, &user);
+
+        pb_violations_init(&viol);
+        ok = pb_validate_FilterAnyDisallowed(&msg, &viol);
+        EXPECT_VALID(ok, "UserInfo not in disallowed list should pass");
     }
 
     /* Test 6: Valid - ProductInfo (not in disallowed list) */
@@ -322,25 +211,12 @@ int main(void)
         product.price = 49.99;
 
         FilterAnyDisallowed msg = FilterAnyDisallowed_init_zero;
-        msg.has_payload = true;  /* Set the has_ field */
-        if (pack_any(&msg.payload, "type.googleapis.com/ProductInfo", &ProductInfo_msg, &product))
-        {
-            if (encode_disallowed_message(&msg, buffer, sizeof(buffer), &size))
-            {
-                result = filter_udp(NULL, (char *)buffer, size, false);
-                EXPECT_FILTER_OK(result, "ProductInfo not in disallowed list should pass");
-            }
-            else
-            {
-                tests_failed++;
-                printf("    [FAIL] Failed to encode message\n");
-            }
-        }
-        else
-        {
-            tests_failed++;
-            printf("    [FAIL] Failed to pack Any\n");
-        }
+        msg.has_payload = true;
+        pack_any(&msg.payload, "type.googleapis.com/ProductInfo", &ProductInfo_msg, &product);
+
+        pb_violations_init(&viol);
+        ok = pb_validate_FilterAnyDisallowed(&msg, &viol);
+        EXPECT_VALID(ok, "ProductInfo not in disallowed list should pass");
     }
 
     /* Test 7: Invalid - OrderInfo in disallowed list */
@@ -351,25 +227,13 @@ int main(void)
         order.total = 199.99;
 
         FilterAnyDisallowed msg = FilterAnyDisallowed_init_zero;
-        msg.has_payload = true;  /* Set the has_ field */
-        if (pack_any(&msg.payload, "type.googleapis.com/OrderInfo", &OrderInfo_msg, &order))
-        {
-            if (encode_disallowed_message(&msg, buffer, sizeof(buffer), &size))
-            {
-                result = filter_tcp(NULL, (char *)buffer, size, true);
-                EXPECT_FILTER_INVALID(result, "OrderInfo in disallowed list should fail");
-            }
-            else
-            {
-                tests_failed++;
-                printf("    [FAIL] Failed to encode message\n");
-            }
-        }
-        else
-        {
-            tests_failed++;
-            printf("    [FAIL] Failed to pack Any\n");
-        }
+        msg.has_payload = true;
+        pack_any(&msg.payload, "type.googleapis.com/OrderInfo", &OrderInfo_msg, &order);
+
+        pb_violations_init(&viol);
+        ok = pb_validate_FilterAnyDisallowed(&msg, &viol);
+        EXPECT_INVALID(ok, "OrderInfo in disallowed list should fail");
+        EXPECT_VIOLATION(viol, "any.not_in");
     }
 
     /* Summary */

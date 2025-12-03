@@ -1,5 +1,5 @@
 # Build and run filter_oneof test suite
-# Tests filter_tcp/filter_udp validation with oneof fields
+# Tests oneof validation with generated validators
 
 Import("env")
 
@@ -17,9 +17,6 @@ test_env.Replace(CFLAGS = cflags + ' -std=c99 ')
 
 # Prepend the build directory to CPPPATH
 test_env.Prepend(CPPPATH = ['.'])
-
-# Build proto_filter.o
-test_env.Object("proto_filter.o", "$NANOPB/proto_filter.c")
 
 # Build pb_validate.o
 test_env.Object("pb_validate.o", "$NANOPB/pb_validate.c")
@@ -44,8 +41,7 @@ test_prog = test_env.Program(
         "$COMMON/pb_encode.o",
         "$COMMON/pb_decode.o",
         "$COMMON/pb_common.o",
-        "pb_validate.o",
-        "proto_filter.o"
+        "pb_validate.o"
     ]
 )
 
