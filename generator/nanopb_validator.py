@@ -2,15 +2,62 @@
 # kate: replace-tabs on; indent-width 4;
 
 """
-nanopb validation support module.
+Nanopb Validation Support Module
+=================================
 
 This module extends the nanopb generator to support declarative validation
-constraints via custom options defined in validate.proto.
-"""
-from collections import OrderedDict
+constraints via custom options defined in validate.proto. It generates
+validation code (C header and source files) for protobuf messages.
 
+Architecture Overview
+---------------------
+The module consists of several key components:
+
+1. **ValidationRule**: A dataclass representing a single validation constraint
+   (e.g., "field must be >= 10", "string must match email format").
+
+2. **FieldValidator**: Parses and stores validation rules for a single field.
+   It extracts rules from the FieldRules protobuf option and converts them
+   into ValidationRule objects.
+
+3. **MessageValidator**: Aggregates field validators for all fields in a message,
+   including handling of oneof groups. Also manages message-level validation rules.
+
+4. **ValidatorGenerator**: The main code generator that produces C header and
+   source files containing validation functions. It uses the validators to
+   emit appropriate C code for each constraint.
+
+Main Flow
+---------
+1. Input: ProtoFile with messages containing validate.proto options
+2. Parse validation rules from each field and message
+3. Generate validation header (.h) with function declarations and documentation
+4. Generate validation source (.c) with implementation of validation functions
+5. Output: Validation code that can be compiled alongside generated pb.c/pb.h files
+
+Rule Types
+----------
+- Numeric constraints: GT, GTE, LT, LTE, EQ, IN, NOT_IN
+- String constraints: MIN_LEN, MAX_LEN, PREFIX, SUFFIX, CONTAINS, ASCII
+- Format validators: EMAIL, HOSTNAME, IP, IPV4, IPV6
+- Repeated field constraints: MIN_ITEMS, MAX_ITEMS, UNIQUE, ITEMS
+- Enum constraints: DEFINED_ONLY, IN, NOT_IN
+- Message-level: REQUIRED, ONEOF_REQUIRED, and custom message rules
+- Special: ANY_IN, ANY_NOT_IN for google.protobuf.Any fields
+
+Code Generation Strategy
+------------------------
+The generator produces C code that uses macros from pb_validate.h to:
+- Navigate field paths for clear error messages
+- Accumulate violations when bypass mode is enabled
+- Support early exit on first violation when bypass is disabled
+- Recursively validate nested message fields
+- Handle optional fields, pointers, and callback fields appropriately
+"""
+
+from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 # --- Module constants -----------------------------------------------------
 
@@ -48,58 +95,91 @@ RULE_ANY_NOT_IN = 'ANY_NOT_IN'
 
 @dataclass(frozen=True)
 class ValidationRule:
-    """Represents a single validation rule."""
+    """
+    Represents a single validation constraint on a field.
+    
+    A ValidationRule encapsulates one specific constraint to be enforced,
+    such as "value must be greater than 10" or "string must be a valid email".
+    
+    Attributes:
+        rule_type: The type of rule (e.g., RULE_GT, RULE_EMAIL, RULE_MIN_LEN).
+                   Should be one of the RULE_* constants defined in this module.
+        constraint_id: A unique identifier for this constraint, typically
+                       in the format "type.rule" (e.g., "int32.gt", "string.email").
+                       Used in error messages and documentation.
+        params: Optional dictionary of parameters for the rule.
+                For example, a GT rule might have {'value': 10},
+                an IN rule might have {'values': [1, 2, 3]}.
+                
+    Examples:
+        >>> ValidationRule(RULE_GT, 'int32.gt', {'value': 10})
+        ValidationRule(rule_type='GT', constraint_id='int32.gt', params={'value': 10})
+        
+        >>> ValidationRule(RULE_EMAIL, 'string.email')
+        ValidationRule(rule_type='EMAIL', constraint_id='string.email', params={})
+    """
     rule_type: str
     constraint_id: str
     params: Dict[str, Any] = field(default_factory=dict)
 
 class FieldValidator:
-    """Handles validation for a single field."""
-    def __init__(self, field, rules_option, proto_file=None, _message_desc=None):
-        # _message_desc retained in signature for compatibility; no longer used.
+    """
+    Handles validation rule parsing and storage for a single protobuf field.
+    
+    This class is responsible for:
+    - Extracting validation rules from the field's validate.proto options
+    - Converting those options into ValidationRule objects
+    - Storing the rules for later code generation
+    
+    The parsing is type-aware: it knows how to extract rules for strings,
+    numeric types, bytes, enums, repeated fields, maps, and special types
+    like google.protobuf.Any.
+    
+    Attributes:
+        field: The protobuf field descriptor
+        rules: List of ValidationRule objects extracted from the field's options
+        proto_file: The ProtoFile object (used for enum lookups, etc.)
+    """
+    
+    def __init__(self, field: Any, rules_option: Any, proto_file: Optional[Any] = None,
+                 _message_desc: Optional[Any] = None):
+        """
+        Initialize a FieldValidator for a given field.
+        
+        Args:
+            field: The protobuf field descriptor
+            rules_option: The FieldRules option from validate.proto (or None)
+            proto_file: The ProtoFile object containing this field
+            _message_desc: Deprecated parameter, retained for API compatibility; no longer used
+        """
         self.field = field
-        self.rules = []
+        self.rules: List[ValidationRule] = []
         self.proto_file = proto_file
         self.parse_rules(rules_option)
     
-    def parse_rules(self, rules_option):
-        """Parse validation rules from the FieldRules option.
-
-        Simplified: rely only on the provided rules_option (field.validate_rules).
-        No descriptor scanning or binary parsing fallback.
+    def parse_rules(self, rules_option: Any) -> None:
+        """
+        Parse validation rules from the FieldRules option.
+        
+        This is the main entry point for rule extraction. It dispatches to
+        type-specific parsers based on which field is set in the FieldRules option.
+        
+        The method relies only on the provided rules_option (field.validate_rules).
+        There is no descriptor scanning or binary parsing fallback.
+        
+        Args:
+            rules_option: The FieldRules message from validate.proto, or None
         """
         if not rules_option:
             return
+        
+        # Parse type-specific rules
         if rules_option.HasField('string'):
             self._parse_string_rules(rules_option.string)
-        if rules_option.HasField('int32'):
-            self._parse_numeric_rules(rules_option.int32, 'int32')
-        if rules_option.HasField('int64'):
-            self._parse_numeric_rules(rules_option.int64, 'int64')
-        if rules_option.HasField('uint32'):
-            self._parse_numeric_rules(rules_option.uint32, 'uint32')
-        if rules_option.HasField('uint64'):
-            self._parse_numeric_rules(rules_option.uint64, 'uint64')
-        if rules_option.HasField('sint32'):
-            self._parse_numeric_rules(rules_option.sint32, 'sint32')
-        if rules_option.HasField('sint64'):
-            self._parse_numeric_rules(rules_option.sint64, 'sint64')
-        if rules_option.HasField('fixed32'):
-            self._parse_numeric_rules(rules_option.fixed32, 'fixed32')
-        if rules_option.HasField('fixed64'):
-            self._parse_numeric_rules(rules_option.fixed64, 'fixed64')
-        if rules_option.HasField('sfixed32'):
-            self._parse_numeric_rules(rules_option.sfixed32, 'sfixed32')
-        if rules_option.HasField('sfixed64'):
-            self._parse_numeric_rules(rules_option.sfixed64, 'sfixed64')
-        if rules_option.HasField('double'):
-            self._parse_numeric_rules(rules_option.double, 'double')
-        if rules_option.HasField('float'):
-            self._parse_numeric_rules(rules_option.float, 'float')
-        if rules_option.HasField('bool'):
-            self._parse_bool_rules(rules_option.bool)
         if rules_option.HasField('bytes'):
             self._parse_bytes_rules(rules_option.bytes)
+        if rules_option.HasField('bool'):
+            self._parse_bool_rules(rules_option.bool)
         if rules_option.HasField('enum'):
             self._parse_enum_rules(rules_option.enum)
         if rules_option.HasField('repeated'):
@@ -108,14 +188,35 @@ class FieldValidator:
             self._parse_map_rules(rules_option.map)
         if rules_option.HasField('any'):
             self._parse_any_rules(rules_option.any)
+        
+        # Parse numeric rules for all numeric types (consolidated for clarity)
+        numeric_types = [
+            'int32', 'int64', 'uint32', 'uint64',
+            'sint32', 'sint64', 'fixed32', 'fixed64',
+            'sfixed32', 'sfixed64', 'double', 'float'
+        ]
+        for type_name in numeric_types:
+            if rules_option.HasField(type_name):
+                self._parse_numeric_rules(getattr(rules_option, type_name), type_name)
+        
+        # Parse field-level flags
         if rules_option.HasField('required') and rules_option.required:
             self.rules.append(ValidationRule(RULE_REQUIRED, 'required'))
         if rules_option.HasField('oneof_required') and rules_option.oneof_required:
             self.rules.append(ValidationRule(RULE_ONEOF_REQUIRED, 'oneof_required'))
     
     
-    def _parse_numeric_rules(self, rules, type_name):
-        """Parse numeric validation rules."""
+    def _parse_numeric_rules(self, rules: Any, type_name: str) -> None:
+        """
+        Parse validation rules for numeric fields (int32, float, etc.).
+        
+        Numeric rules include comparisons (lt, lte, gt, gte, const) and
+        set membership (in, not_in).
+        
+        Args:
+            rules: The numeric rules message (e.g., Int32Rules, FloatRules)
+            type_name: The name of the numeric type (e.g., 'int32', 'float')
+        """
         if rules.HasField('const_value'):
             self.rules.append(ValidationRule(RULE_EQ, f'{type_name}.const', {'value': rules.const_value}))
         if rules.HasField('lt'):
@@ -131,13 +232,26 @@ class FieldValidator:
         if rules.not_in:
             self.rules.append(ValidationRule(RULE_NOT_IN, f'{type_name}.not_in', {'values': list(rules.not_in)}))
     
-    def _parse_bool_rules(self, rules: Any):
-        """Parse bool validation rules."""
+    def _parse_bool_rules(self, rules: Any) -> None:
+        """
+        Parse validation rules for boolean fields.
+        
+        Args:
+            rules: The BoolRules message from validate.proto
+        """
         if rules.HasField('const_value'):
             self.rules.append(ValidationRule(RULE_EQ, 'bool.const', {'value': rules.const_value}))
     
-    def _parse_string_rules(self, rules: Any):
-        """Parse string validation rules."""
+    def _parse_string_rules(self, rules: Any) -> None:
+        """
+        Parse validation rules for string fields.
+        
+        String rules include length constraints, pattern matching (prefix, suffix,
+        contains), format validation (email, IP address, etc.), and set membership.
+        
+        Args:
+            rules: The StringRules message from validate.proto
+        """
         if rules.HasField('const_value'):
             self.rules.append(ValidationRule(RULE_EQ, 'string.const', {'value': rules.const_value}))
         if rules.HasField('min_len'):
@@ -167,8 +281,15 @@ class FieldValidator:
         if rules.not_in:
             self.rules.append(ValidationRule(RULE_NOT_IN, 'string.not_in', {'values': list(rules.not_in)}))
     
-    def _parse_bytes_rules(self, rules: Any):
-        """Parse bytes validation rules."""
+    def _parse_bytes_rules(self, rules: Any) -> None:
+        """
+        Parse validation rules for bytes fields.
+        
+        Bytes rules are similar to string rules but operate on byte sequences.
+        
+        Args:
+            rules: The BytesRules message from validate.proto
+        """
         if rules.HasField('const_value'):
             self.rules.append(ValidationRule(RULE_EQ, 'bytes.const', {'value': rules.const_value}))
         if rules.HasField('min_len'):
@@ -186,8 +307,16 @@ class FieldValidator:
         if rules.not_in:
             self.rules.append(ValidationRule(RULE_NOT_IN, 'bytes.not_in', {'values': list(rules.not_in)}))
     
-    def _parse_enum_rules(self, rules: Any):
-        """Parse enum validation rules."""
+    def _parse_enum_rules(self, rules: Any) -> None:
+        """
+        Parse validation rules for enum fields.
+        
+        Enum rules include const value, defined_only (must be a known enum value),
+        and set membership.
+        
+        Args:
+            rules: The EnumRules message from validate.proto
+        """
         if rules.HasField('const_value'):
             self.rules.append(ValidationRule(RULE_EQ, 'enum.const', {'value': rules.const_value}))
         if rules.HasField('defined_only'):
@@ -197,51 +326,66 @@ class FieldValidator:
         if rules.not_in:
             self.rules.append(ValidationRule(RULE_NOT_IN, 'enum.not_in', {'values': list(rules.not_in)}))
     
-    def _parse_repeated_rules(self, rules: Any):
-        """Parse repeated field validation rules."""
+    def _parse_repeated_rules(self, rules: Any) -> None:
+        """
+        Parse validation rules for repeated fields.
+        
+        Repeated field rules include item count constraints (min_items, max_items),
+        uniqueness constraints, and per-item validation rules.
+        
+        Args:
+            rules: The RepeatedRules message from validate.proto
+        """
         if rules.HasField('min_items'):
             self.rules.append(ValidationRule(RULE_MIN_ITEMS, 'repeated.min_items', {'value': rules.min_items}))
         if rules.HasField('max_items'):
             self.rules.append(ValidationRule(RULE_MAX_ITEMS, 'repeated.max_items', {'value': rules.max_items}))
         if rules.HasField('unique') and rules.unique:
             self.rules.append(ValidationRule(RULE_UNIQUE, 'repeated.unique'))
+        # Parse per-item validation rules
         if rules.HasField('items'):
-            # Parse per-item validation rules
-            items_rules = rules.items
-            item_rules_list = []
-            # Extract type-specific rules from items
-            if items_rules.HasField('string'):
-                item_rules_list.extend(self._extract_string_item_rules(items_rules.string))
-            if items_rules.HasField('int32'):
-                item_rules_list.extend(self._extract_numeric_item_rules(items_rules.int32, 'int32'))
-            if items_rules.HasField('int64'):
-                item_rules_list.extend(self._extract_numeric_item_rules(items_rules.int64, 'int64'))
-            if items_rules.HasField('uint32'):
-                item_rules_list.extend(self._extract_numeric_item_rules(items_rules.uint32, 'uint32'))
-            if items_rules.HasField('uint64'):
-                item_rules_list.extend(self._extract_numeric_item_rules(items_rules.uint64, 'uint64'))
-            if items_rules.HasField('sint32'):
-                item_rules_list.extend(self._extract_numeric_item_rules(items_rules.sint32, 'sint32'))
-            if items_rules.HasField('sint64'):
-                item_rules_list.extend(self._extract_numeric_item_rules(items_rules.sint64, 'sint64'))
-            if items_rules.HasField('fixed32'):
-                item_rules_list.extend(self._extract_numeric_item_rules(items_rules.fixed32, 'fixed32'))
-            if items_rules.HasField('fixed64'):
-                item_rules_list.extend(self._extract_numeric_item_rules(items_rules.fixed64, 'fixed64'))
-            if items_rules.HasField('sfixed32'):
-                item_rules_list.extend(self._extract_numeric_item_rules(items_rules.sfixed32, 'sfixed32'))
-            if items_rules.HasField('sfixed64'):
-                item_rules_list.extend(self._extract_numeric_item_rules(items_rules.sfixed64, 'sfixed64'))
-            if items_rules.HasField('float'):
-                item_rules_list.extend(self._extract_numeric_item_rules(items_rules.float, 'float'))
-            if items_rules.HasField('double'):
-                item_rules_list.extend(self._extract_numeric_item_rules(items_rules.double, 'double'))
-            if items_rules.HasField('bool'):
-                item_rules_list.extend(self._extract_bool_item_rules(items_rules.bool))
-            if items_rules.HasField('enum'):
-                item_rules_list.extend(self._extract_enum_item_rules(items_rules.enum))
+            item_rules_list = self._extract_item_rules(rules.items)
             if item_rules_list:
-                self.rules.append(ValidationRule(RULE_ITEMS, 'repeated.items', {'item_rules': item_rules_list}))
+                self.rules.append(ValidationRule(
+                    RULE_ITEMS, 'repeated.items', {'item_rules': item_rules_list}
+                ))
+    
+    def _extract_item_rules(self, items_rules: Any) -> List[Dict[str, Any]]:
+        """
+        Extract per-item validation rules for repeated fields.
+        
+        This method examines the items rules and extracts type-specific constraints
+        that should be applied to each element of the repeated field.
+        
+        Args:
+            items_rules: The repeated.items submessage from validate.proto
+            
+        Returns:
+            A list of dictionaries, each representing one per-item constraint
+        """
+        result = []
+        
+        # Extract rules for each type that might be in the items
+        if items_rules.HasField('string'):
+            result.extend(self._extract_string_item_rules(items_rules.string))
+        if items_rules.HasField('bool'):
+            result.extend(self._extract_bool_item_rules(items_rules.bool))
+        if items_rules.HasField('enum'):
+            result.extend(self._extract_enum_item_rules(items_rules.enum))
+        
+        # Extract numeric item rules for all numeric types (consolidated)
+        numeric_types = [
+            'int32', 'int64', 'uint32', 'uint64',
+            'sint32', 'sint64', 'fixed32', 'fixed64',
+            'sfixed32', 'sfixed64', 'float', 'double'
+        ]
+        for type_name in numeric_types:
+            if items_rules.HasField(type_name):
+                result.extend(self._extract_numeric_item_rules(
+                    getattr(items_rules, type_name), type_name
+                ))
+        
+        return result
     
     def _extract_string_item_rules(self, rules: Any) -> List[Dict[str, Any]]:
         """Extract string validation rules for repeated items."""
@@ -315,8 +459,16 @@ class FieldValidator:
             result.append({'rule': RULE_NOT_IN, 'constraint_id': 'enum.not_in', 'values': list(rules.not_in)})
         return result
     
-    def _parse_map_rules(self, rules: Any):
-        """Parse map field validation rules."""
+    def _parse_map_rules(self, rules: Any) -> None:
+        """
+        Parse validation rules for map fields.
+        
+        Map rules include min/max pair counts and the no_sparse constraint.
+        TODO: Key and value validation rules are not yet implemented.
+        
+        Args:
+            rules: The MapRules message from validate.proto
+        """
         if rules.HasField('min_pairs'):
             self.rules.append(ValidationRule(RULE_MIN_ITEMS, 'map.min_pairs', {'value': rules.min_pairs}))
         if rules.HasField('max_pairs'):
@@ -325,49 +477,117 @@ class FieldValidator:
             self.rules.append(ValidationRule(RULE_NO_SPARSE, 'map.no_sparse'))
         # TODO: Handle key/value validation rules
     
-    def _parse_any_rules(self, rules: Any):
-        """Parse google.protobuf.Any field validation rules."""
+    def _parse_any_rules(self, rules: Any) -> None:
+        """
+        Parse validation rules for google.protobuf.Any fields.
+        
+        Any field rules restrict which type URLs are allowed or forbidden.
+        
+        Args:
+            rules: The AnyRules message from validate.proto
+        """
         if hasattr(rules, 'in') and getattr(rules, 'in'):
             self.rules.append(ValidationRule(RULE_ANY_IN, 'any.in', {'values': list(getattr(rules, 'in'))}))
         if hasattr(rules, 'not_in') and getattr(rules, 'not_in'):
             self.rules.append(ValidationRule(RULE_ANY_NOT_IN, 'any.not_in', {'values': list(getattr(rules, 'not_in'))}))
 
 class MessageValidator:
-    """Handles validation for a message."""
-    def __init__(self, message, message_rules=None, proto_file=None):
+    """
+    Handles validation for an entire protobuf message.
+    
+    This class aggregates:
+    - Field validators for regular fields
+    - Oneof validators for oneof groups
+    - Message-level validation rules
+    
+    It coordinates the parsing of all validation constraints for a message
+    and makes them available for code generation.
+    
+    Attributes:
+        message: The protobuf message descriptor
+        field_validators: OrderedDict mapping field names to FieldValidator objects
+        oneof_validators: OrderedDict mapping oneof names to their validators
+        message_rules: List of message-level ValidationRule objects
+        proto_file: The ProtoFile object containing this message
+    """
+    
+    def __init__(self, message: Any, message_rules: Optional[Any] = None,
+                 proto_file: Optional[Any] = None):
+        """
+        Initialize a MessageValidator for a given message.
+        
+        Args:
+            message: The protobuf message descriptor
+            message_rules: The MessageRules option from validate.proto (or None)
+            proto_file: The ProtoFile object containing this message
+        """
         self.message = message
         self.field_validators = OrderedDict()
-        self.message_rules = []
-        self.proto_file = proto_file
-        # Track oneof groups with fields that have validation rules
-        # Maps oneof name -> list of (field, FieldValidator) tuples
         self.oneof_validators = OrderedDict()
+        self.message_rules: List[ValidationRule] = []
+        self.proto_file = proto_file
         
-        # Parse field-level rules (simplified: only direct validate_rules usage)
-        for field in getattr(message, 'fields', []) or []:
-            # Check if this is a OneOf container
-            if hasattr(field, 'pbtype') and field.pbtype == 'oneof':
-                # Process fields inside the oneof
-                oneof_name = field.name
-                oneof_fields_with_rules = []
-                for oneof_member in getattr(field, 'fields', []) or []:
-                    if hasattr(oneof_member, 'validate_rules') and oneof_member.validate_rules:
-                        fv = FieldValidator(oneof_member, oneof_member.validate_rules, proto_file, message)
-                        oneof_fields_with_rules.append((oneof_member, fv))
-                if oneof_fields_with_rules:
-                    self.oneof_validators[oneof_name] = {
-                        'oneof': field,
-                        'members': oneof_fields_with_rules
-                    }
-            elif hasattr(field, 'validate_rules') and field.validate_rules:
-                self.field_validators[field.name] = FieldValidator(field, field.validate_rules, proto_file, message)
+        # Parse field-level and oneof rules
+        self._parse_field_validators()
         
         # Parse message-level rules
         if message_rules:
             self.parse_message_rules(message_rules)
     
-    def parse_message_rules(self, rules: Any):
-        """Parse message-level validation rules."""
+    def _parse_field_validators(self) -> None:
+        """
+        Parse validation rules for all fields in the message.
+        
+        This method iterates through all fields, identifies oneofs, and creates
+        FieldValidator objects for fields that have validation rules.
+        """
+        for field in getattr(self.message, 'fields', []) or []:
+            # Check if this is a oneof container
+            if hasattr(field, 'pbtype') and field.pbtype == 'oneof':
+                self._parse_oneof_field(field)
+            elif hasattr(field, 'validate_rules') and field.validate_rules:
+                # Regular field with validation rules
+                fv = FieldValidator(
+                    field, field.validate_rules, self.proto_file, self.message
+                )
+                self.field_validators[field.name] = fv
+    
+    def _parse_oneof_field(self, oneof: Any) -> None:
+        """
+        Parse validation rules for fields within a oneof group.
+        
+        Args:
+            oneof: The oneof field descriptor
+        """
+        oneof_name = oneof.name
+        oneof_fields_with_rules = []
+        
+        for oneof_member in getattr(oneof, 'fields', []) or []:
+            if hasattr(oneof_member, 'validate_rules') and oneof_member.validate_rules:
+                fv = FieldValidator(
+                    oneof_member, oneof_member.validate_rules,
+                    self.proto_file, self.message
+                )
+                oneof_fields_with_rules.append((oneof_member, fv))
+        
+        if oneof_fields_with_rules:
+            self.oneof_validators[oneof_name] = {
+                'oneof': oneof,
+                'members': oneof_fields_with_rules
+            }
+    
+    def parse_message_rules(self, rules: Any) -> None:
+        """
+        Parse message-level validation rules.
+        
+        Message-level rules include:
+        - requires: Fields that must be present
+        - mutex: Fields that are mutually exclusive
+        - at_least: At least N of a set of fields must be present
+        
+        Args:
+            rules: The MessageRules option from validate.proto
+        """
         if rules.requires:
             for field_name in rules.requires:
                 self.message_rules.append(ValidationRule('REQUIRES', 'message.requires', {'field': field_name}))
@@ -382,29 +602,69 @@ class MessageValidator:
                                                        {'n': rule.n, 'fields': list(rule.fields)}))
 
 class ValidatorGenerator:
-    """Generates validation code for messages."""
-    def __init__(self, proto_file, bypass=False):
+    """
+    Generates C validation code for protobuf messages.
+    
+    This is the main code generator class. It takes parsed validation rules
+    and produces C header and source files containing validation functions.
+    
+    The generator supports two modes:
+    - Normal mode: Validation stops at the first violation
+    - Bypass mode: All violations are collected before returning
+    
+    Attributes:
+        proto_file: The ProtoFile object being processed
+        validators: OrderedDict mapping message names to MessageValidator objects
+        bypass: Whether to generate code in bypass mode
+        validate_enabled: Whether validation is enabled for this proto file
+    """
+    
+    def __init__(self, proto_file: Any, bypass: bool = False):
+        """
+        Initialize the ValidatorGenerator.
+        
+        Args:
+            proto_file: The ProtoFile object containing messages to validate
+            bypass: If True, generate code that collects all violations before returning
+        """
         self.proto_file = proto_file
         self.validators = OrderedDict()
-        self.bypass = bypass  # When True, generated code collects all violations without early exit
+        self.bypass = bypass
         
-        # Check if validation is enabled
+        # Check if validation is enabled in file options
         self.validate_enabled = False
         if hasattr(proto_file, 'file_options') and hasattr(proto_file.file_options, 'validate'):
             self.validate_enabled = proto_file.file_options.validate
     
-    def add_message_validator(self, message, message_rules=None):
-        """Add a validator for a message."""
+    def add_message_validator(self, message: Any, message_rules: Optional[Any] = None) -> None:
+        """
+        Add a validator for a message (only if it has validation rules).
+        
+        Args:
+            message: The protobuf message descriptor
+            message_rules: The MessageRules option from validate.proto (or None)
+        """
         validator = MessageValidator(message, message_rules, self.proto_file)
         if validator.field_validators or validator.message_rules or validator.oneof_validators:
             self.validators[str(message.name)] = validator
     
-    def force_add_message_validator(self, message, message_rules=None):
-        """Force add a validator for a message, even if no rules are present."""
+    def force_add_message_validator(self, message: Any, message_rules: Optional[Any] = None) -> None:
+        """
+        Force add a validator for a message, even if no rules are present.
+        
+        This is used when the --validate flag is specified but a message has no rules.
+        We still generate a validation function that always returns true.
+        
+        Args:
+            message: The protobuf message descriptor
+            message_rules: The MessageRules option from validate.proto (or None)
+        """
         validator = MessageValidator(message, message_rules, self.proto_file)
         self.validators[str(message.name)] = validator
     
-    # ---------------------- Doxygen helpers -------------------------------
+    # =========================================================================
+    # Documentation and Display Helpers
+    # =========================================================================
     def _escape_for_comment(self, s: str) -> str:
         """Escape strings so they are safe inside C comment/Doxygen blocks."""
         try:
@@ -806,37 +1066,32 @@ class ValidatorGenerator:
         return ''
 
     def _gen_numeric_comparison(self, field: Any, rule: ValidationRule) -> str:
-        type_map_func = {
-            'int32': ('pb_validate_int32', 'int32_t'),
-            'sint32': ('pb_validate_int32', 'int32_t'),
-            'sfixed32': ('pb_validate_int32', 'int32_t'),
-            'int64': ('pb_validate_int64', 'int64_t'),
-            'sint64': ('pb_validate_int64', 'int64_t'),
-            'sfixed64': ('pb_validate_int64', 'int64_t'),
-            'uint32': ('pb_validate_uint32', 'uint32_t'),
-            'fixed32': ('pb_validate_uint32', 'uint32_t'),
-            'uint64': ('pb_validate_uint64', 'uint64_t'),
-            'fixed64': ('pb_validate_uint64', 'uint64_t'),
-            'float': ('pb_validate_float', 'float'),
-            'double': ('pb_validate_double', 'double'),
-            'bool': ('pb_validate_bool', 'bool'),
-            'enum': ('pb_validate_enum', 'int')
-        }
-        constraint_prefix = rule.constraint_id.split('.', 1)[0]
-        validator_func, ctype = type_map_func.get(constraint_prefix, (None, None))
-
+        """
+        Generate code for numeric comparison rules (GT, GTE, LT, LTE, EQ).
+        
+        Args:
+            field: The field descriptor
+            rule: The ValidationRule to generate code for
+            
+        Returns:
+            C code string implementing the numeric comparison
+        """
+        # Get type information from constraint ID
+        ctype, validator_func = self._get_numeric_type_info(rule.constraint_id.split('.', 1)[0])
         if not validator_func:
             return ''
 
         value = rule.params.get('value', 0)
-        enum_map = {
+        
+        # Map rule type to C enum constant
+        rule_enum_map = {
             RULE_GT: 'PB_VALIDATE_RULE_GT',
             RULE_GTE: 'PB_VALIDATE_RULE_GTE',
             RULE_LT: 'PB_VALIDATE_RULE_LT',
             RULE_LTE: 'PB_VALIDATE_RULE_LTE',
             RULE_EQ: 'PB_VALIDATE_RULE_EQ'
         }
-        rule_enum = enum_map.get(rule.rule_type)
+        rule_enum = rule_enum_map.get(rule.rule_type)
         if not rule_enum:
             return ''
 
@@ -1288,8 +1543,22 @@ class ValidatorGenerator:
         
         return code
     
-    def _get_numeric_type_info(self, constraint_id: str) -> tuple:
-        """Get C type and validator function name from constraint_id."""
+    def _get_numeric_type_info(self, constraint_id: str) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Get C type and validator function name from a constraint identifier.
+        
+        Args:
+            constraint_id: A constraint identifier like "int32.gt" or "float.lte"
+            
+        Returns:
+            A tuple of (c_type, validator_function_name), or (None, None) if not a numeric type.
+            
+        Examples:
+            >>> self._get_numeric_type_info('int32.gt')
+            ('int32_t', 'pb_validate_int32')
+            >>> self._get_numeric_type_info('float.lte')
+            ('float', 'pb_validate_float')
+        """
         type_map = {
             'int32': ('int32_t', 'pb_validate_int32'),
             'sint32': ('int32_t', 'pb_validate_int32'),
@@ -1419,38 +1688,35 @@ class ValidatorGenerator:
         return '            /* TODO: Implement oneof rule type %s */\n' % rule.rule_type
 
     def _gen_oneof_numeric_comparison(self, field: Any, rule: ValidationRule, oneof_name: str, field_name: str, anonymous: bool) -> str:
-        """Generate numeric comparison validation for oneof member."""
-        type_map_func = {
-            'int32': ('pb_validate_int32', 'int32_t'),
-            'sint32': ('pb_validate_int32', 'int32_t'),
-            'sfixed32': ('pb_validate_int32', 'int32_t'),
-            'int64': ('pb_validate_int64', 'int64_t'),
-            'sint64': ('pb_validate_int64', 'int64_t'),
-            'sfixed64': ('pb_validate_int64', 'int64_t'),
-            'uint32': ('pb_validate_uint32', 'uint32_t'),
-            'fixed32': ('pb_validate_uint32', 'uint32_t'),
-            'uint64': ('pb_validate_uint64', 'uint64_t'),
-            'fixed64': ('pb_validate_uint64', 'uint64_t'),
-            'float': ('pb_validate_float', 'float'),
-            'double': ('pb_validate_double', 'double'),
-            'bool': ('pb_validate_bool', 'bool'),
-            'enum': ('pb_validate_enum', 'int')
-        }
-        constraint_prefix = rule.constraint_id.split('.', 1)[0]
-        validator_func, ctype = type_map_func.get(constraint_prefix, (None, None))
-
+        """
+        Generate numeric comparison validation for oneof member.
+        
+        Args:
+            field: The field descriptor
+            rule: The ValidationRule to generate code for
+            oneof_name: The name of the oneof group
+            field_name: The name of the field within the oneof
+            anonymous: Whether this is an anonymous oneof
+            
+        Returns:
+            C code string implementing the numeric comparison for oneof
+        """
+        # Get type information from constraint ID
+        ctype, validator_func = self._get_numeric_type_info(rule.constraint_id.split('.', 1)[0])
         if not validator_func:
             return ''
 
         value = rule.params.get('value', 0)
-        enum_map = {
+        
+        # Map rule type to C enum constant
+        rule_enum_map = {
             RULE_GT: 'PB_VALIDATE_RULE_GT',
             RULE_GTE: 'PB_VALIDATE_RULE_GTE',
             RULE_LT: 'PB_VALIDATE_RULE_LT',
             RULE_LTE: 'PB_VALIDATE_RULE_LTE',
             RULE_EQ: 'PB_VALIDATE_RULE_EQ'
         }
-        rule_enum = enum_map.get(rule.rule_type)
+        rule_enum = rule_enum_map.get(rule.rule_type)
         if not rule_enum:
             return ''
 
@@ -1674,7 +1940,19 @@ class ValidatorGenerator:
 
 
     
-    def _generate_message_rule_check(self, message: Any, rule: ValidationRule):
-        """Generate code for a message-level validation rule."""
-        # This is a simplified version - full implementation would handle all rule types
+    def _generate_message_rule_check(self, message: Any, rule: ValidationRule) -> str:
+        """
+        Generate code for a message-level validation rule.
+        
+        Args:
+            message: The message descriptor
+            rule: The ValidationRule to generate code for
+            
+        Returns:
+            C code string implementing the rule check
+            
+        Note:
+            This is a simplified version - full implementation would handle all rule types.
+        """
+        # TODO: Implement message rule types (REQUIRES, MUTEX, AT_LEAST)
         return '    /* TODO: Implement message rule type %s */\n' % rule.rule_type
