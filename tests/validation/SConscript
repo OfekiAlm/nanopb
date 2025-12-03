@@ -83,3 +83,66 @@ test_prog = test_env.Program(
 
 # Run the test
 test_env.RunTest(test_prog)
+
+# ==================================================================================
+# Nested import validation test - tests cross-file validation
+# ==================================================================================
+
+# Clone environment for nested import test
+nested_env = env.Clone()
+
+# Enable validation code generation
+nested_env.Replace(NANOPBFLAGS = "--validate,-x,validate.proto")
+
+# Remove -ansi flag and enable C99
+cflags = str(nested_env.get('CFLAGS', ''))
+if '-ansi' in cflags:
+    cflags = cflags.replace('-ansi', '')
+nested_env.Replace(CFLAGS = cflags + ' -std=c99 ')
+
+# Prepend the build directory to CPPPATH
+nested_env.Prepend(CPPPATH = ['.'])
+
+# Build pb_validate.o for nested import test (reuse if already built)
+nested_validate_obj = nested_env.Object("pb_validate_nested.o", "$NANOPB/pb_validate.c")
+
+# Generate child.proto first (it's imported by parent.proto)
+child_pb_files = nested_env.NanopbProto("child")
+child_pb_sources = ["child.pb.c"]
+child_validate_c = "child_validate.c"
+child_validate_h = "child_validate.h"
+nested_env.SideEffect(child_validate_c, child_pb_files)
+nested_env.SideEffect(child_validate_h, child_pb_files)
+
+# Generate parent.proto (imports child.proto)
+parent_pb_files = nested_env.NanopbProto("parent")
+parent_pb_sources = ["parent.pb.c"]
+parent_validate_c = "parent_validate.c"
+parent_validate_h = "parent_validate.h"
+nested_env.SideEffect(parent_validate_c, parent_pb_files)
+nested_env.SideEffect(parent_validate_h, parent_pb_files)
+
+# Ensure parent.proto is generated after child.proto
+nested_env.Depends(parent_pb_files, child_pb_files)
+
+# Build the nested import test binary
+nested_sources = [
+    "test_nested_import.c",
+    "child.pb.c",
+    "child_validate.c",
+    "parent.pb.c",
+    "parent_validate.c"
+]
+
+nested_test_prog = nested_env.Program(
+    "test_nested_import",
+    nested_sources + [
+        "$COMMON/pb_encode.o",
+        "$COMMON/pb_decode.o",
+        "$COMMON/pb_common.o",
+        nested_validate_obj
+    ]
+)
+
+# Run the nested import test
+nested_env.RunTest(nested_test_prog)

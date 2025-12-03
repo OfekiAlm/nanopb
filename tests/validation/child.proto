@@ -1,0 +1,32 @@
+/* Child message with validation rules - used for testing cross-file validation */
+
+syntax = "proto3";
+
+import "validate.proto";
+import "nanopb.proto";
+
+option (validate.validate) = true;
+
+/* Child message representing a person's profile */
+message ChildProfile {
+    /* Name must be non-empty */
+    string name = 1 [(nanopb).max_size = 64, (validate.rules).string.min_len = 1];
+    
+    /* Age must be between 0 and 18 (since it's a child) */
+    int32 age = 2 [(validate.rules).int32.gte = 0, (validate.rules).int32.lte = 18];
+    
+    /* Email must be valid format */
+    string email = 3 [(nanopb).max_size = 128, (validate.rules).string.email = true];
+}
+
+/* Another child message with validation rules */
+message ChildAddress {
+    /* Street must be non-empty */
+    string street = 1 [(nanopb).max_size = 128, (validate.rules).string.min_len = 1];
+    
+    /* City must be at least 2 characters */
+    string city = 2 [(nanopb).max_size = 64, (validate.rules).string.min_len = 2];
+    
+    /* Zip code must be 5-10 characters */
+    string zip_code = 3 [(nanopb).max_size = 16, (validate.rules).string.min_len = 5, (validate.rules).string.max_len = 10];
+}

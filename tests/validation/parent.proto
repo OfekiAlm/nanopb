@@ -1,0 +1,39 @@
+/* Parent message that imports child.proto - for testing cross-file validation */
+
+syntax = "proto3";
+
+import "validate.proto";
+import "nanopb.proto";
+import "child.proto";
+
+option (validate.validate) = true;
+
+/* Parent message that contains child messages from another proto file */
+message ParentRecord {
+    /* Parent's own name field */
+    string parent_name = 1 [(nanopb).max_size = 64, (validate.rules).string.min_len = 2];
+    
+    /* Parent's own ID must be positive */
+    int32 parent_id = 2 [(validate.rules).int32.gt = 0];
+    
+    /* Nested child profile from child.proto */
+    ChildProfile child = 3;
+    
+    /* Nested child address from child.proto */
+    ChildAddress address = 4;
+    
+    /* Optional notes field */
+    string notes = 5 [(nanopb).max_size = 256];
+}
+
+/* Another parent message to test multiple levels of nesting */
+message ParentContainer {
+    /* Container name must be non-empty */
+    string container_name = 1 [(nanopb).max_size = 32, (validate.rules).string.min_len = 1];
+    
+    /* Contains ParentRecord which in turn contains child messages */
+    ParentRecord record = 2;
+    
+    /* Count must be non-negative */
+    int32 count = 3 [(validate.rules).int32.gte = 0];
+}

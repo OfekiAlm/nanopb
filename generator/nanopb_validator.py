@@ -850,6 +850,51 @@ class ValidatorGenerator:
             return f"- {field_name}: (constraints unavailable)"
     # ----------------------------------------------------------------------
 
+    def _collect_validation_dependencies(self):
+        """
+        Collect validation header dependencies from imported proto files.
+        
+        Returns a set of validation header paths that need to be included.
+        These are proto files that define messages used as field types in this file.
+        """
+        dep_headers = set()
+        
+        # Iterate through all validators and their messages
+        for validator in self.validators.values():
+            message = validator.message
+            # Check all fields in the message
+            for field in getattr(message, 'fields', []):
+                try:
+                    # Only consider message-type fields
+                    if getattr(field, 'pbtype', None) not in ('MESSAGE', 'MSG_W_CB'):
+                        continue
+                    
+                    # Get the message type
+                    submsg_ctype = getattr(field, 'ctype', None)
+                    if not submsg_ctype:
+                        continue
+                    
+                    # Skip google.protobuf.Any - it doesn't have validation
+                    submsg_ctype_str = str(submsg_ctype).lower()
+                    if 'google' in submsg_ctype_str and 'protobuf' in submsg_ctype_str:
+                        continue
+                    
+                    # Look up the message in dependencies
+                    dep_msg = self.proto_file.dependencies.get(str(submsg_ctype))
+                    if dep_msg and hasattr(dep_msg, 'protofile'):
+                        dep_protofile = dep_msg.protofile
+                        # Only add if it's from a different proto file
+                        if dep_protofile != self.proto_file:
+                            dep_name = dep_protofile.fdesc.name
+                            if dep_name.endswith('.proto'):
+                                dep_name = dep_name[:-6]
+                            dep_headers.add(dep_name)
+                except Exception:
+                    # Skip fields with unexpected structure
+                    pass
+        
+        return sorted(dep_headers)
+
     def generate_header(self):
         """Generate validation header file content."""
         if not self.validators:
@@ -868,6 +913,12 @@ class ValidatorGenerator:
         yield '\n'
         yield '#include <pb_validate.h>\n'
         yield '#include "%s.pb.h"\n' % base_name
+        
+        # Include validation headers for imported proto files
+        dep_headers = self._collect_validation_dependencies()
+        for dep_header in dep_headers:
+            yield '#include "%s_validate.h"\n' % dep_header
+        
         yield '\n'
         yield '#ifdef __cplusplus\n'
         yield 'extern "C" {\n'
