@@ -1,0 +1,45 @@
+/* 
+ * Test proto for filter_tcp/filter_udp validation with oneof fields
+ * 
+ * This tests validation of messages with:
+ * - A header opcode field that indicates message type
+ * - A oneof payload field with different variants
+ * - Validation rules on the oneof members (both scalar and nested messages)
+ */
+
+syntax = "proto3";
+
+import "validate.proto";
+import "nanopb.proto";
+
+option (validate.validate) = true;
+
+/* Nested message type with validation rules for use in oneof */
+message StatusPayload {
+    /* Status code must be in range 0-999 */
+    int32 status_code = 1 [(validate.rules).int32.gte = 0, (validate.rules).int32.lte = 999];
+    /* Status message must be ASCII */
+    string status_message = 2 [(nanopb).max_size = 128, (validate.rules).string.ascii = true];
+}
+
+/* Main message with header opcode and oneof payload */
+message FilterOneofMessage {
+    /* Opcode indicates the message type:
+     * 1 = auth (string with min_len)
+     * 2 = data (int32 with gte constraint)
+     * 3 = status (nested message with validation)
+     */
+    int32 opcode = 1 [(validate.rules).int32.gte = 1, (validate.rules).int32.lte = 3];
+    
+    /* Payload as oneof - one of these will be set based on opcode */
+    oneof payload {
+        /* Auth username must be at least 3 characters */
+        string auth_username = 10 [(nanopb).max_size = 64, (validate.rules).string.min_len = 3];
+        
+        /* Data value must be non-negative */
+        int32 data_value = 11 [(validate.rules).int32.gte = 0];
+        
+        /* Status payload with nested validation */
+        StatusPayload status = 12;
+    }
+}
