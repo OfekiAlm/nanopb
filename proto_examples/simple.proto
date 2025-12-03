@@ -1,7 +1,0 @@
-syntax = "proto3";
-package test;
-import "generator/proto/validate.proto";
-
-message SimpleMessage {
-    float bounded_float = 2 [(validate.rules).float.gte = 0, (validate.rules).float.lte = 100];
-}

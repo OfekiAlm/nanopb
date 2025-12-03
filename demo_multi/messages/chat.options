@@ -1,5 +1,0 @@
-# Nanopb options for chat.proto
-# Use fully qualified names as shown with --verbose
-demo.messages.User.id max_size:36
-demo.messages.User.name max_size:50
-demo.messages.ChatMessage.text max_size:256
