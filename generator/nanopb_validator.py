@@ -1489,7 +1489,9 @@ class ValidatorGenerator:
             elif rule_type in (RULE_GT, RULE_GTE, RULE_LT, RULE_LTE, RULE_EQ):
                 value = item_rule.get('value', 0)
                 # Determine C type and validator function based on constraint_id
-                ctype, func = _get_numeric_validator_info(constraint_id)
+                # Extract just the type name from the full constraint_id (e.g., 'int32' from 'int32.gt')
+                type_name = constraint_id.split('.', 1)[0]
+                ctype, func = _get_numeric_validator_info(type_name)
                 if ctype and func:
                     rule_enum = {
                         RULE_GT: 'PB_VALIDATE_RULE_GT',
