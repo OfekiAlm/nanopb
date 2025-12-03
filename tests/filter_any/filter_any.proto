@@ -1,0 +1,61 @@
+/*
+ * Test proto for filter_tcp/filter_udp validation with google.protobuf.Any fields
+ * 
+ * This tests validation of messages containing Any fields with:
+ * - Allowed type_url validation (any.in)
+ * - Disallowed type_url validation (any.not_in)
+ * - Nested message validation within Any payloads
+ */
+
+syntax = "proto3";
+
+import "validate.proto";
+import "nanopb.proto";
+import "google/protobuf/any.proto";
+
+option (validate.validate) = true;
+
+/* Payload message types that can be wrapped in Any */
+message UserInfo {
+    /* User ID must be positive */
+    int32 user_id = 1 [(validate.rules).int32.gt = 0];
+    /* Email must be valid format */
+    string email = 2 [(nanopb).max_size = 128, (validate.rules).string.email = true];
+    /* Age must be between 0 and 150 */
+    int32 age = 3 [(validate.rules).int32.gte = 0, (validate.rules).int32.lte = 150];
+}
+
+message ProductInfo {
+    /* Product ID must be positive */
+    int32 product_id = 1 [(validate.rules).int32.gt = 0];
+    /* Name must be at least 1 character */
+    string name = 2 [(nanopb).max_size = 256, (validate.rules).string.min_len = 1];
+    /* Price must be non-negative */
+    double price = 3 [(validate.rules).double.gte = 0.0];
+}
+
+message OrderInfo {
+    /* Order ID must be positive */
+    int32 order_id = 1 [(validate.rules).int32.gt = 0];
+    /* Total must be positive */
+    double total = 2 [(validate.rules).double.gt = 0.0];
+}
+
+/* Message with Any field restricted to allowed types */
+message FilterAnyAllowed {
+    /* Any field that only allows UserInfo and ProductInfo */
+    google.protobuf.Any payload = 1 [
+        (nanopb).max_size = 512,
+        (validate.rules).any.in = "type.googleapis.com/UserInfo",
+        (validate.rules).any.in = "type.googleapis.com/ProductInfo"
+    ];
+}
+
+/* Message with Any field that disallows specific types */
+message FilterAnyDisallowed {
+    /* Any field that disallows OrderInfo */
+    google.protobuf.Any payload = 1 [
+        (nanopb).max_size = 512,
+        (validate.rules).any.not_in = "type.googleapis.com/OrderInfo"
+    ];
+}
