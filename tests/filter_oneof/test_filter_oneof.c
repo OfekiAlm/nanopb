@@ -41,7 +41,7 @@ static int tests_failed = 0;
 } while(0)
 
 #define EXPECT_INVALID(result, msg) do { \
-    if (!result) { \
+    if (!(result)) { \
         tests_passed++; \
         printf("    [PASS] Invalid message rejected: %s\n", msg); \
     } else { \
