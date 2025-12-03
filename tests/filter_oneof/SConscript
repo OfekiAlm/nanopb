@@ -8,7 +8,8 @@ test_env = env.Clone()
 
 # Enable validation code generation with oneof envelope mode
 # Also exclude validate.proto from #include list since it's only used for options
-test_env.Replace(NANOPBFLAGS = "--validate,--envelope-mode=oneof,-x,validate.proto")
+# Note: envelope-mode triggers filter_tcp/udp generation but has known issues
+test_env.Replace(NANOPBFLAGS = "--validate,--envelope-mode=oneof,--envelope-name=FilterOneofMessage,-x,validate.proto")
 
 # Remove -ansi flag since pb_validate.h requires C99 features (inline)
 # Also enable C99 for stdbool.h

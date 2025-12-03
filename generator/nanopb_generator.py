@@ -2860,15 +2860,22 @@ class ProtoFile:
                 else:
                     # Fallback to numeric value if mapping fails
                     yield '        case %d:\n' % (opcode_val)
-                yield '            if (envelope.which_%s == %s_%s_%s) {\n' % (
+                # Use the field tag constant for the which_field comparison
+                tag_constant = Globals.naming_style.define_name('%s_%s_tag' % (envelope_msg.name, oneof_subfield.name))
+                yield '            if (envelope.which_%s == %s) {\n' % (
                     oneof_name,
-                    Globals.naming_style.define_name(envelope_msg.name),
-                    oneof_name,
-                    oneof_member_name
+                    tag_constant
                 )
-                yield '                if (validate_message(&%s_msg, &envelope.%s.%s)) {\n' % (
-                    submsg_type, oneof_name, oneof_member_name
-                )
+                # For MESSAGE types, validate with message descriptor; for scalars, validate the whole envelope
+                if oneof_subfield.pbtype == 'MESSAGE':
+                    yield '                if (validate_message(&%s_msg, &envelope.%s.%s)) {\n' % (
+                        submsg_type, oneof_name, oneof_member_name
+                    )
+                else:
+                    # For scalar types, validate the whole envelope message
+                    yield '                if (validate_message(&%s_msg, &envelope)) {\n' % (
+                        Globals.naming_style.type_name(envelope_msg.name)
+                    )
                 yield f'                    return {ret_ok};\n'
                 yield '                }\n'
                 yield '            }\n'
@@ -3002,15 +3009,22 @@ class ProtoFile:
                     yield '        case %s_%s:\n' % (alias_type, enum_suffix)
                 else:
                     yield '        case %d:\n' % (opcode_val)
-                yield '            if (envelope.which_%s == %s_%s_%s) {\n' % (
+                # Use the field tag constant for the which_field comparison
+                tag_constant = Globals.naming_style.define_name('%s_%s_tag' % (envelope_msg.name, oneof_subfield.name))
+                yield '            if (envelope.which_%s == %s) {\n' % (
                     oneof_name,
-                    Globals.naming_style.define_name(envelope_msg.name),
-                    oneof_name,
-                    oneof_member_name
+                    tag_constant
                 )
-                yield '                if (validate_message(&%s_msg, &envelope.%s.%s)) {\n' % (
-                    submsg_type, oneof_name, oneof_member_name
-                )
+                # For MESSAGE types, validate with message descriptor; for scalars, validate the whole envelope
+                if oneof_subfield.pbtype == 'MESSAGE':
+                    yield '                if (validate_message(&%s_msg, &envelope.%s.%s)) {\n' % (
+                        submsg_type, oneof_name, oneof_member_name
+                    )
+                else:
+                    # For scalar types, validate the whole envelope message
+                    yield '                if (validate_message(&%s_msg, &envelope)) {\n' % (
+                        Globals.naming_style.type_name(envelope_msg.name)
+                    )
                 yield f'                    return {ret_ok};\n'
                 yield '                }\n'
                 yield '            }\n'

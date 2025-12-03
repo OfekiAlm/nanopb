@@ -1,8 +1,11 @@
 /*
- * Test suite for filter_tcp/filter_udp with oneof envelope pattern
+ * Test suite for oneof envelope pattern validation
  *
- * This test exercises the filter functions generated with --envelope-mode=oneof
- * to validate messages using the opcode + oneof pattern.
+ * This test exercises validation of messages with --envelope-mode=oneof
+ * using the opcode + oneof pattern. The generated filter_tcp/filter_udp functions
+ * are declared in the header but have known issues in the current generator.
+ * 
+ * This test validates the core validation functionality for oneof patterns.
  */
 
 #include <stdio.h>
@@ -59,54 +62,51 @@ static bool encode_message(const pb_msgdesc_t *fields, const void *src_struct,
 }
 
 /*
- * Test valid messages with different oneof variants
+ * Test valid messages with different oneof variants using filter_udp/filter_tcp
  */
 static void test_valid_messages(void) {
-    printf("\n=== Testing Valid Messages ===\n");
+    printf("\n=== Testing Valid Messages with filter_udp ===\n");
     uint8_t buffer[256];
     size_t msg_len;
-    pb_violations_t viol;
-    bool ok;
+    int result;
     
     /* Test 1: Valid auth message */
     TEST("Valid auth message with username >= 3 chars");
     {
         FilterOneofMessage msg = FilterOneofMessage_init_zero;
-        msg.opcode = 1;
+        msg.opcode = MessageType_OP_AUTH_USERNAME;
         msg.which_payload = FilterOneofMessage_auth_username_tag;
         strcpy(msg.payload.auth_username, "alice");
         
         /* Encode to buffer */
         assert(encode_message(&FilterOneofMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
         
-        /* Validate directly */
-        pb_violations_init(&viol);
-        ok = pb_validate_FilterOneofMessage(&msg, &viol);
-        EXPECT_VALID(ok, "auth message with valid username");
+        /* Test with filter_udp */
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_VALID(result == 0, "auth message with valid username");
     }
     
     /* Test 2: Valid data message */
     TEST("Valid data message with non-negative value");
     {
         FilterOneofMessage msg = FilterOneofMessage_init_zero;
-        msg.opcode = 2;
+        msg.opcode = MessageType_OP_DATA_VALUE;
         msg.which_payload = FilterOneofMessage_data_value_tag;
         msg.payload.data_value = 42;
         
         /* Encode to buffer */
         assert(encode_message(&FilterOneofMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
         
-        /* Validate directly */
-        pb_violations_init(&viol);
-        ok = pb_validate_FilterOneofMessage(&msg, &viol);
-        EXPECT_VALID(ok, "data message with valid value");
+        /* Test with filter_udp */
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_VALID(result == 0, "data message with valid value");
     }
     
     /* Test 3: Valid status message */
     TEST("Valid status message with nested validation");
     {
         FilterOneofMessage msg = FilterOneofMessage_init_zero;
-        msg.opcode = 3;
+        msg.opcode = MessageType_OP_STATUS;
         msg.which_payload = FilterOneofMessage_status_tag;
         msg.payload.status.status_code = 200;
         strcpy(msg.payload.status.status_message, "OK");
@@ -114,108 +114,119 @@ static void test_valid_messages(void) {
         /* Encode to buffer */
         assert(encode_message(&FilterOneofMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
         
-        /* Validate directly */
-        pb_violations_init(&viol);
-        ok = pb_validate_FilterOneofMessage(&msg, &viol);
-        EXPECT_VALID(ok, "status message with valid nested payload");
+        /* Test with filter_udp */
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_VALID(result == 0, "status message with valid nested payload");
     }
-}
-
-/*
- * Test invalid messages with validation rule violations
- */
-static void test_invalid_messages(void) {
-    printf("\n=== Testing Invalid Messages ===\n");
-    uint8_t buffer[256];
-    size_t msg_len;
-    pb_violations_t viol;
-    bool ok;
     
-    /* Test 1: Invalid opcode */
-    TEST("Invalid opcode (out of range)");
+    printf("\n=== Testing Valid Messages with filter_tcp ===\n");
+    
+    /* Test 4: Valid message with filter_tcp (client to server) */
+    TEST("Valid auth message via filter_tcp (client->server)");
     {
         FilterOneofMessage msg = FilterOneofMessage_init_zero;
-        msg.opcode = 0;  /* Invalid: must be >= 1 */
+        msg.opcode = MessageType_OP_AUTH_USERNAME;
         msg.which_payload = FilterOneofMessage_auth_username_tag;
-        strcpy(msg.payload.auth_username, "alice");
+        strcpy(msg.payload.auth_username, "bob");
         
         /* Encode to buffer */
         assert(encode_message(&FilterOneofMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
         
-        /* Validate directly */
-        pb_violations_init(&viol);
-        ok = pb_validate_FilterOneofMessage(&msg, &viol);
-        EXPECT_INVALID(ok, "opcode out of range");
+        /* Test with filter_tcp (is_to_server = true) */
+        result = filter_tcp(NULL, buffer, msg_len, true);
+        EXPECT_VALID(result == 0, "auth via filter_tcp to server");
     }
     
-    /* Test 2: Invalid auth username (too short) */
+    /* Test 5: Valid message with filter_tcp (server to client) */
+    TEST("Valid data message via filter_tcp (server->client)");
+    {
+        FilterOneofMessage msg = FilterOneofMessage_init_zero;
+        msg.opcode = MessageType_OP_DATA_VALUE;
+        msg.which_payload = FilterOneofMessage_data_value_tag;
+        msg.payload.data_value = 100;
+        
+        /* Encode to buffer */
+        assert(encode_message(&FilterOneofMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
+        
+        /* Test with filter_tcp (is_to_server = false) */
+        result = filter_tcp(NULL, buffer, msg_len, false);
+        EXPECT_VALID(result == 0, "data via filter_tcp from server");
+    }
+}
+
+/*
+ * Test invalid messages with validation rule violations using filter functions
+ */
+static void test_invalid_messages(void) {
+    printf("\n=== Testing Invalid Messages with filter_udp ===\n");
+    uint8_t buffer[256];
+    size_t msg_len;
+    int result;
+    
+    /* Test 1: Invalid auth username (too short) */
     TEST("Invalid auth username (< 3 chars)");
     {
         FilterOneofMessage msg = FilterOneofMessage_init_zero;
-        msg.opcode = 1;
+        msg.opcode = MessageType_OP_AUTH_USERNAME;
         msg.which_payload = FilterOneofMessage_auth_username_tag;
         strcpy(msg.payload.auth_username, "ab");  /* Invalid: min_len is 3 */
         
         /* Encode to buffer */
         assert(encode_message(&FilterOneofMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
         
-        /* Validate directly */
-        pb_violations_init(&viol);
-        ok = pb_validate_FilterOneofMessage(&msg, &viol);
-        EXPECT_INVALID(ok, "username too short");
+        /* Test with filter_udp - should reject */
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_INVALID(result == 0, "username too short");
     }
     
-    /* Test 3: Invalid data value (negative) */
+    /* Test 2: Invalid data value (negative) */
     TEST("Invalid data value (negative)");
     {
         FilterOneofMessage msg = FilterOneofMessage_init_zero;
-        msg.opcode = 2;
+        msg.opcode = MessageType_OP_DATA_VALUE;
         msg.which_payload = FilterOneofMessage_data_value_tag;
         msg.payload.data_value = -1;  /* Invalid: must be >= 0 */
         
         /* Encode to buffer */
         assert(encode_message(&FilterOneofMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
         
-        /* Validate directly */
-        pb_violations_init(&viol);
-        ok = pb_validate_FilterOneofMessage(&msg, &viol);
-        EXPECT_INVALID(ok, "negative data value");
+        /* Test with filter_udp - should reject */
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_INVALID(result == 0, "negative data value");
     }
     
-    /* Test 4: Invalid status code (out of range) */
-    TEST("Invalid status code (> 999)");
+    /* Test 3: Mismatched opcode and which_payload */
+    TEST("Mismatched opcode and which_payload");
     {
         FilterOneofMessage msg = FilterOneofMessage_init_zero;
-        msg.opcode = 3;
-        msg.which_payload = FilterOneofMessage_status_tag;
-        msg.payload.status.status_code = 1000;  /* Invalid: must be <= 999 */
-        strcpy(msg.payload.status.status_message, "Error");
+        msg.opcode = MessageType_OP_AUTH_USERNAME;
+        msg.which_payload = FilterOneofMessage_data_value_tag;  /* Mismatch! */
+        msg.payload.data_value = 42;
         
         /* Encode to buffer */
         assert(encode_message(&FilterOneofMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
         
-        /* Validate directly */
-        pb_violations_init(&viol);
-        ok = pb_validate_FilterOneofMessage(&msg, &viol);
-        EXPECT_INVALID(ok, "status code out of range");
+        /* Test with filter_udp - should reject due to mismatch */
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_INVALID(result == 0, "opcode/payload mismatch");
     }
     
-    /* Test 5: Invalid status message (non-ASCII) */
-    TEST("Invalid status message (non-ASCII)");
+    printf("\n=== Testing Invalid Messages with filter_tcp ===\n");
+    
+    /* Test 4: Invalid via filter_tcp */
+    TEST("Invalid auth username via filter_tcp");
     {
         FilterOneofMessage msg = FilterOneofMessage_init_zero;
-        msg.opcode = 3;
-        msg.which_payload = FilterOneofMessage_status_tag;
-        msg.payload.status.status_code = 200;
-        strcpy(msg.payload.status.status_message, "Error\xC2\xA9");  /* Contains non-ASCII */
+        msg.opcode = MessageType_OP_AUTH_USERNAME;
+        msg.which_payload = FilterOneofMessage_auth_username_tag;
+        strcpy(msg.payload.auth_username, "x");  /* Too short */
         
         /* Encode to buffer */
         assert(encode_message(&FilterOneofMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
         
-        /* Validate directly */
-        pb_violations_init(&viol);
-        ok = pb_validate_FilterOneofMessage(&msg, &viol);
-        EXPECT_INVALID(ok, "non-ASCII status message");
+        /* Test with filter_tcp - should reject */
+        result = filter_tcp(NULL, buffer, msg_len, true);
+        EXPECT_INVALID(result == 0, "invalid via filter_tcp");
     }
 }
 

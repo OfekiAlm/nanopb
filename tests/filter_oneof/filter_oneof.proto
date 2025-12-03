@@ -22,14 +22,17 @@ message StatusPayload {
     string status_message = 2 [(nanopb).max_size = 128, (validate.rules).string.ascii = true];
 }
 
+/* Enum for message type opcodes - names should match oneof field names */
+enum MessageType {
+    OP_AUTH_USERNAME = 0;
+    OP_DATA_VALUE = 1;
+    OP_STATUS = 2;
+}
+
 /* Main message with header opcode and oneof payload */
 message FilterOneofMessage {
-    /* Opcode indicates the message type:
-     * 1 = auth (string with min_len)
-     * 2 = data (int32 with gte constraint)
-     * 3 = status (nested message with validation)
-     */
-    int32 opcode = 1 [(validate.rules).int32.gte = 1, (validate.rules).int32.lte = 3];
+    /* Opcode indicates the message type using enum */
+    MessageType opcode = 1;
     
     /* Payload as oneof - one of these will be set based on opcode */
     oneof payload {

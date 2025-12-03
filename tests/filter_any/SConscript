@@ -36,7 +36,10 @@ test_env.SideEffect(validate_h, pb_files)
 validate_sources = [validate_c]
 
 # Also need to compile Any proto with options for the any field
-test_env.NanopbProto(["google/protobuf/any", "google/protobuf/any.options"])
+# Use a separate environment without validation for google.protobuf.Any
+any_env = test_env.Clone()
+any_env.Replace(NANOPBFLAGS = "-x,validate.proto")
+any_env.NanopbProto(["google/protobuf/any", "google/protobuf/any.options"])
 
 # All C source files for the test binary
 sources = ["test_filter_any.c"] + ["google/protobuf/any.pb.c"] + pb_sources + validate_sources
