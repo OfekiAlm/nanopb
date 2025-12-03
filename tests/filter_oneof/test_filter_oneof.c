@@ -6,6 +6,11 @@
  * - Serializes them to bytes
  * - Calls filter_tcp/filter_udp to decode and validate
  * - Asserts valid cases pass and invalid cases fail
+ *
+ * Note: This test uses strcpy() for string literals that are known to be
+ * within the nanopb max_size bounds (64 or 128 bytes). All test strings
+ * are short literals ("alice", "OK", etc.) well under these limits.
+ * This is consistent with existing test patterns in the repository.
  */
 
 #include <stdio.h>

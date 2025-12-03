@@ -6,6 +6,13 @@
  * - Serializes them to bytes
  * - Calls filter_tcp/filter_udp to decode and validate
  * - Asserts valid Any payloads pass and invalid ones fail
+ *
+ * Note: This test uses strcpy() for string literals that are known to be
+ * within the nanopb max_size bounds (128 or 256 bytes). All test strings
+ * are short email addresses and names well under these limits.
+ * The pack_any() function properly uses strncpy() with null termination
+ * for type_url since it can come from external input.
+ * This is consistent with existing test patterns in the repository.
  */
 
 #include <stdio.h>
