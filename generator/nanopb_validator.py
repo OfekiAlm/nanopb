@@ -59,9 +59,12 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-# --- Module constants -----------------------------------------------------
+# =============================================================================
+# MODULE CONSTANTS
+# =============================================================================
+# Rule identifiers used throughout code generation.
+# These constants provide type safety and make the code self-documenting.
 
-# Rule identifiers used throughout codegen
 RULE_REQUIRED = 'REQUIRED'
 RULE_ONEOF_REQUIRED = 'ONEOF_REQUIRED'
 RULE_EQ = 'EQ'
@@ -92,6 +95,102 @@ RULE_ANY_IN = 'ANY_IN'
 RULE_ANY_NOT_IN = 'ANY_NOT_IN'
 
 
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
+
+def _get_numeric_validator_info(type_name: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Map a protobuf numeric type name to its C type and validator function.
+    
+    This centralizes the type mapping logic used throughout code generation.
+    
+    Args:
+        type_name: The protobuf type name (e.g., 'int32', 'float', 'uint64')
+        
+    Returns:
+        A tuple of (c_type, validator_function_name), or (None, None) if not found.
+        
+    Examples:
+        >>> _get_numeric_validator_info('int32')
+        ('int32_t', 'pb_validate_int32')
+        >>> _get_numeric_validator_info('float')
+        ('float', 'pb_validate_float')
+    """
+    TYPE_MAP = {
+        'int32': ('int32_t', 'pb_validate_int32'),
+        'sint32': ('int32_t', 'pb_validate_int32'),
+        'sfixed32': ('int32_t', 'pb_validate_int32'),
+        'int64': ('int64_t', 'pb_validate_int64'),
+        'sint64': ('int64_t', 'pb_validate_int64'),
+        'sfixed64': ('int64_t', 'pb_validate_int64'),
+        'uint32': ('uint32_t', 'pb_validate_uint32'),
+        'fixed32': ('uint32_t', 'pb_validate_uint32'),
+        'uint64': ('uint64_t', 'pb_validate_uint64'),
+        'fixed64': ('uint64_t', 'pb_validate_uint64'),
+        'float': ('float', 'pb_validate_float'),
+        'double': ('double', 'pb_validate_double'),
+        'bool': ('bool', 'pb_validate_bool'),
+        'enum': ('int', 'pb_validate_enum'),
+    }
+    return TYPE_MAP.get(type_name, (None, None))
+
+
+def _escape_for_comment(s: Any) -> str:
+    """
+    Escape a string to be safe for use inside C comments and Doxygen blocks.
+    
+    Args:
+        s: The string to escape (can be any type, will be converted to str)
+        
+    Returns:
+        An escaped string safe for use in C comments.
+        
+    Note:
+        - Prevents accidental comment closing by escaping */
+        - Normalizes line endings
+        - Handles None gracefully
+    """
+    try:
+        if s is None:
+            return ''
+        # Avoid closing comment accidentally and normalize newlines
+        return str(s).replace('*/', '* /').replace('\r\n', '\n').replace('\r', '\n')
+    except Exception:
+        return str(s) if s is not None else ''
+
+
+def _escape_c_string(s: Any) -> str:
+    """
+    Escape a string to be safe for use in C string literals.
+    
+    Args:
+        s: The string to escape (can be any type, will be converted to str)
+        
+    Returns:
+        An escaped string safe for use in C string literals.
+        
+    Note:
+        Backslashes are escaped first to avoid double-escaping.
+    """
+    try:
+        if s is None:
+            return ''
+        # Escape backslashes first, then special characters
+        s = str(s)
+        s = s.replace('\\', '\\\\')
+        s = s.replace('"', '\\"')
+        s = s.replace('\n', '\\n')
+        s = s.replace('\r', '\\r')
+        s = s.replace('\t', '\\t')
+        return s
+    except Exception:
+        return str(s) if s is not None else ''
+
+
+# =============================================================================
+# DATA STRUCTURES
+# =============================================================================
 
 @dataclass(frozen=True)
 class ValidationRule:
@@ -665,31 +764,6 @@ class ValidatorGenerator:
     # =========================================================================
     # Documentation and Display Helpers
     # =========================================================================
-    def _escape_for_comment(self, s: str) -> str:
-        """Escape strings so they are safe inside C comment/Doxygen blocks."""
-        try:
-            if s is None:
-                return ''
-            # Avoid closing comment accidentally and normalize newlines
-            return str(s).replace('*/', '* /').replace('\r\n', '\n').replace('\r', '\n')
-        except Exception:
-            return str(s)
-
-    def _escape_c_string(self, s: str) -> str:
-        """Escape a string to be safe for use in C string literals."""
-        try:
-            if s is None:
-                return ''
-            # Escape backslashes first, then special characters
-            s = str(s)
-            s = s.replace('\\', '\\\\')
-            s = s.replace('"', '\\"')
-            s = s.replace('\n', '\\n')
-            s = s.replace('\r', '\\r')
-            s = s.replace('\t', '\\t')
-            return s
-        except Exception:
-            return str(s)
 
     def _rule_to_text(self, rule: ValidationRule) -> str:
         """Convert a single ValidationRule into a human-friendly sentence fragment."""
@@ -725,11 +799,11 @@ class ValidatorGenerator:
         if rt == RULE_MAX_LEN:
             return f'max length {val}'
         if rt == RULE_PREFIX:
-            return f'prefix "{self._escape_for_comment(val)}"'
+            return f'prefix "{_escape_for_comment(val)}"'
         if rt == RULE_SUFFIX:
-            return f'suffix "{self._escape_for_comment(val)}"'
+            return f'suffix "{_escape_for_comment(val)}"'
         if rt == RULE_CONTAINS:
-            return f'contains "{self._escape_for_comment(val)}"'
+            return f'contains "{_escape_for_comment(val)}"'
         if rt == RULE_ASCII:
             return 'ASCII only'
         if rt == RULE_EMAIL:
@@ -824,20 +898,20 @@ class ValidatorGenerator:
             yield ' * Fields and constraints:\n'
             # With constraints
             for fname, fv in validator.field_validators.items():
-                desc = self._escape_for_comment(self._format_field_constraints(fname, fv))
+                desc = _escape_for_comment(self._format_field_constraints(fname, fv))
                 yield ' * %s\n' % desc
             # Oneof validators
             for oneof_name, oneof_data in validator.oneof_validators.items():
-                yield ' * - oneof %s:\n' % self._escape_for_comment(oneof_name)
+                yield ' * - oneof %s:\n' % _escape_for_comment(oneof_name)
                 for member_field, member_fv in oneof_data['members']:
-                    desc = self._escape_for_comment(self._format_field_constraints(member_field.name, member_fv))
+                    desc = _escape_for_comment(self._format_field_constraints(member_field.name, member_fv))
                     yield ' *   %s\n' % desc
             # Without constraints
             for fname in fields_without:
                 # Skip oneof names as they are already documented above
                 if fname in validator.oneof_validators:
                     continue
-                yield ' * - %s: no constraints\n' % self._escape_for_comment(fname)
+                yield ' * - %s: no constraints\n' % _escape_for_comment(fname)
             # Message-level rules summary
             if validator.message_rules:
                 yield ' *\n'
@@ -845,16 +919,16 @@ class ValidatorGenerator:
                 for mr in validator.message_rules:
                     try:
                         if mr.rule_type == 'REQUIRES':
-                            yield ' * - requires field "%s"\n' % self._escape_for_comment(mr.params.get('field', ''))
+                            yield ' * - requires field "%s"\n' % _escape_for_comment(mr.params.get('field', ''))
                         elif mr.rule_type == 'MUTEX':
                             fields = mr.params.get('fields', [])
-                            yield ' * - mutual exclusion among %s\n' % self._escape_for_comment('{'+', '.join(fields)+'}')
+                            yield ' * - mutual exclusion among %s\n' % _escape_for_comment('{'+', '.join(fields)+'}')
                         elif mr.rule_type == 'AT_LEAST':
                             n = mr.params.get('n', 1)
                             fields = mr.params.get('fields', [])
-                            yield ' * - at least %s of %s must be set\n' % (str(n), self._escape_for_comment('{'+', '.join(fields)+'}'))
+                            yield ' * - at least %s of %s must be set\n' % (str(n), _escape_for_comment('{'+', '.join(fields)+'}'))
                         else:
-                            yield ' * - %s\n' % self._escape_for_comment(mr.rule_type.lower())
+                            yield ' * - %s\n' % _escape_for_comment(mr.rule_type.lower())
                     except Exception:
                         yield ' * - (message rule)\n'
             yield ' *\n'
@@ -946,17 +1020,25 @@ class ValidatorGenerator:
                 for rule in field_validator.rules:
                     yield self._generate_rule_check(field, rule)
 
-                # Automatic recursion for submessages
+                # Automatic recursion for nested message fields
+                # When a field contains another message, we need to recursively
+                # validate that nested message as well
                 try:
                     is_message_field = getattr(field, 'pbtype', None) in ('MESSAGE', 'MSG_W_CB')
                     submsg_ctype = getattr(field, 'ctype', None)
                     if is_message_field and submsg_ctype:
-                        # Skip google.protobuf.Any - no validation function exists for it
+                        # Skip google.protobuf.Any - it doesn't have a validation function
                         submsg_ctype_str = str(submsg_ctype).lower()
-                        if not ('google' in submsg_ctype_str and 'protobuf' in submsg_ctype_str and 'any' in submsg_ctype_str):
+                        is_google_any = ('google' in submsg_ctype_str and 
+                                        'protobuf' in submsg_ctype_str and 
+                                        'any' in submsg_ctype_str)
+                        if not is_google_any:
+                            # Generate the nested validation function name
                             sub_func = 'pb_validate_' + str(submsg_ctype).replace('.', '_')
                             allocation = getattr(field, 'allocation', None)
                             rules = getattr(field, 'rules', None)
+                            
+                            # Use different macros based on allocation type
                             if allocation == 'POINTER':
                                 yield '    PB_VALIDATE_NESTED_MSG_POINTER(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
                             else:
@@ -965,7 +1047,7 @@ class ValidatorGenerator:
                                 else:
                                     yield '    PB_VALIDATE_NESTED_MSG(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
                 except Exception:
-                    # If field shape is unexpected, skip recursion silently
+                    # If field shape is unexpected, skip recursion silently to avoid crashes
                     pass
                 
                 yield '    PB_VALIDATE_FIELD_END(ctx);\n'
@@ -1077,7 +1159,7 @@ class ValidatorGenerator:
             C code string implementing the numeric comparison
         """
         # Get type information from constraint ID
-        ctype, validator_func = self._get_numeric_type_info(rule.constraint_id.split('.', 1)[0])
+        ctype, validator_func = _get_numeric_validator_info(rule.constraint_id.split('.', 1)[0])
         if not validator_func:
             return ''
 
@@ -1369,7 +1451,20 @@ class ValidatorGenerator:
             return '        PB_VALIDATE_REPEATED_UNIQUE_SCALAR(ctx, msg, %s, "%s");\n' % (field_name, rule.constraint_id)
     
     def _gen_items(self, field: Any, rule: ValidationRule) -> str:
-        """Generate code for per-item validation rules on repeated fields."""
+        """
+        Generate code for per-item validation rules on repeated fields.
+        
+        This method generates validation code that iterates over each element
+        in a repeated field and applies the specified constraints. The generated
+        code uses macros for common cases and inline loops for more complex ones.
+        
+        Args:
+            field: The field descriptor for the repeated field
+            rule: The ValidationRule containing per-item constraints
+            
+        Returns:
+            C code string implementing per-item validation
+        """
         field_name = field.name
         item_rules = rule.params.get('item_rules', [])
         if not item_rules:
@@ -1378,6 +1473,7 @@ class ValidatorGenerator:
         pbtype = getattr(field, 'pbtype', None)
         code = ''
         
+        # Generate code for each item rule
         for item_rule in item_rules:
             rule_type = item_rule.get('rule')
             constraint_id = item_rule.get('constraint_id', '')
@@ -1393,7 +1489,7 @@ class ValidatorGenerator:
             elif rule_type in (RULE_GT, RULE_GTE, RULE_LT, RULE_LTE, RULE_EQ):
                 value = item_rule.get('value', 0)
                 # Determine C type and validator function based on constraint_id
-                ctype, func = self._get_numeric_type_info(constraint_id)
+                ctype, func = _get_numeric_validator_info(constraint_id)
                 if ctype and func:
                     rule_enum = {
                         RULE_GT: 'PB_VALIDATE_RULE_GT',
@@ -1543,41 +1639,6 @@ class ValidatorGenerator:
         
         return code
     
-    def _get_numeric_type_info(self, constraint_id: str) -> Tuple[Optional[str], Optional[str]]:
-        """
-        Get C type and validator function name from a constraint identifier.
-        
-        Args:
-            constraint_id: A constraint identifier like "int32.gt" or "float.lte"
-            
-        Returns:
-            A tuple of (c_type, validator_function_name), or (None, None) if not a numeric type.
-            
-        Examples:
-            >>> self._get_numeric_type_info('int32.gt')
-            ('int32_t', 'pb_validate_int32')
-            >>> self._get_numeric_type_info('float.lte')
-            ('float', 'pb_validate_float')
-        """
-        type_map = {
-            'int32': ('int32_t', 'pb_validate_int32'),
-            'sint32': ('int32_t', 'pb_validate_int32'),
-            'sfixed32': ('int32_t', 'pb_validate_int32'),
-            'int64': ('int64_t', 'pb_validate_int64'),
-            'sint64': ('int64_t', 'pb_validate_int64'),
-            'sfixed64': ('int64_t', 'pb_validate_int64'),
-            'uint32': ('uint32_t', 'pb_validate_uint32'),
-            'fixed32': ('uint32_t', 'pb_validate_uint32'),
-            'uint64': ('uint64_t', 'pb_validate_uint64'),
-            'fixed64': ('uint64_t', 'pb_validate_uint64'),
-            'float': ('float', 'pb_validate_float'),
-            'double': ('double', 'pb_validate_double'),
-            'bool': ('bool', 'pb_validate_bool'),
-            'enum': ('int', 'pb_validate_enum'),
-        }
-        type_prefix = constraint_id.split('.', 1)[0]
-        return type_map.get(type_prefix, (None, None))
-
     def _gen_no_sparse(self, field: Any, rule: ValidationRule) -> str:
         return '        /* TODO: Implement no_sparse constraint for map field */\n'
 
@@ -1702,7 +1763,7 @@ class ValidatorGenerator:
             C code string implementing the numeric comparison for oneof
         """
         # Get type information from constraint ID
-        ctype, validator_func = self._get_numeric_type_info(rule.constraint_id.split('.', 1)[0])
+        ctype, validator_func = _get_numeric_validator_info(rule.constraint_id.split('.', 1)[0])
         if not validator_func:
             return ''
 
@@ -1777,7 +1838,7 @@ class ValidatorGenerator:
         """Generate prefix validation for oneof string member."""
         prefix = rule.params.get('value', '')
         if 'string' in rule.constraint_id:
-            escaped_prefix = self._escape_c_string(prefix)
+            escaped_prefix = _escape_c_string(prefix)
             if anonymous:
                 return (
                     '    PB_VALIDATE_STR_PREFIX(ctx, msg, %s, "%s", "%s");\n'
@@ -1792,7 +1853,7 @@ class ValidatorGenerator:
         """Generate suffix validation for oneof string member."""
         suffix = rule.params.get('value', '')
         if 'string' in rule.constraint_id:
-            escaped_suffix = self._escape_c_string(suffix)
+            escaped_suffix = _escape_c_string(suffix)
             if anonymous:
                 return (
                     '    PB_VALIDATE_STR_SUFFIX(ctx, msg, %s, "%s", "%s");\n'
@@ -1807,7 +1868,7 @@ class ValidatorGenerator:
         """Generate contains validation for oneof string member."""
         contains = rule.params.get('value', '')
         if 'string' in rule.constraint_id:
-            escaped_contains = self._escape_c_string(contains)
+            escaped_contains = _escape_c_string(contains)
             if anonymous:
                 return (
                     '    PB_VALIDATE_STR_CONTAINS(ctx, msg, %s, "%s", "%s");\n'
@@ -1858,7 +1919,7 @@ class ValidatorGenerator:
         """Generate 'in' validation for oneof member."""
         values = rule.params.get('values', [])
         if 'string' in rule.constraint_id:
-            escaped_values = [self._escape_c_string(v) for v in values]
+            escaped_values = [_escape_c_string(v) for v in values]
             values_array = ', '.join('"%s"' % v for v in escaped_values)
             if anonymous:
                 return ('    static const char *__pb_%s_in[] = { %s };\n'
@@ -1883,7 +1944,7 @@ class ValidatorGenerator:
         """Generate 'not_in' validation for oneof member."""
         values = rule.params.get('values', [])
         if 'string' in rule.constraint_id:
-            escaped_values = [self._escape_c_string(v) for v in values]
+            escaped_values = [_escape_c_string(v) for v in values]
             values_array = ', '.join('"%s"' % v for v in escaped_values)
             if anonymous:
                 return ('    static const char *__pb_%s_notin[] = { %s };\n'
