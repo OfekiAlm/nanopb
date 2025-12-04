@@ -2,7 +2,6 @@
  * Test proto for filter_tcp/filter_udp validation with oneof fields
  * 
  * This tests validation of messages with:
- * - A header opcode field that indicates message type
  * - A oneof payload field with different variants
  * - Validation rules on the oneof members (both scalar and nested messages)
  */
@@ -22,19 +21,9 @@ message StatusPayload {
     string status_message = 2 [(nanopb).max_size = 128, (validate.rules).string.ascii = true];
 }
 
-/* Enum for message type opcodes - names should match oneof field names */
-enum MessageType {
-    OP_AUTH_USERNAME = 0;
-    OP_DATA_VALUE = 1;
-    OP_STATUS = 2;
-}
-
-/* Main message with header opcode and oneof payload */
+/* Main message with oneof payload */
 message FilterOneofMessage {
-    /* Opcode indicates the message type using enum */
-    MessageType opcode = 1;
-    
-    /* Payload as oneof - one of these will be set based on opcode */
+    /* Payload as oneof - one of these will be set */
     oneof payload {
         /* Auth username must be at least 3 characters */
         string auth_username = 10 [(nanopb).max_size = 64, (validate.rules).string.min_len = 3];

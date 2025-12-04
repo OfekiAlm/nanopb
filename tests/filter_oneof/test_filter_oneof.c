@@ -74,7 +74,6 @@ static void test_valid_messages(void) {
     TEST("Valid auth message with username >= 3 chars");
     {
         FilterOneofMessage msg = FilterOneofMessage_init_zero;
-        msg.opcode = MessageType_OP_AUTH_USERNAME;
         msg.which_payload = FilterOneofMessage_auth_username_tag;
         strcpy(msg.payload.auth_username, "alice");
         
@@ -90,7 +89,6 @@ static void test_valid_messages(void) {
     TEST("Valid data message with non-negative value");
     {
         FilterOneofMessage msg = FilterOneofMessage_init_zero;
-        msg.opcode = MessageType_OP_DATA_VALUE;
         msg.which_payload = FilterOneofMessage_data_value_tag;
         msg.payload.data_value = 42;
         
@@ -106,7 +104,6 @@ static void test_valid_messages(void) {
     TEST("Valid status message with nested validation");
     {
         FilterOneofMessage msg = FilterOneofMessage_init_zero;
-        msg.opcode = MessageType_OP_STATUS;
         msg.which_payload = FilterOneofMessage_status_tag;
         msg.payload.status.status_code = 200;
         strcpy(msg.payload.status.status_message, "OK");
@@ -125,7 +122,6 @@ static void test_valid_messages(void) {
     TEST("Valid auth message via filter_tcp (client->server)");
     {
         FilterOneofMessage msg = FilterOneofMessage_init_zero;
-        msg.opcode = MessageType_OP_AUTH_USERNAME;
         msg.which_payload = FilterOneofMessage_auth_username_tag;
         strcpy(msg.payload.auth_username, "bob");
         
@@ -141,7 +137,6 @@ static void test_valid_messages(void) {
     TEST("Valid data message via filter_tcp (server->client)");
     {
         FilterOneofMessage msg = FilterOneofMessage_init_zero;
-        msg.opcode = MessageType_OP_DATA_VALUE;
         msg.which_payload = FilterOneofMessage_data_value_tag;
         msg.payload.data_value = 100;
         
@@ -167,7 +162,6 @@ static void test_invalid_messages(void) {
     TEST("Invalid auth username (< 3 chars)");
     {
         FilterOneofMessage msg = FilterOneofMessage_init_zero;
-        msg.opcode = MessageType_OP_AUTH_USERNAME;
         msg.which_payload = FilterOneofMessage_auth_username_tag;
         strcpy(msg.payload.auth_username, "ab");  /* Invalid: min_len is 3 */
         
@@ -183,7 +177,6 @@ static void test_invalid_messages(void) {
     TEST("Invalid data value (negative)");
     {
         FilterOneofMessage msg = FilterOneofMessage_init_zero;
-        msg.opcode = MessageType_OP_DATA_VALUE;
         msg.which_payload = FilterOneofMessage_data_value_tag;
         msg.payload.data_value = -1;  /* Invalid: must be >= 0 */
         
@@ -195,29 +188,12 @@ static void test_invalid_messages(void) {
         EXPECT_INVALID(result == 0, "negative data value");
     }
     
-    /* Test 3: Mismatched opcode and which_payload */
-    TEST("Mismatched opcode and which_payload");
-    {
-        FilterOneofMessage msg = FilterOneofMessage_init_zero;
-        msg.opcode = MessageType_OP_AUTH_USERNAME;
-        msg.which_payload = FilterOneofMessage_data_value_tag;  /* Mismatch! */
-        msg.payload.data_value = 42;
-        
-        /* Encode to buffer */
-        assert(encode_message(&FilterOneofMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
-        
-        /* Test with filter_udp - should reject due to mismatch */
-        result = filter_udp(NULL, buffer, msg_len);
-        EXPECT_INVALID(result == 0, "opcode/payload mismatch");
-    }
-    
     printf("\n=== Testing Invalid Messages with filter_tcp ===\n");
     
-    /* Test 4: Invalid via filter_tcp */
+    /* Test 3: Invalid via filter_tcp */
     TEST("Invalid auth username via filter_tcp");
     {
         FilterOneofMessage msg = FilterOneofMessage_init_zero;
-        msg.opcode = MessageType_OP_AUTH_USERNAME;
         msg.which_payload = FilterOneofMessage_auth_username_tag;
         strcpy(msg.payload.auth_username, "x");  /* Too short */
         
