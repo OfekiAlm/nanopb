@@ -2789,6 +2789,11 @@ class ProtoFile:
             yield f'        return {ret_err};\n'
             yield '    }\n'
             yield '    \n'
+            yield '    /* Validate the envelope message first (checks any.in/any.not_in rules) */\n'
+            yield '    if (!validate_message(&%s_msg, &envelope)) {\n' % envelope_type
+            yield f'        return {ret_err};\n'
+            yield '    }\n'
+            yield '    \n'
             yield '    /* Extract type_url from Any field */\n'
             yield '    const char *type_url = (const char *)envelope.%s.type_url;\n' % any_field_name
             yield '    if (!type_url) {\n'
@@ -2973,6 +2978,11 @@ class ProtoFile:
             yield '    status = pb_decode(&stream, &%s_msg, &envelope);\n' % envelope_type
             yield '    \n'
             yield '    if (!status) {\n'
+            yield f'        return {ret_err};\n'
+            yield '    }\n'
+            yield '    \n'
+            yield '    /* Validate the envelope message first (checks any.in/any.not_in rules) */\n'
+            yield '    if (!validate_message(&%s_msg, &envelope)) {\n' % envelope_type
             yield f'        return {ret_err};\n'
             yield '    }\n'
             yield '    \n'

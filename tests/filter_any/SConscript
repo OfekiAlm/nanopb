@@ -8,7 +8,8 @@ test_env = env.Clone()
 
 # Enable validation code generation with any envelope mode
 # Also exclude validate.proto from #include list since it's only used for options
-test_env.Replace(NANOPBFLAGS = "--validate,--envelope-mode=any,-x,validate.proto")
+# Specify envelope name for clarity
+test_env.Replace(NANOPBFLAGS = "--validate,--envelope-mode=any,--envelope-name=FilterAnyAllowed,-x,validate.proto")
 
 # Remove -ansi flag since pb_validate.h requires C99 features (inline)
 # Also enable C99 for stdbool.h

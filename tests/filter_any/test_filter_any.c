@@ -134,12 +134,24 @@ static void test_invalid_allowed_any(void) {
     size_t msg_len;
     int result;
     
-    /* Test 1: OrderInfo not allowed in FilterAnyAllowed 
-     * NOTE: The filter functions currently don't enforce any.in/any.not_in rules directly.
-     * They generate code for all message types. The validation rules would catch this
-     * if the envelope were validated, but the current generator only validates payloads.
-     * This is a known limitation. We skip this test for now.
-     */
+    /* Test 1: OrderInfo not allowed in FilterAnyAllowed */
+    TEST("OrderInfo not in allowed types");
+    {
+        OrderInfo order = OrderInfo_init_zero;
+        order.order_id = 789;
+        order.total = 99.99;
+        
+        FilterAnyAllowed msg = FilterAnyAllowed_init_zero;
+        msg.has_payload = true;
+        assert(pack_any(&msg.payload, "type.googleapis.com/OrderInfo", &OrderInfo_msg, &order));
+        
+        /* Encode to buffer */
+        assert(encode_message(&FilterAnyAllowed_msg, &msg, buffer, sizeof(buffer), &msg_len));
+        
+        /* Test with filter_udp - should reject due to any.in rules */
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_INVALID(result == 0, "OrderInfo not in allowed types");
+    }
     
     /* Test 2: Invalid UserInfo payload (negative user_id) */
     TEST("Invalid UserInfo payload in allowed Any");
@@ -211,10 +223,24 @@ static void test_disallowed_any(void) {
         EXPECT_VALID(result == 0, "UserInfo allowed in disallowed Any");
     }
     
-    /* Test 2: OrderInfo explicitly disallowed 
-     * NOTE: Same limitation as above - any.not_in rules are not enforced by filter functions.
-     * We skip this test for now.
-     */
+    /* Test 2: OrderInfo explicitly disallowed */
+    TEST("OrderInfo explicitly disallowed via filter_tcp");
+    {
+        OrderInfo order = OrderInfo_init_zero;
+        order.order_id = 789;
+        order.total = 99.99;
+        
+        FilterAnyDisallowed msg = FilterAnyDisallowed_init_zero;
+        msg.has_payload = true;
+        assert(pack_any(&msg.payload, "type.googleapis.com/OrderInfo", &OrderInfo_msg, &order));
+        
+        /* Encode to buffer */
+        assert(encode_message(&FilterAnyDisallowed_msg, &msg, buffer, sizeof(buffer), &msg_len));
+        
+        /* Test with filter_tcp - should reject due to any.not_in rules */
+        result = filter_tcp(NULL, buffer, msg_len, false);
+        EXPECT_INVALID(result == 0, "OrderInfo explicitly disallowed");
+    }
 }
 
 int main(void) {
