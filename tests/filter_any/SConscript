@@ -1,0 +1,59 @@
+# Build and run filter_any test suite
+# Tests filter_tcp/filter_udp with google.protobuf.Any envelope pattern
+
+Import("env")
+
+# Clone environment to set validation-specific options
+test_env = env.Clone()
+
+# Enable validation code generation with any envelope mode
+# Also exclude validate.proto from #include list since it's only used for options
+# Specify envelope name for clarity
+test_env.Replace(NANOPBFLAGS = "--validate,--envelope-mode=any,--envelope-name=FilterAnyAllowed,-x,validate.proto")
+
+# Remove -ansi flag since pb_validate.h requires C99 features (inline)
+# Also enable C99 for stdbool.h
+cflags = str(test_env.get('CFLAGS', ''))
+if '-ansi' in cflags:
+    cflags = cflags.replace('-ansi', '')
+test_env.Replace(CFLAGS = cflags + ' -std=c99 ')
+
+# Prepend the build directory to CPPPATH so our generated headers are found
+# before any system-wide google/protobuf headers
+test_env.Prepend(CPPPATH = ['.'])
+
+# Build pb_validate.o without extra strict flags (avoid conversion warnings)
+test_env.Object("pb_validate.o", "$NANOPB/pb_validate.c")
+
+# Generate nanopb sources for the proto file
+# The NanopbProto builder generates .pb.c and .pb.h
+# With --validate flag, it also generates _validate.c and _validate.h
+pb_files = test_env.NanopbProto("filter_any")
+pb_sources = ["filter_any.pb.c"]
+validate_c = "filter_any_validate.c"
+validate_h = "filter_any_validate.h"
+test_env.SideEffect(validate_c, pb_files)
+test_env.SideEffect(validate_h, pb_files)
+validate_sources = [validate_c]
+
+# Also need to compile Any proto with options for the any field
+# Use a separate environment without validation for google.protobuf.Any
+any_env = test_env.Clone()
+any_env.Replace(NANOPBFLAGS = "-x,validate.proto")
+any_env.NanopbProto(["google/protobuf/any", "google/protobuf/any.options"])
+
+# All C source files for the test binary
+sources = ["test_filter_any.c"] + ["google/protobuf/any.pb.c"] + pb_sources + validate_sources
+
+# Build the test binary
+test_prog = test_env.Program(
+    sources + [
+        "$COMMON/pb_encode.o",
+        "$COMMON/pb_decode.o",
+        "$COMMON/pb_common.o",
+        "pb_validate.o"
+    ]
+)
+
+# Run the test
+test_env.RunTest(test_prog)
