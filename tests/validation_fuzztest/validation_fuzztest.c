@@ -21,11 +21,14 @@
 #define FUZZTEST_BUFSIZE 4096
 #endif
 
+#ifndef MAX_RANDOM_SEED_RANGE
+#define MAX_RANDOM_SEED_RANGE 100
+#endif
+
 static size_t g_bufsize = FUZZTEST_BUFSIZE;
 
 /* Statistics counters */
 static unsigned long g_valid_messages = 0;
-static unsigned long g_invalid_messages = 0;
 static unsigned long g_validation_detected = 0;
 static unsigned long g_decode_failed = 0;
 
@@ -80,8 +83,9 @@ static void test_validation(const uint8_t *buffer, size_t msglen)
         /* Validation detected constraint violations */
         g_validation_detected++;
         
-        /* Optionally print violation details for debugging */
-        if (violations.count > 0 && 0) /* Set to 1 to enable verbose output */
+#ifdef DEBUG_VIOLATIONS
+        /* Print violation details for debugging */
+        if (violations.count > 0)
         {
             printf("Validation failed with %u violations:\n", (unsigned)violations.count);
             for (pb_size_t i = 0; i < violations.count; i++)
@@ -93,9 +97,10 @@ static void test_validation(const uint8_t *buffer, size_t msglen)
                        violations.violations[i].constraint_id ? violations.violations[i].constraint_id : "?");
             }
         }
+#endif
     }
     
-    /* Invalid messages should be caught by validation, not cause crashes */
+    /* Release the message - only called after successful decode */
     pb_release(FuzzMessage_fields, &msg);
 }
 
@@ -160,7 +165,7 @@ static void run_iteration(unsigned long seed)
         /* Test with extended length (may read past valid data) */
         if (msglen < g_bufsize / 2)
         {
-            size_t extended_len = msglen + (seed % 100);
+            size_t extended_len = msglen + (seed % MAX_RANDOM_SEED_RANGE);
             if (extended_len <= g_bufsize)
             {
                 test_validation(buffer, extended_len);
@@ -188,16 +193,14 @@ int main(int argc, char **argv)
             
             if ((i + 1) % 10 == 0)
             {
-                printf("Iteration %d/%d: valid=%lu invalid=%lu detected=%lu decode_failed=%lu\n",
+                printf("Iteration %d/%d: valid=%lu detected=%lu decode_failed=%lu\n",
                        i + 1, iterations, 
-                       g_valid_messages, g_invalid_messages,
-                       g_validation_detected, g_decode_failed);
+                       g_valid_messages, g_validation_detected, g_decode_failed);
             }
         }
         
         printf("\nFinal statistics:\n");
         printf("  Valid messages:       %lu\n", g_valid_messages);
-        printf("  Invalid messages:     %lu\n", g_invalid_messages);
         printf("  Validation detected:  %lu\n", g_validation_detected);
         printf("  Decode failed:        %lu\n", g_decode_failed);
         printf("\nTest completed successfully!\n");
