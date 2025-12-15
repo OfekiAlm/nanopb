@@ -326,6 +326,11 @@ class ProtoFieldInfo:
             return
         enum_rules = rules.enum
         
+        if enum_rules.HasField('const_value'):
+            self.constraints.append(
+                ValidationConstraint(self.name, 'enum', 'const', enum_rules.const_value)
+            )
+        
         if enum_rules.HasField('defined_only') and enum_rules.defined_only:
             self.constraints.append(
                 ValidationConstraint(self.name, 'enum', 'defined_only', True)
@@ -547,13 +552,16 @@ class DataGenerator:
             return {}
         return self.message_descriptors[message_name]['fields']
     
-    def generate_valid(self, message_name: str, seed: Optional[int] = None) -> Dict[str, Any]:
+    def generate_valid(self, message_name: str, seed: Optional[int] = None,
+                       oneof_choice: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """
         Generate valid test data for a message.
         
         Args:
             message_name: Name of the message type
             seed: Random seed for reproducibility
+            oneof_choice: Dict mapping oneof name to chosen field name.
+                         If None, a random field is selected from each oneof.
         
         Returns:
             Dictionary of field values
@@ -564,10 +572,46 @@ class DataGenerator:
         if message_name not in self.message_descriptors:
             raise ValueError(f"Message {message_name} not found")
         
-        fields = self.message_descriptors[message_name]['fields']
+        msg_desc = self.message_descriptors[message_name]
+        fields = msg_desc['fields']
+        oneofs = msg_desc.get('oneofs', {})
         data = {}
         
+        # Determine which fields to skip (for oneofs)
+        fields_to_skip = set()
+        oneof_selections = {}
+        
+        for oneof_idx, oneof_info in oneofs.items():
+            oneof_name = oneof_info['name']
+            oneof_fields = oneof_info['fields']
+            
+            if not oneof_fields:
+                continue
+            
+            # Determine which field to select
+            if oneof_choice and oneof_name in oneof_choice:
+                selected_field = oneof_choice[oneof_name]
+                if selected_field not in oneof_fields:
+                    raise ValueError(
+                        f"Invalid oneof choice: {selected_field} not in {oneof_name} "
+                        f"(valid choices: {oneof_fields})"
+                    )
+            else:
+                # Random selection
+                selected_field = random.choice(oneof_fields)
+            
+            oneof_selections[oneof_name] = selected_field
+            
+            # Skip all other fields in this oneof
+            for field in oneof_fields:
+                if field != selected_field:
+                    fields_to_skip.add(field)
+        
+        # Generate data for all fields except skipped ones
         for field_name, field_info in fields.items():
+            if field_name in fields_to_skip:
+                continue
+                
             value = self._generate_valid_value(field_info)
             if value is not None:
                 data[field_name] = value
@@ -697,6 +741,10 @@ class DataGenerator:
             return self._generate_valid_string(constraints)
         elif type_name == 'bytes':
             return self._generate_valid_bytes(constraints)
+        elif type_name == 'enum':
+            return self._generate_valid_enum(field_info, constraints)
+        elif type_name == 'message':
+            return self._generate_valid_message(field_info, constraints)
         else:
             # Default values for unsupported types
             return None
@@ -970,6 +1018,68 @@ class DataGenerator:
         length = random.randint(min_len, max_len)
         return bytes(random.randint(0, 255) for _ in range(length))
     
+    def _generate_valid_enum(self, field_info: ProtoFieldInfo, constraints: Dict[str, Any]) -> int:
+        """Generate valid enum value."""
+        # Get enum values from the enum type
+        enum_values = self._get_enum_values(field_info.type_name)
+        
+        if not enum_values:
+            # No enum definition found, return 0 (default)
+            return 0
+        
+        # Check for const constraint
+        if 'const' in constraints:
+            return constraints['const']
+        
+        # Check for in constraint
+        if 'in' in constraints:
+            valid_values = [v for v in constraints['in'] if v in enum_values]
+            if valid_values:
+                return random.choice(valid_values)
+        
+        # Check for not_in constraint
+        if 'not_in' in constraints:
+            valid_values = [v for v in enum_values if v not in constraints['not_in']]
+            if valid_values:
+                return random.choice(valid_values)
+        
+        # Default: pick random enum value
+        return random.choice(enum_values)
+    
+    def _get_enum_values(self, type_name: str) -> List[int]:
+        """Get list of valid enum values for an enum type."""
+        if not type_name or not self.file_descriptor:
+            return []
+        
+        # Extract enum name from type_name (format: .package.EnumName)
+        enum_name = type_name.split('.')[-1]
+        
+        # Search for enum in file descriptor
+        for enum_desc in self.file_descriptor.enum_type:
+            if enum_desc.name == enum_name:
+                return [v.number for v in enum_desc.value]
+        
+        # Search in nested enums within messages
+        for msg_desc in self.file_descriptor.message_type:
+            for enum_desc in msg_desc.enum_type:
+                if enum_desc.name == enum_name:
+                    return [v.number for v in enum_desc.value]
+        
+        return []
+    
+    def _generate_valid_message(self, field_info: ProtoFieldInfo, constraints: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate valid nested message value."""
+        # Extract message name from type_name (format: .package.MessageName)
+        message_name = field_info.type_name.split('.')[-1]
+        
+        # Check if we have this message in our descriptors
+        if message_name in self.message_descriptors:
+            # Recursively generate data for nested message
+            return self.generate_valid(message_name, seed=None)
+        
+        # If message not found, return empty dict
+        return {}
+    
     def _generate_valid_repeated(self, field_info: ProtoFieldInfo) -> List[Any]:
         """Generate valid repeated field value."""
         constraints = {c.rule_type: c.value for c in field_info.constraints}
@@ -1012,6 +1122,10 @@ class DataGenerator:
                 items.append(self._generate_valid_string(item_constraints))
             elif type_name == 'bytes':
                 items.append(self._generate_valid_bytes(item_constraints))
+            elif type_name == 'enum':
+                items.append(self._generate_valid_enum(field_info, item_constraints))
+            elif type_name == 'message':
+                items.append(self._generate_valid_message(field_info, item_constraints))
             else:
                 items.append(None)
         
@@ -1287,6 +1401,30 @@ class DataGenerator:
                 value_bytes = struct.pack('<q', value)
             
             return self._encode_varint(key) + value_bytes
+        
+        elif field_type == 14:  # enum
+            # Enums are encoded as varints
+            wire_type = 0
+            key = (field_number << 3) | wire_type
+            return self._encode_varint(key) + self._encode_varint(value)
+        
+        elif field_type == 11:  # message
+            # Messages are length-delimited
+            wire_type = 2
+            key = (field_number << 3) | wire_type
+            
+            # value should be a dict representing the nested message
+            if isinstance(value, dict):
+                # Need to get the message name from somewhere
+                # For now, just encode as empty message
+                value_bytes = b''
+                # TODO: Implement proper nested message encoding
+            else:
+                value_bytes = b''
+            
+            return (self._encode_varint(key) +
+                    self._encode_varint(len(value_bytes)) +
+                    value_bytes)
         
         return b''
     
