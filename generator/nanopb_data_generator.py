@@ -44,10 +44,16 @@ try:
     from . import nanopb_validator
     from .proto._utils import invoke_protoc
     from .proto import TemporaryDirectory
+    from .proto import validate_pb2
 except ImportError:
     import nanopb_validator
     from proto._utils import invoke_protoc
     from proto import TemporaryDirectory
+    try:
+        from proto import validate_pb2
+    except ImportError:
+        # validate_pb2 may not exist yet; will be built on demand
+        validate_pb2 = None
 
 
 class OutputFormat(Enum):
@@ -73,13 +79,14 @@ class ValidationConstraint:
 class ProtoFieldInfo:
     """Information about a protobuf field."""
     
-    def __init__(self, field_desc):
+    def __init__(self, field_desc, file_descriptor=None):
         self.name = field_desc.name
         self.number = field_desc.number
         self.type = field_desc.type
         self.type_name = field_desc.type_name
         self.label = field_desc.label
         self.descriptor = field_desc
+        self.file_descriptor = file_descriptor
         
         # Parse validation rules
         self.constraints = []
@@ -87,28 +94,271 @@ class ProtoFieldInfo:
             self._parse_validation_rules(field_desc.options)
     
     def _parse_validation_rules(self, field_options):
-        """Parse validation rules from field options."""
+        """Parse validation rules from field options using validate_pb2."""
         try:
-            parsed_rules = nanopb_validator.parse_validation_rules_from_serialized_options(field_options)
+            # First, try to import validate_pb2 if not already imported
+            global validate_pb2
+            if validate_pb2 is None:
+                try:
+                    from proto import validate_pb2 as vpb2
+                    validate_pb2 = vpb2
+                except ImportError:
+                    try:
+                        import validate_pb2 as vpb2
+                        validate_pb2 = vpb2
+                    except ImportError:
+                        # Can't import, skip validation parsing
+                        return
             
-            for rule_type, rule_data in parsed_rules.items():
-                if rule_type == 'required':
-                    self.constraints.append(
-                        ValidationConstraint(self.name, self.get_type_name(), 'required', True)
-                    )
-                elif isinstance(rule_data, dict):
-                    for constraint_name, constraint_value in rule_data.items():
-                        self.constraints.append(
-                            ValidationConstraint(
-                                self.name,
-                                self.get_type_name(),
-                                constraint_name,
-                                constraint_value
-                            )
-                        )
+            # Check if the validate.rules extension exists
+            if not hasattr(validate_pb2, 'rules'):
+                return
+                
+            # Check if field options has the extension
+            if not field_options.HasExtension(validate_pb2.rules):
+                return
+            
+            # Get the validation rules
+            rules = field_options.Extensions[validate_pb2.rules]
+            
+            # Parse rules based on type
+            type_name = self.get_type_name()
+            
+            # Numeric types
+            if type_name in ['int32', 'int64', 'uint32', 'uint64', 'sint32', 'sint64', 
+                            'fixed32', 'fixed64', 'sfixed32', 'sfixed64', 'float', 'double']:
+                self._parse_numeric_rules(rules, type_name)
+            # String type
+            elif type_name == 'string':
+                self._parse_string_rules(rules)
+            # Bytes type
+            elif type_name == 'bytes':
+                self._parse_bytes_rules(rules)
+            # Bool type
+            elif type_name == 'bool':
+                self._parse_bool_rules(rules)
+            # Enum type
+            elif type_name == 'enum':
+                self._parse_enum_rules(rules)
+            
+            # Repeated field rules (applies to any repeated field)
+            if self.is_repeated() and rules.HasField('repeated'):
+                self._parse_repeated_rules(rules.repeated)
+                
         except Exception as e:
-            # Validation parsing is optional
+            # Validation parsing is optional, fail silently
+            # But for debugging, uncomment this:
+            # import traceback
+            # print(f"Warning: Failed to parse validation rules for {self.name}: {e}", file=sys.stderr)
+            # traceback.print_exc()
             pass
+    
+    def _parse_numeric_rules(self, rules, type_name):
+        """Parse numeric validation rules."""
+        # Get the rules for this specific numeric type
+        if not rules.HasField(type_name):
+            return
+        numeric_rules = getattr(rules, type_name)
+        
+        # Parse const (use const_value field name)
+        if numeric_rules.HasField('const_value'):
+            self.constraints.append(
+                ValidationConstraint(self.name, type_name, 'const', numeric_rules.const_value)
+            )
+        
+        # Parse less than
+        if numeric_rules.HasField('lt'):
+            self.constraints.append(
+                ValidationConstraint(self.name, type_name, 'lt', numeric_rules.lt)
+            )
+        
+        # Parse less than or equal
+        if numeric_rules.HasField('lte'):
+            self.constraints.append(
+                ValidationConstraint(self.name, type_name, 'lte', numeric_rules.lte)
+            )
+        
+        # Parse greater than
+        if numeric_rules.HasField('gt'):
+            self.constraints.append(
+                ValidationConstraint(self.name, type_name, 'gt', numeric_rules.gt)
+            )
+        
+        # Parse greater than or equal
+        if numeric_rules.HasField('gte'):
+            self.constraints.append(
+                ValidationConstraint(self.name, type_name, 'gte', numeric_rules.gte)
+            )
+        
+        # Parse in list (use getattr since 'in' is a Python keyword)
+        in_list = getattr(numeric_rules, 'in', [])
+        if len(in_list) > 0:
+            self.constraints.append(
+                ValidationConstraint(self.name, type_name, 'in', list(in_list))
+            )
+        
+        # Parse not_in list
+        not_in_list = getattr(numeric_rules, 'not_in', [])
+        if len(not_in_list) > 0:
+            self.constraints.append(
+                ValidationConstraint(self.name, type_name, 'not_in', list(not_in_list))
+            )
+    
+    def _parse_string_rules(self, rules):
+        """Parse string validation rules."""
+        if not rules.HasField('string'):
+            return
+        string_rules = rules.string
+        
+        # Length constraints
+        if string_rules.HasField('min_len'):
+            self.constraints.append(
+                ValidationConstraint(self.name, 'string', 'min_len', string_rules.min_len)
+            )
+        
+        if string_rules.HasField('max_len'):
+            self.constraints.append(
+                ValidationConstraint(self.name, 'string', 'max_len', string_rules.max_len)
+            )
+        
+        # Pattern constraints
+        if string_rules.HasField('prefix'):
+            self.constraints.append(
+                ValidationConstraint(self.name, 'string', 'prefix', string_rules.prefix)
+            )
+        
+        if string_rules.HasField('suffix'):
+            self.constraints.append(
+                ValidationConstraint(self.name, 'string', 'suffix', string_rules.suffix)
+            )
+        
+        if string_rules.HasField('contains'):
+            self.constraints.append(
+                ValidationConstraint(self.name, 'string', 'contains', string_rules.contains)
+            )
+        
+        # Const
+        if string_rules.HasField('const'):
+            self.constraints.append(
+                ValidationConstraint(self.name, 'string', 'const', string_rules.const)
+            )
+        
+        # Character set
+        if string_rules.HasField('ascii') and string_rules.ascii:
+            self.constraints.append(
+                ValidationConstraint(self.name, 'string', 'ascii', True)
+            )
+        
+        # Format validation
+        if string_rules.HasField('email') and string_rules.email:
+            self.constraints.append(
+                ValidationConstraint(self.name, 'string', 'email', True)
+            )
+        
+        if string_rules.HasField('hostname') and string_rules.hostname:
+            self.constraints.append(
+                ValidationConstraint(self.name, 'string', 'hostname', True)
+            )
+        
+        if string_rules.HasField('ip') and string_rules.ip:
+            self.constraints.append(
+                ValidationConstraint(self.name, 'string', 'ip', True)
+            )
+        
+        if string_rules.HasField('ipv4') and string_rules.ipv4:
+            self.constraints.append(
+                ValidationConstraint(self.name, 'string', 'ipv4', True)
+            )
+        
+        if string_rules.HasField('ipv6') and string_rules.ipv6:
+            self.constraints.append(
+                ValidationConstraint(self.name, 'string', 'ipv6', True)
+            )
+        
+        # Set membership (use getattr since 'in' is a Python keyword)
+        in_list = getattr(string_rules, 'in', [])
+        if len(in_list) > 0:
+            self.constraints.append(
+                ValidationConstraint(self.name, 'string', 'in', list(in_list))
+            )
+        
+        not_in_list = getattr(string_rules, 'not_in', [])
+        if len(not_in_list) > 0:
+            self.constraints.append(
+                ValidationConstraint(self.name, 'string', 'not_in', list(not_in_list))
+            )
+    
+    def _parse_bytes_rules(self, rules):
+        """Parse bytes validation rules."""
+        if not rules.HasField('bytes'):
+            return
+        bytes_rules = rules.bytes
+        
+        if bytes_rules.HasField('min_len'):
+            self.constraints.append(
+                ValidationConstraint(self.name, 'bytes', 'min_len', bytes_rules.min_len)
+            )
+        
+        if bytes_rules.HasField('max_len'):
+            self.constraints.append(
+                ValidationConstraint(self.name, 'bytes', 'max_len', bytes_rules.max_len)
+            )
+        
+        if bytes_rules.HasField('const'):
+            self.constraints.append(
+                ValidationConstraint(self.name, 'bytes', 'const', bytes_rules.const)
+            )
+    
+    def _parse_bool_rules(self, rules):
+        """Parse bool validation rules."""
+        if not rules.HasField('bool'):
+            return
+        bool_rules = rules.bool
+        
+        if bool_rules.HasField('const'):
+            self.constraints.append(
+                ValidationConstraint(self.name, 'bool', 'const', bool_rules.const)
+            )
+    
+    def _parse_enum_rules(self, rules):
+        """Parse enum validation rules."""
+        if not rules.HasField('enum'):
+            return
+        enum_rules = rules.enum
+        
+        if enum_rules.HasField('defined_only') and enum_rules.defined_only:
+            self.constraints.append(
+                ValidationConstraint(self.name, 'enum', 'defined_only', True)
+            )
+        
+        in_list = getattr(enum_rules, 'in', [])
+        if len(in_list) > 0:
+            self.constraints.append(
+                ValidationConstraint(self.name, 'enum', 'in', list(in_list))
+            )
+        
+        not_in_list = getattr(enum_rules, 'not_in', [])
+        if len(not_in_list) > 0:
+            self.constraints.append(
+                ValidationConstraint(self.name, 'enum', 'not_in', list(not_in_list))
+            )
+    
+    def _parse_repeated_rules(self, repeated_rules):
+        """Parse repeated field validation rules."""
+        if repeated_rules.HasField('min_items'):
+            self.constraints.append(
+                ValidationConstraint(self.name, 'repeated', 'min_items', repeated_rules.min_items)
+            )
+        
+        if repeated_rules.HasField('max_items'):
+            self.constraints.append(
+                ValidationConstraint(self.name, 'repeated', 'max_items', repeated_rules.max_items)
+            )
+        
+        if repeated_rules.HasField('unique') and repeated_rules.unique:
+            self.constraints.append(
+                ValidationConstraint(self.name, 'repeated', 'unique', True)
+            )
     
     def get_type_name(self) -> str:
         """Get human-readable type name."""
@@ -255,13 +505,30 @@ class DataGenerator:
         for msg_desc in self.file_descriptor.message_type:
             msg_name = msg_desc.name
             fields = {}
+            oneofs = {}
             
+            # Parse oneof groups
+            for oneof_idx, oneof_desc in enumerate(msg_desc.oneof_decl):
+                oneofs[oneof_idx] = {
+                    'name': oneof_desc.name,
+                    'fields': []
+                }
+            
+            # Parse fields
             for field_desc in msg_desc.field:
-                fields[field_desc.name] = ProtoFieldInfo(field_desc)
+                field_info = ProtoFieldInfo(field_desc, self.file_descriptor)
+                fields[field_desc.name] = field_info
+                
+                # Track which oneof this field belongs to (if any)
+                if field_desc.HasField('oneof_index'):
+                    oneof_idx = field_desc.oneof_index
+                    if oneof_idx in oneofs:
+                        oneofs[oneof_idx]['fields'].append(field_desc.name)
             
             self.message_descriptors[msg_name] = {
                 'descriptor': msg_desc,
-                'fields': fields
+                'fields': fields,
+                'oneofs': oneofs
             }
     
     def get_messages(self) -> List[str]:
