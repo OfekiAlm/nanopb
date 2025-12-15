@@ -1,0 +1,50 @@
+// Proto file for validation fuzzing test
+syntax = "proto3";
+
+import "validate.proto";
+
+option (validate.validate) = true;
+
+message FuzzMessage {
+    // Integer field with range constraints
+    int32 age = 1 [
+        (validate.rules).int32.gte = 0,
+        (validate.rules).int32.lte = 150
+    ];
+    
+    // Unsigned integer with constraints
+    uint32 count = 2 [
+        (validate.rules).uint32.lte = 1000
+    ];
+    
+    // Int64 with constraints  
+    int64 value = 3 [
+        (validate.rules).int64.gte = 0,
+        (validate.rules).int64.lte = 1000000
+    ];
+    
+    // Float with constraints
+    float score = 4 [
+        (validate.rules).float.gte = 0.0,
+        (validate.rules).float.lte = 100.0
+    ];
+    
+    // Double with constraints
+    double rating = 5 [
+        (validate.rules).double.gte = 0.0,
+        (validate.rules).double.lte = 5.0
+    ];
+    
+    // Enum with defined_only validation
+    enum Status {
+        UNKNOWN = 0;
+        ACTIVE = 1;
+        INACTIVE = 2;
+    }
+    Status status = 6 [
+        (validate.rules).enum.defined_only = true
+    ];
+    
+    // Boolean field
+    bool enabled = 7;
+}
