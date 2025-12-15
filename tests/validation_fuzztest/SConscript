@@ -1,0 +1,65 @@
+# Build and run validation fuzz test
+# This test fuzzes the validation functionality to ensure it handles
+# corrupted/malicious data safely without crashes
+
+import sys
+import time
+
+Import("env")
+
+# Clone environment for validation testing
+test_env = env.Clone()
+
+# Enable validation code generation via NANOPBFLAGS
+# Exclude validate.proto from #include list since it's only used for options
+test_env.Replace(NANOPBFLAGS = "--validate,-x,validate.proto")
+
+# Remove -ansi flag since pb_validate.h requires C99 features (inline)
+# Also enable C99 for stdbool.h
+cflags = str(test_env.get('CFLAGS', ''))
+if '-ansi' in cflags:
+    cflags = cflags.replace('-ansi', '')
+test_env.Replace(CFLAGS = cflags + ' -std=c99 ')
+
+# Prepend the build directory to CPPPATH so our generated headers are found
+test_env.Prepend(CPPPATH = ['.'])
+
+# Build pb_validate.o without extra strict flags
+test_env.Object("pb_validate.o", "$NANOPB/pb_validate.c")
+
+# Generate nanopb sources for the fuzz proto
+# The NanopbProto builder generates .pb.c and .pb.h
+# With --validate flag, it also generates _validate.c and _validate.h
+pb_files = test_env.NanopbProto("fuzz_validation")
+
+# Mark _validate.c and _validate.h as side effects
+validate_c = "fuzz_validation_validate.c"
+validate_h = "fuzz_validation_validate.h"
+test_env.SideEffect(validate_c, pb_files)
+test_env.SideEffect(validate_h, pb_files)
+
+# Build the fuzz test program
+sources = [
+    "validation_fuzztest.c",
+    "fuzz_validation.pb.c",
+    validate_c
+]
+
+fuzz_prog = test_env.Program(
+    "validation_fuzztest",
+    sources + [
+        "$COMMON/pb_encode.o",
+        "$COMMON/pb_decode.o",
+        "$COMMON/pb_common.o",
+        "pb_validate.o"
+    ]
+)
+
+# Run the fuzz test with a time-based seed
+seed = int(time.time())
+if env.get('EMBEDDED'):
+    iterations = 50
+else:
+    iterations = 100
+
+test_env.RunTest(fuzz_prog, ARGS = [str(seed), str(iterations)])
