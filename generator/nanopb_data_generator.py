@@ -140,6 +140,9 @@ class ProtoFieldInfo:
             # Enum type
             elif type_name == 'enum':
                 self._parse_enum_rules(rules)
+            # Any type (google.protobuf.Any)
+            elif type_name == 'message' and '.google.protobuf.Any' in self.type_name:
+                self._parse_any_rules(rules)
             
             # Repeated field rules (applies to any repeated field)
             if self.is_repeated() and rules.HasField('repeated'):
@@ -238,9 +241,9 @@ class ProtoFieldInfo:
             )
         
         # Const
-        if string_rules.HasField('const'):
+        if string_rules.HasField('const_value'):
             self.constraints.append(
-                ValidationConstraint(self.name, 'string', 'const', string_rules.const)
+                ValidationConstraint(self.name, 'string', 'const', string_rules.const_value)
             )
         
         # Character set
@@ -304,9 +307,9 @@ class ProtoFieldInfo:
                 ValidationConstraint(self.name, 'bytes', 'max_len', bytes_rules.max_len)
             )
         
-        if bytes_rules.HasField('const'):
+        if bytes_rules.HasField('const_value'):
             self.constraints.append(
-                ValidationConstraint(self.name, 'bytes', 'const', bytes_rules.const)
+                ValidationConstraint(self.name, 'bytes', 'const', bytes_rules.const_value)
             )
     
     def _parse_bool_rules(self, rules):
@@ -315,9 +318,9 @@ class ProtoFieldInfo:
             return
         bool_rules = rules.bool
         
-        if bool_rules.HasField('const'):
+        if bool_rules.HasField('const_value'):
             self.constraints.append(
-                ValidationConstraint(self.name, 'bool', 'const', bool_rules.const)
+                ValidationConstraint(self.name, 'bool', 'const', bool_rules.const_value)
             )
     
     def _parse_enum_rules(self, rules):
@@ -346,6 +349,24 @@ class ProtoFieldInfo:
         if len(not_in_list) > 0:
             self.constraints.append(
                 ValidationConstraint(self.name, 'enum', 'not_in', list(not_in_list))
+            )
+    
+    def _parse_any_rules(self, rules):
+        """Parse google.protobuf.Any validation rules."""
+        if not rules.HasField('any'):
+            return
+        any_rules = rules.any
+        
+        in_list = getattr(any_rules, 'in', [])
+        if len(in_list) > 0:
+            self.constraints.append(
+                ValidationConstraint(self.name, 'any', 'in', list(in_list))
+            )
+        
+        not_in_list = getattr(any_rules, 'not_in', [])
+        if len(not_in_list) > 0:
+            self.constraints.append(
+                ValidationConstraint(self.name, 'any', 'not_in', list(not_in_list))
             )
     
     def _parse_repeated_rules(self, repeated_rules):
@@ -384,19 +405,23 @@ class ProtoFieldInfo:
 class DataGenerator:
     """Generates test data for protobuf messages with validation rules."""
     
-    def __init__(self, proto_file: str, include_paths: Optional[List[str]] = None):
+    def __init__(self, proto_file: str, include_paths: Optional[List[str]] = None,
+                 any_type_registry: Optional[Dict[str, str]] = None):
         """
         Initialize data generator.
         
         Args:
             proto_file: Path to .proto file
             include_paths: Additional include paths for protoc
+            any_type_registry: Dict mapping type_url to message name for Any fields.
+                              Example: {'type.googleapis.com/MyMessage': 'MyMessage'}
         """
         self.proto_file = proto_file
         self.include_paths = include_paths or []
         self.file_descriptor = None
         self.message_descriptors = {}
         self.proto_module = None
+        self.any_type_registry = any_type_registry or {}
         
         self._load_proto()
     
@@ -1069,6 +1094,10 @@ class DataGenerator:
     
     def _generate_valid_message(self, field_info: ProtoFieldInfo, constraints: Dict[str, Any]) -> Dict[str, Any]:
         """Generate valid nested message value."""
+        # Check if this is a google.protobuf.Any type
+        if '.google.protobuf.Any' in field_info.type_name:
+            return self._generate_valid_any(field_info, constraints)
+        
         # Extract message name from type_name (format: .package.MessageName)
         message_name = field_info.type_name.split('.')[-1]
         
@@ -1079,6 +1108,43 @@ class DataGenerator:
         
         # If message not found, return empty dict
         return {}
+    
+    def _generate_valid_any(self, field_info: ProtoFieldInfo, constraints: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate valid google.protobuf.Any value."""
+        # Determine which type_url to use
+        available_types = list(self.any_type_registry.keys())
+        
+        # Apply in constraint
+        if 'in' in constraints:
+            available_types = [t for t in available_types if t in constraints['in']]
+        
+        # Apply not_in constraint
+        if 'not_in' in constraints:
+            available_types = [t for t in available_types if t not in constraints['not_in']]
+        
+        if not available_types:
+            # No valid types available, generate empty Any
+            return {
+                'type_url': '',
+                'value': b''
+            }
+        
+        # Select a random type
+        type_url = random.choice(available_types)
+        message_name = self.any_type_registry[type_url]
+        
+        # Generate data for the nested message
+        if message_name in self.message_descriptors:
+            nested_data = self.generate_valid(message_name, seed=None)
+            # Encode the nested message to bytes
+            value_bytes = self.encode_to_binary(message_name, nested_data)
+        else:
+            value_bytes = b''
+        
+        return {
+            'type_url': type_url,
+            'value': value_bytes
+        }
     
     def _generate_valid_repeated(self, field_info: ProtoFieldInfo) -> List[Any]:
         """Generate valid repeated field value."""
