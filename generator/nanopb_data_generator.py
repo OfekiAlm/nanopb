@@ -1392,12 +1392,13 @@ class DataGenerator:
         if field_info.is_repeated():
             result = bytearray()
             for item in value:
-                result.extend(self._encode_single_field(field_number, field_type, item))
+                result.extend(self._encode_single_field(field_number, field_type, item, field_info))
             return bytes(result)
         else:
-            return self._encode_single_field(field_number, field_type, value)
+            return self._encode_single_field(field_number, field_type, value, field_info)
     
-    def _encode_single_field(self, field_number: int, field_type: int, value: Any) -> bytes:
+    def _encode_single_field(self, field_number: int, field_type: int, value: Any, 
+                            field_info: Optional[ProtoFieldInfo] = None) -> bytes:
         """Encode a single field value to protobuf wire format."""
         # Wire types: 0=varint, 1=64bit, 2=length-delimited, 5=32bit
         
@@ -1480,11 +1481,15 @@ class DataGenerator:
             key = (field_number << 3) | wire_type
             
             # value should be a dict representing the nested message
-            if isinstance(value, dict):
-                # Need to get the message name from somewhere
-                # For now, just encode as empty message
-                value_bytes = b''
-                # TODO: Implement proper nested message encoding
+            if isinstance(value, dict) and field_info:
+                # Extract message name from type_name (format: .package.MessageName)
+                message_name = field_info.type_name.split('.')[-1]
+                
+                # Recursively encode the nested message
+                if message_name in self.message_descriptors:
+                    value_bytes = self.encode_to_binary(message_name, value)
+                else:
+                    value_bytes = b''
             else:
                 value_bytes = b''
             
