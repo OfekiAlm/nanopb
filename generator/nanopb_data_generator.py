@@ -1104,6 +1104,7 @@ class DataGenerator:
         # Check if we have this message in our descriptors
         if message_name in self.message_descriptors:
             # Recursively generate data for nested message
+            # Note: seed=None maintains current random state for reproducibility
             return self.generate_valid(message_name, seed=None)
         
         # If message not found, return empty dict
@@ -1135,6 +1136,7 @@ class DataGenerator:
         
         # Generate data for the nested message
         if message_name in self.message_descriptors:
+            # Note: seed=None maintains current random state for reproducibility
             nested_data = self.generate_valid(message_name, seed=None)
             # Encode the nested message to bytes
             value_bytes = self.encode_to_binary(message_name, nested_data)
