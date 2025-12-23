@@ -4,9 +4,8 @@ Nanopb - Protocol Buffers for Embedded Systems
 ![Latest change](https://github.com/nanopb/nanopb/actions/workflows/trigger_on_code_change.yml/badge.svg)
 ![Weekly build](https://github.com/nanopb/nanopb/actions/workflows/trigger_on_schedule.yml/badge.svg)
 
-Nanopb is a small code-size Protocol Buffers implementation in ansi C. It is
-especially suitable for use in microcontrollers, but fits any memory
-restricted system.
+**Welcome!** Nanopb is a small code-size Protocol Buffers implementation in ANSI C. It is
+especially suitable for use in microcontrollers, but fits any memory-restricted system.
 
 * **Homepage:** https://jpa.kapsi.fi/nanopb/
 * **Git repository:** https://github.com/nanopb/nanopb/
@@ -14,6 +13,29 @@ restricted system.
 * **Forum:** https://groups.google.com/forum/#!forum/nanopb
 * **Stable version downloads:** https://jpa.kapsi.fi/nanopb/download/
 * **Pre-release binary packages:** https://github.com/nanopb/nanopb/actions/workflows/binary_packages.yml
+
+---
+
+## 📚 Documentation Guide
+
+**New to nanopb?** Start here:
+- [Quick Start](#using-the-nanopb-library) - Get up and running quickly
+- [examples/simple/](examples/simple/) - Working example project
+- [docs/index.md](docs/index.md) - Comprehensive documentation
+
+**Understanding the codebase?** Read the architecture docs:
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** - 📖 **System architecture overview** (start here!)
+- [generator/README.md](generator/README.md) - Code generator guide
+- [docs/generator/GENERATOR_ARCHITECTURE.md](docs/generator/GENERATOR_ARCHITECTURE.md) - Generator internals
+- [docs/generator/VALIDATOR_ARCHITECTURE.md](docs/generator/VALIDATOR_ARCHITECTURE.md) - Validator internals
+- [docs/runtime/README.md](docs/runtime/README.md) - Runtime library architecture
+
+**Contributing?** See these resources:
+- [CONTRIBUTING.md](CONTRIBUTING.md) - Contribution guidelines
+- [docs/security.md](docs/security.md) - Security considerations
+- [tests/](tests/) - Comprehensive test suite
+
+---
 
 
 Using the nanopb library
@@ -98,4 +120,106 @@ And also integration to platform interfaces:
 
 * **Arduino**: http://platformio.org/lib/show/1385/nanopb-arduino
 * **Zephyr**: https://docs.zephyrproject.org/latest/services/serialization/nanopb.html
+
+
+## 🎯 Key Features
+
+- **Small Code Size** - 5-25 KB depending on features (perfect for microcontrollers)
+- **Minimal RAM Usage** - ~1 KB stack plus your message structs
+- **No malloc Required** - Static allocation by default (optional malloc support)
+- **Highly Portable** - Pure ANSI C, works on 8-bit to 64-bit systems
+- **Flexible** - Stream or buffer based I/O, multiple allocation strategies
+- **Extensive Tests** - Comprehensive test coverage for reliability
+
+
+## 🗺️ Project Structure
+
+```
+nanopb/
+├── README.md              # You are here - Quick start guide
+├── ARCHITECTURE.md        # 📖 System architecture (for developers)
+│
+├── pb.h, pb_*.c/h         # Runtime library (encode/decode)
+├── generator/             # Code generator (Python)
+│   ├── nanopb_generator.py   # Main generator
+│   ├── nanopb_validator.py   # Validation support
+│   └── README.md             # Generator documentation
+│
+├── docs/                  # Comprehensive documentation
+│   ├── index.md              # Documentation index
+│   ├── concepts.md           # Core concepts and usage
+│   ├── reference.md          # API reference
+│   ├── generator/            # Generator architecture docs
+│   └── runtime/              # Runtime architecture docs
+│
+├── examples/              # Example projects (start here!)
+│   ├── simple/               # Basic usage
+│   ├── network_server/       # Network application
+│   └── validation_simple/    # Validation example
+│
+└── tests/                 # Test suite
+```
+
+
+## 🚀 Quick Example
+
+**1. Define your protocol** (`person.proto`):
+```protobuf
+message Person {
+    int32 id = 1;
+    string name = 2;
+    string email = 3;
+}
+```
+
+**2. Generate C code:**
+```bash
+python generator/nanopb_generator.py person.proto
+```
+
+**3. Use in your application:**
+```c
+#include <pb_encode.h>
+#include <pb_decode.h>
+#include "person.pb.h"
+
+/* Encoding */
+Person person = Person_init_zero;
+person.id = 123;
+strcpy(person.name, "John Doe");
+
+uint8_t buffer[128];
+pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
+pb_encode(&stream, Person_fields, &person);
+
+/* Decoding */
+Person decoded = Person_init_zero;
+pb_istream_t istream = pb_istream_from_buffer(buffer, stream.bytes_written);
+pb_decode(&istream, Person_fields, &decoded);
+```
+
+
+## 💬 Getting Help
+
+- **Questions?** Ask on the [forum](https://groups.google.com/forum/#!forum/nanopb)
+- **Found a bug?** [Open an issue](https://github.com/nanopb/nanopb/issues)
+- **Need documentation?** See [docs/index.md](docs/index.md) and [ARCHITECTURE.md](ARCHITECTURE.md)
+- **Want to contribute?** Read [CONTRIBUTING.md](CONTRIBUTING.md)
+
+
+## 🤝 Contributing
+
+We welcome contributions from developers of all skill levels! Whether you're:
+- 🐛 Fixing bugs
+- ✨ Adding features
+- 📖 Improving documentation
+- 🧪 Adding tests
+- 💡 Suggesting improvements
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines and [ARCHITECTURE.md](ARCHITECTURE.md) to understand the codebase.
+
+
+## 📜 License
+
+This software is released under the zlib License. See [LICENSE.txt](LICENSE.txt) for details.
 
