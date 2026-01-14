@@ -6,6 +6,7 @@ from platforms.avr.avr import set_avr_platform
 from platforms.mips.mips import set_mips_platform
 from platforms.mipsel.mipsel import set_mipsel_platform
 from platforms.riscv64.riscv64 import set_riscv64_platform
+from platforms.arm_altera.altera import set_altera_platform
 
 platforms = {
     'STM32': set_stm32_platform,
@@ -13,6 +14,7 @@ platforms = {
     'MIPS': set_mips_platform,
     'MIPSEL': set_mipsel_platform,
     'RISCV64': set_riscv64_platform,
+    'ALTERA': set_altera_platform,
 }
 
 try:
