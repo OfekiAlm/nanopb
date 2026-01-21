@@ -2633,7 +2633,11 @@ class ProtoFile:
                 # the fully qualified name is "mypkg.sub.Packet"
                 # First, try to strip the package prefix from the mangled name
                 pkg_parts = self.fdesc.package.split('.')
-                remaining_parts = msg_name_parts[len(pkg_parts):] if msg_name_parts[:len(pkg_parts)] == pkg_parts else msg_name_parts
+                # Check that msg_name_parts has enough elements to match pkg_parts
+                if len(msg_name_parts) >= len(pkg_parts) and msg_name_parts[:len(pkg_parts)] == pkg_parts:
+                    remaining_parts = msg_name_parts[len(pkg_parts):]
+                else:
+                    remaining_parts = msg_name_parts
                 full_qualified_name = pkg_prefix + '.'.join(remaining_parts)
             else:
                 full_qualified_name = pkg_prefix + simple_name
@@ -2766,7 +2770,6 @@ class ProtoFile:
             root_message = self.find_message_by_name(root_message_name)
             if not root_message:
                 # Error: unknown message type - raise an error
-                import sys
                 sys.stderr.write("Error: --root-message '%s' does not match any message in the loaded descriptors.\n" % root_message_name)
                 sys.stderr.write("Available messages:\n")
                 for msg in self.messages:

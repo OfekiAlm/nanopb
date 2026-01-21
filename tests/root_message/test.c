@@ -242,17 +242,19 @@ static void test_decode_failure(void)
     EXPECT_FAIL(result, "Malformed data should fail on TCP too");
 }
 
-/* Test 9: Empty buffer */
+/* Test 9: Zero-length buffer */
 static void test_empty_buffer(void)
 {
-    uint8_t empty[1] = {0};
+    /* A placeholder buffer - we pass size 0 so contents don't matter */
+    uint8_t placeholder[1] = {0};
     int result;
     
-    TEST("Empty buffer");
+    TEST("Zero-length buffer");
     
-    /* Empty protobuf message might still decode, but validation should fail 
-       because name is empty (min_len=1) and value is 0 (gt=0) */
-    result = filter_udp(NULL, empty, 0);
+    /* A zero-length protobuf message will decode to default values,
+       but validation should fail because name is empty (min_len=1) 
+       and value is 0 (gt=0) */
+    result = filter_udp(NULL, placeholder, 0);
     /* An empty buffer will decode to default values (empty string, 0), 
        which should fail validation */
     EXPECT_FAIL(result, "Empty buffer should fail validation");
