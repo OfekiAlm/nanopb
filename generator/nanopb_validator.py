@@ -1223,6 +1223,8 @@ class ValidatorGenerator:
     def _gen_numeric_comparison(self, field: Any, rule: ValidationRule) -> str:
         """
         Generate code for numeric comparison rules (GT, GTE, LT, LTE, EQ).
+        Uses PB_VALIDATE_NUMERIC_* macros which leverage PB_CHECK_* macros
+        from pb_filter_macros.h for the actual comparison logic.
         
         Args:
             field: The field descriptor
@@ -1231,29 +1233,24 @@ class ValidatorGenerator:
         Returns:
             C code string implementing the numeric comparison
         """
-        # Get type information from constraint ID
-        ctype, validator_func = _get_numeric_validator_info(rule.constraint_id.split('.', 1)[0])
-        if not validator_func:
-            return ''
-
         value = rule.params.get('value', 0)
         
-        # Map rule type to C enum constant
-        rule_enum_map = {
-            RULE_GT: 'PB_VALIDATE_RULE_GT',
-            RULE_GTE: 'PB_VALIDATE_RULE_GTE',
-            RULE_LT: 'PB_VALIDATE_RULE_LT',
-            RULE_LTE: 'PB_VALIDATE_RULE_LTE',
-            RULE_EQ: 'PB_VALIDATE_RULE_EQ'
+        # Map rule type to new macro name
+        macro_map = {
+            RULE_GT: 'PB_VALIDATE_NUMERIC_GT',
+            RULE_GTE: 'PB_VALIDATE_NUMERIC_GTE',
+            RULE_LT: 'PB_VALIDATE_NUMERIC_LT',
+            RULE_LTE: 'PB_VALIDATE_NUMERIC_LTE',
+            RULE_EQ: 'PB_VALIDATE_NUMERIC_EQ'
         }
-        rule_enum = rule_enum_map.get(rule.rule_type)
-        if not rule_enum:
+        macro_name = macro_map.get(rule.rule_type)
+        if not macro_name:
             return ''
 
-        # Use PB_VALIDATE_NUMERIC_GENERIC macro instead of inlining logic
+        # Use new PB_VALIDATE_NUMERIC_* macros that use PB_CHECK_* from pb_filter_macros.h
         body = (
-            '        PB_VALIDATE_NUMERIC_GENERIC(ctx, msg, %s, %s, %s, %s, %s, "%s");\n'
-        ) % (field.name, ctype, validator_func, rule_enum, value, rule.constraint_id)
+            '        %s(ctx, msg, %s, %s, "%s");\n'
+        ) % (macro_name, field.name, value, rule.constraint_id)
         return self._wrap_optional(field, body)
 
     def _gen_in(self, field: Any, rule: ValidationRule) -> str:
@@ -1561,21 +1558,18 @@ class ValidatorGenerator:
             
             elif rule_type in (RULE_GT, RULE_GTE, RULE_LT, RULE_LTE, RULE_EQ):
                 value = item_rule.get('value', 0)
-                # Determine C type and validator function based on constraint_id
-                # Extract just the type name from the full constraint_id (e.g., 'int32' from 'int32.gt')
-                type_name = constraint_id.split('.', 1)[0]
-                ctype, func = _get_numeric_validator_info(type_name)
-                if ctype and func:
-                    rule_enum = {
-                        RULE_GT: 'PB_VALIDATE_RULE_GT',
-                        RULE_GTE: 'PB_VALIDATE_RULE_GTE',
-                        RULE_LT: 'PB_VALIDATE_RULE_LT',
-                        RULE_LTE: 'PB_VALIDATE_RULE_LTE',
-                        RULE_EQ: 'PB_VALIDATE_RULE_EQ'
-                    }.get(rule_type)
-                    if rule_enum:
-                        code += '        PB_VALIDATE_REPEATED_ITEMS_NUMERIC(ctx, msg, %s, %s, %s, %s, %s, "%s");\n' % (
-                            field_name, ctype, func, rule_enum, value, constraint_id)
+                # Map rule type to new macro name
+                macro_map = {
+                    RULE_GT: 'PB_VALIDATE_REPEATED_ITEMS_GT',
+                    RULE_GTE: 'PB_VALIDATE_REPEATED_ITEMS_GTE',
+                    RULE_LT: 'PB_VALIDATE_REPEATED_ITEMS_LT',
+                    RULE_LTE: 'PB_VALIDATE_REPEATED_ITEMS_LTE',
+                    RULE_EQ: 'PB_VALIDATE_REPEATED_ITEMS_EQ'
+                }
+                macro_name = macro_map.get(rule_type)
+                if macro_name:
+                    code += '        %s(ctx, msg, %s, %s, "%s");\n' % (
+                        macro_name, field_name, value, constraint_id)
             
             elif rule_type == RULE_PREFIX:
                 prefix = item_rule.get('value', '')
@@ -1845,6 +1839,8 @@ class ValidatorGenerator:
     def _gen_oneof_numeric_comparison(self, field: Any, rule: ValidationRule, oneof_name: str, field_name: str, anonymous: bool) -> str:
         """
         Generate numeric comparison validation for oneof member.
+        Uses PB_VALIDATE_NUMERIC_* and PB_VALIDATE_ONEOF_NUMERIC_* macros which
+        leverage PB_CHECK_* macros from pb_filter_macros.h.
         
         Args:
             field: The field descriptor
@@ -1856,33 +1852,38 @@ class ValidatorGenerator:
         Returns:
             C code string implementing the numeric comparison for oneof
         """
-        # Get type information from constraint ID
-        ctype, validator_func = _get_numeric_validator_info(rule.constraint_id.split('.', 1)[0])
-        if not validator_func:
-            return ''
-
         value = rule.params.get('value', 0)
         
-        # Map rule type to C enum constant
-        rule_enum_map = {
-            RULE_GT: 'PB_VALIDATE_RULE_GT',
-            RULE_GTE: 'PB_VALIDATE_RULE_GTE',
-            RULE_LT: 'PB_VALIDATE_RULE_LT',
-            RULE_LTE: 'PB_VALIDATE_RULE_LTE',
-            RULE_EQ: 'PB_VALIDATE_RULE_EQ'
+        # Map rule type to macro name
+        macro_map = {
+            RULE_GT: 'PB_VALIDATE_NUMERIC_GT',
+            RULE_GTE: 'PB_VALIDATE_NUMERIC_GTE',
+            RULE_LT: 'PB_VALIDATE_NUMERIC_LT',
+            RULE_LTE: 'PB_VALIDATE_NUMERIC_LTE',
+            RULE_EQ: 'PB_VALIDATE_NUMERIC_EQ'
         }
-        rule_enum = rule_enum_map.get(rule.rule_type)
-        if not rule_enum:
-            return ''
+        oneof_macro_map = {
+            RULE_GT: 'PB_VALIDATE_ONEOF_NUMERIC_GT',
+            RULE_GTE: 'PB_VALIDATE_ONEOF_NUMERIC_GTE',
+            RULE_LT: 'PB_VALIDATE_ONEOF_NUMERIC_LT',
+            RULE_LTE: 'PB_VALIDATE_ONEOF_NUMERIC_LTE',
+            RULE_EQ: 'PB_VALIDATE_ONEOF_NUMERIC_EQ'
+        }
 
         if anonymous:
+            macro_name = macro_map.get(rule.rule_type)
+            if not macro_name:
+                return ''
             return (
-                '    PB_VALIDATE_NUMERIC_GENERIC(ctx, msg, %s, %s, %s, %s, %s, "%s");\n'
-            ) % (field_name, ctype, validator_func, rule_enum, value, rule.constraint_id)
+                '    %s(ctx, msg, %s, %s, "%s");\n'
+            ) % (macro_name, field_name, value, rule.constraint_id)
         else:
+            macro_name = oneof_macro_map.get(rule.rule_type)
+            if not macro_name:
+                return ''
             return (
-                '    PB_VALIDATE_ONEOF_NUMERIC(ctx, msg, %s, %s, %s, %s, %s, %s, "%s");\n'
-            ) % (oneof_name, field_name, ctype, validator_func, rule_enum, value, rule.constraint_id)
+                '    %s(ctx, msg, %s, %s, %s, "%s");\n'
+            ) % (macro_name, oneof_name, field_name, value, rule.constraint_id)
 
     def _gen_oneof_min_len(self, field: Any, rule: ValidationRule, oneof_name: str, field_name: str, anonymous: bool) -> str:
         """Generate min_len validation for oneof string member."""

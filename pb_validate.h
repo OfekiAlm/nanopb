@@ -8,6 +8,7 @@
 #define PB_VALIDATE_H_INCLUDED
 
 #include "pb.h"
+#include "pb_filter_macros.h"  /* For PB_CHECK_* macros used in validation */
 #include <stdbool.h>
 #include <stddef.h>
 #include <time.h>  /* For timestamp validation */
@@ -151,6 +152,58 @@ extern "C"
             CTYPE __pb_expected = (CTYPE)(VALUE_EXPR);                                                                  \
             if (!FUNC((msg_ptr)->field_name, &__pb_expected, (RULE_ENUM))) {                                            \
                 pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "Value constraint failed"); \
+                if ((ctx_var).early_exit) return false;                                                                 \
+            }                                                                                                           \
+        } while (0)
+
+    /* Numeric validation macros using PB_CHECK_* from pb_filter_macros.h.
+     * These macros provide direct comparison operations with optional filter integration.
+     * The ctx parameter is passed to PB_CHECK_* macros for filter callback support.
+     */
+    #define PB_VALIDATE_NUMERIC_GTE(ctx_var, msg_ptr, field_name, MIN_VAL, CONSTRAINT_ID)                               \
+        do {                                                                                                            \
+            if (!PB_CHECK_MIN(NULL, (msg_ptr)->field_name, (MIN_VAL))) {                                                \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "Value must be >= limit"); \
+                if ((ctx_var).early_exit) return false;                                                                 \
+            }                                                                                                           \
+        } while (0)
+
+    #define PB_VALIDATE_NUMERIC_LTE(ctx_var, msg_ptr, field_name, MAX_VAL, CONSTRAINT_ID)                               \
+        do {                                                                                                            \
+            if (!PB_CHECK_MAX(NULL, (msg_ptr)->field_name, (MAX_VAL))) {                                                \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "Value must be <= limit"); \
+                if ((ctx_var).early_exit) return false;                                                                 \
+            }                                                                                                           \
+        } while (0)
+
+    #define PB_VALIDATE_NUMERIC_GT(ctx_var, msg_ptr, field_name, MIN_VAL, CONSTRAINT_ID)                                \
+        do {                                                                                                            \
+            if (!PB_CHECK_GT(NULL, (msg_ptr)->field_name, (MIN_VAL))) {                                                 \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "Value must be > limit"); \
+                if ((ctx_var).early_exit) return false;                                                                 \
+            }                                                                                                           \
+        } while (0)
+
+    #define PB_VALIDATE_NUMERIC_LT(ctx_var, msg_ptr, field_name, MAX_VAL, CONSTRAINT_ID)                                \
+        do {                                                                                                            \
+            if (!PB_CHECK_LT(NULL, (msg_ptr)->field_name, (MAX_VAL))) {                                                 \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "Value must be < limit"); \
+                if ((ctx_var).early_exit) return false;                                                                 \
+            }                                                                                                           \
+        } while (0)
+
+    #define PB_VALIDATE_NUMERIC_EQ(ctx_var, msg_ptr, field_name, EXPECTED_VAL, CONSTRAINT_ID)                           \
+        do {                                                                                                            \
+            if (!PB_CHECK_EQ(NULL, (msg_ptr)->field_name, (EXPECTED_VAL))) {                                            \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "Value must equal expected"); \
+                if ((ctx_var).early_exit) return false;                                                                 \
+            }                                                                                                           \
+        } while (0)
+
+    #define PB_VALIDATE_NUMERIC_RANGE(ctx_var, msg_ptr, field_name, MIN_VAL, MAX_VAL, CONSTRAINT_ID)                    \
+        do {                                                                                                            \
+            if (!PB_CHECK_RANGE(NULL, (msg_ptr)->field_name, (MIN_VAL), (MAX_VAL))) {                                   \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "Value must be in range"); \
                 if ((ctx_var).early_exit) return false;                                                                 \
             }                                                                                                           \
         } while (0)
@@ -444,6 +497,72 @@ extern "C"
             }                                                                                                  \
         } while (0)
 
+    /* Repeated items numeric validation macros using PB_CHECK_* from pb_filter_macros.h. */
+    #define PB_VALIDATE_REPEATED_ITEMS_GTE(ctx_var, msg_ptr, field_name, MIN_VAL, CONSTRAINT_ID)                \
+        do {                                                                                                   \
+            for (pb_size_t __pb_i = 0; __pb_i < (msg_ptr)->field_name##_count; ++__pb_i) {                     \
+                pb_validate_context_push_index(&(ctx_var), __pb_i);                                            \
+                if (!PB_CHECK_MIN(NULL, (msg_ptr)->field_name[__pb_i], (MIN_VAL))) {                           \
+                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),            \
+                                      "Value must be >= limit");                                               \
+                    if ((ctx_var).early_exit) { pb_validate_context_pop_index(&(ctx_var)); return false; }     \
+                }                                                                                              \
+                pb_validate_context_pop_index(&(ctx_var));                                                     \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_REPEATED_ITEMS_LTE(ctx_var, msg_ptr, field_name, MAX_VAL, CONSTRAINT_ID)                \
+        do {                                                                                                   \
+            for (pb_size_t __pb_i = 0; __pb_i < (msg_ptr)->field_name##_count; ++__pb_i) {                     \
+                pb_validate_context_push_index(&(ctx_var), __pb_i);                                            \
+                if (!PB_CHECK_MAX(NULL, (msg_ptr)->field_name[__pb_i], (MAX_VAL))) {                           \
+                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),            \
+                                      "Value must be <= limit");                                               \
+                    if ((ctx_var).early_exit) { pb_validate_context_pop_index(&(ctx_var)); return false; }     \
+                }                                                                                              \
+                pb_validate_context_pop_index(&(ctx_var));                                                     \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_REPEATED_ITEMS_GT(ctx_var, msg_ptr, field_name, MIN_VAL, CONSTRAINT_ID)                 \
+        do {                                                                                                   \
+            for (pb_size_t __pb_i = 0; __pb_i < (msg_ptr)->field_name##_count; ++__pb_i) {                     \
+                pb_validate_context_push_index(&(ctx_var), __pb_i);                                            \
+                if (!PB_CHECK_GT(NULL, (msg_ptr)->field_name[__pb_i], (MIN_VAL))) {                            \
+                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),            \
+                                      "Value must be > limit");                                                \
+                    if ((ctx_var).early_exit) { pb_validate_context_pop_index(&(ctx_var)); return false; }     \
+                }                                                                                              \
+                pb_validate_context_pop_index(&(ctx_var));                                                     \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_REPEATED_ITEMS_LT(ctx_var, msg_ptr, field_name, MAX_VAL, CONSTRAINT_ID)                 \
+        do {                                                                                                   \
+            for (pb_size_t __pb_i = 0; __pb_i < (msg_ptr)->field_name##_count; ++__pb_i) {                     \
+                pb_validate_context_push_index(&(ctx_var), __pb_i);                                            \
+                if (!PB_CHECK_LT(NULL, (msg_ptr)->field_name[__pb_i], (MAX_VAL))) {                            \
+                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),            \
+                                      "Value must be < limit");                                                \
+                    if ((ctx_var).early_exit) { pb_validate_context_pop_index(&(ctx_var)); return false; }     \
+                }                                                                                              \
+                pb_validate_context_pop_index(&(ctx_var));                                                     \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_REPEATED_ITEMS_EQ(ctx_var, msg_ptr, field_name, EXPECTED_VAL, CONSTRAINT_ID)            \
+        do {                                                                                                   \
+            for (pb_size_t __pb_i = 0; __pb_i < (msg_ptr)->field_name##_count; ++__pb_i) {                     \
+                pb_validate_context_push_index(&(ctx_var), __pb_i);                                            \
+                if (!PB_CHECK_EQ(NULL, (msg_ptr)->field_name[__pb_i], (EXPECTED_VAL))) {                       \
+                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),            \
+                                      "Value must equal expected");                                            \
+                    if ((ctx_var).early_exit) { pb_validate_context_pop_index(&(ctx_var)); return false; }     \
+                }                                                                                              \
+                pb_validate_context_pop_index(&(ctx_var));                                                     \
+            }                                                                                                  \
+        } while (0)
+
     /* Bytes length validation macros. */
     #define PB_VALIDATE_BYTES_MIN_LEN(ctx_var, msg_ptr, field_name, MIN_LEN, CONSTRAINT_ID)                     \
         do {                                                                                                   \
@@ -515,6 +634,52 @@ extern "C"
             if (!FUNC((msg_ptr)->oneof_name.field_name, &__pb_expected, (RULE_ENUM))) {                        \
                 pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),                \
                                   "Value constraint failed");                                                  \
+                if ((ctx_var).early_exit) return false;                                                        \
+            }                                                                                                  \
+        } while (0)
+
+    /* Oneof numeric validation macros using PB_CHECK_* from pb_filter_macros.h. */
+    #define PB_VALIDATE_ONEOF_NUMERIC_GTE(ctx_var, msg_ptr, oneof_name, field_name, MIN_VAL, CONSTRAINT_ID)     \
+        do {                                                                                                   \
+            if (!PB_CHECK_MIN(NULL, (msg_ptr)->oneof_name.field_name, (MIN_VAL))) {                            \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),                \
+                                  "Value must be >= limit");                                                   \
+                if ((ctx_var).early_exit) return false;                                                        \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_ONEOF_NUMERIC_LTE(ctx_var, msg_ptr, oneof_name, field_name, MAX_VAL, CONSTRAINT_ID)     \
+        do {                                                                                                   \
+            if (!PB_CHECK_MAX(NULL, (msg_ptr)->oneof_name.field_name, (MAX_VAL))) {                            \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),                \
+                                  "Value must be <= limit");                                                   \
+                if ((ctx_var).early_exit) return false;                                                        \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_ONEOF_NUMERIC_GT(ctx_var, msg_ptr, oneof_name, field_name, MIN_VAL, CONSTRAINT_ID)      \
+        do {                                                                                                   \
+            if (!PB_CHECK_GT(NULL, (msg_ptr)->oneof_name.field_name, (MIN_VAL))) {                             \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),                \
+                                  "Value must be > limit");                                                    \
+                if ((ctx_var).early_exit) return false;                                                        \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_ONEOF_NUMERIC_LT(ctx_var, msg_ptr, oneof_name, field_name, MAX_VAL, CONSTRAINT_ID)      \
+        do {                                                                                                   \
+            if (!PB_CHECK_LT(NULL, (msg_ptr)->oneof_name.field_name, (MAX_VAL))) {                             \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),                \
+                                  "Value must be < limit");                                                    \
+                if ((ctx_var).early_exit) return false;                                                        \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_ONEOF_NUMERIC_EQ(ctx_var, msg_ptr, oneof_name, field_name, EXPECTED_VAL, CONSTRAINT_ID) \
+        do {                                                                                                   \
+            if (!PB_CHECK_EQ(NULL, (msg_ptr)->oneof_name.field_name, (EXPECTED_VAL))) {                        \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),                \
+                                  "Value must equal expected");                                                \
                 if ((ctx_var).early_exit) return false;                                                        \
             }                                                                                                  \
         } while (0)

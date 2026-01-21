@@ -2,7 +2,7 @@
  * Auto-detects filter.h (or force with -DPB_FORCE_FILTER / disable with -DPB_FORCE_NO_FILTER / manual -DPB_HAS_FILTER).
  * Mode A: error macros call filter_error_packet_size()/filter_error then return false; check macros log via filter_check_* and yield boolean; PB_LOG_* emits filter_error.
  * Mode B: error macros return false; check macros are pure comparisons; PB_LOG_* no-ops.
- * Macros: PB_ERROR_BUFFER_TOO_SMALL / PB_ERROR_BUFFER_TOO_BIG / PB_CHECK_EQ / PB_CHECK_RANGE / PB_CHECK_MIN / PB_CHECK_MAX / PB_VALIDATE_PACKET_SIZE / PB_LOG_INVALID_OPCODE / PB_LOG_INVALID_HEADER.
+ * Macros: PB_ERROR_BUFFER_TOO_SMALL / PB_ERROR_BUFFER_TOO_BIG / PB_CHECK_EQ / PB_CHECK_RANGE / PB_CHECK_MIN / PB_CHECK_MAX / PB_CHECK_GT / PB_CHECK_LT / PB_VALIDATE_PACKET_SIZE / PB_LOG_INVALID_OPCODE / PB_LOG_INVALID_HEADER.
  */
 
 #ifndef PB_FILTER_MACROS_H_INCLUDED
@@ -58,11 +58,15 @@
 #  define PB_CHECK_RANGE(ctx,var,minv,maxv) ( PB_FILTER_CALL_BOUNDARY((ctx),(var),(minv),(maxv)), ((var) >= (minv) && (var) <= (maxv)) )
 #  define PB_CHECK_MIN(ctx,var,minv)   ( PB_FILTER_CALL_MIN((ctx),(var),(minv)), ((var) >= (minv)) )
 #  define PB_CHECK_MAX(ctx,var,maxv)   ( PB_FILTER_CALL_MAX((ctx),(var),(maxv)), ((var) <= (maxv)) )
+#  define PB_CHECK_GT(ctx,var,minv)    ( PB_FILTER_CALL_MIN((ctx),(var),(minv)), ((var) > (minv)) )
+#  define PB_CHECK_LT(ctx,var,maxv)    ( PB_FILTER_CALL_MAX((ctx),(var),(maxv)), ((var) < (maxv)) )
 #else
 #  define PB_CHECK_EQ(ctx,var,exact)   ((var) == (exact))
 #  define PB_CHECK_RANGE(ctx,var,minv,maxv) ((var) >= (minv) && (var) <= (maxv))
 #  define PB_CHECK_MIN(ctx,var,minv)   ((var) >= (minv))
 #  define PB_CHECK_MAX(ctx,var,maxv)   ((var) <= (maxv))
+#  define PB_CHECK_GT(ctx,var,minv)    ((var) > (minv))
+#  define PB_CHECK_LT(ctx,var,maxv)    ((var) < (maxv))
 #endif
 
 #define PB_VALIDATE_PACKET_SIZE(ctx,struct_size,packet_size) do { if ((packet_size) < (struct_size)) { PB_ERROR_BUFFER_TOO_SMALL((ctx),(struct_size),(packet_size)); } else if ((packet_size) > (struct_size)) { PB_ERROR_BUFFER_TOO_BIG((ctx),(struct_size),(packet_size)); } } while(0)
