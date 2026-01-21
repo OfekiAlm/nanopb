@@ -1,0 +1,61 @@
+/*
+ * Test proto for validating that generated code uses PB_CHECK_* macros
+ * from pb_filter_macros.h for numeric comparisons.
+ * 
+ * This tests that the code generator correctly uses:
+ * - PB_VALIDATE_NUMERIC_GTE (uses PB_CHECK_MIN)
+ * - PB_VALIDATE_NUMERIC_LTE (uses PB_CHECK_MAX)
+ * - PB_VALIDATE_NUMERIC_GT (uses PB_CHECK_MIN)
+ * - PB_VALIDATE_NUMERIC_LT (uses PB_CHECK_MAX)
+ * - PB_VALIDATE_NUMERIC_EQ (uses PB_CHECK_EQ)
+ * - PB_VALIDATE_NUMERIC_RANGE (uses PB_CHECK_RANGE)
+ */
+
+syntax = "proto3";
+
+import "validate.proto";
+import "nanopb.proto";
+
+option (validate.validate) = true;
+
+/* Message with all numeric comparison rules to test filter macros integration */
+message FilterMacrosTest {
+    /* Greater than or equal (uses PB_CHECK_MIN) */
+    int32 value_gte = 1 [(validate.rules).int32.gte = 10];
+    
+    /* Less than or equal (uses PB_CHECK_MAX) */
+    int32 value_lte = 2 [(validate.rules).int32.lte = 100];
+    
+    /* Greater than (uses PB_CHECK_MIN with value+1) */
+    int32 value_gt = 3 [(validate.rules).int32.gt = 0];
+    
+    /* Less than (uses PB_CHECK_MAX with value-1) */
+    int32 value_lt = 4 [(validate.rules).int32.lt = 50];
+    
+    /* Equal/Const (uses PB_CHECK_EQ) - Note: const_value isn't commonly implemented,
+       using combined gte/lte as a workaround for equality test */
+    int32 value_eq = 5 [(validate.rules).int32.gte = 42, (validate.rules).int32.lte = 42];
+    
+    /* Range test: combined gte and lte (both use PB_CHECK_MIN/MAX) */
+    int32 value_range = 6 [(validate.rules).int32.gte = 0, (validate.rules).int32.lte = 255];
+}
+
+/* Message with oneof to test oneof numeric validation macros */
+message FilterMacrosOneofTest {
+    oneof data {
+        /* Oneof numeric with gte (uses PB_VALIDATE_ONEOF_NUMERIC_GTE) */
+        int32 int_value = 1 [(validate.rules).int32.gte = 0];
+        
+        /* Oneof numeric with lte (uses PB_VALIDATE_ONEOF_NUMERIC_LTE) */
+        int32 max_value = 2 [(validate.rules).int32.lte = 1000];
+    }
+}
+
+/* Message with repeated fields to test repeated items validation macros */
+message FilterMacrosRepeatedTest {
+    /* Repeated items with gte (uses PB_VALIDATE_REPEATED_ITEMS_GTE) */
+    repeated int32 scores = 1 [(nanopb).max_count = 10, (validate.rules).repeated.items.int32.gte = 0];
+    
+    /* Repeated items with lte (uses PB_VALIDATE_REPEATED_ITEMS_LTE) */
+    repeated int32 percentages = 2 [(nanopb).max_count = 10, (validate.rules).repeated.items.int32.lte = 100];
+}

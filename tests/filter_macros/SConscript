@@ -1,0 +1,51 @@
+# Build and run filter_macros test suite
+# Tests that generated validation code uses PB_CHECK_* macros from pb_filter_macros.h
+
+Import("env")
+
+# Clone environment to set validation-specific options
+test_env = env.Clone()
+
+# Enable validation code generation
+# Exclude validate.proto from #include list since it's only used for options
+test_env.Replace(NANOPBFLAGS = "--validate,-x,validate.proto")
+
+# Remove -ansi flag since pb_validate.h requires C99 features (inline)
+# Also enable C99 for stdbool.h
+cflags = str(test_env.get('CFLAGS', ''))
+if '-ansi' in cflags:
+    cflags = cflags.replace('-ansi', '')
+test_env.Replace(CFLAGS = cflags + ' -std=c99 ')
+
+# Prepend the build directory to CPPPATH so our generated headers are found
+test_env.Prepend(CPPPATH = ['.'])
+
+# Build pb_validate.o without extra strict flags (avoid conversion warnings)
+test_env.Object("pb_validate.o", "$NANOPB/pb_validate.c")
+
+# Generate nanopb sources for the proto file
+# The NanopbProto builder generates .pb.c and .pb.h
+# With --validate flag, it also generates _validate.c and _validate.h
+pb_files = test_env.NanopbProto("filter_macros")
+pb_sources = ["filter_macros.pb.c"]
+validate_c = "filter_macros_validate.c"
+validate_h = "filter_macros_validate.h"
+test_env.SideEffect(validate_c, pb_files)
+test_env.SideEffect(validate_h, pb_files)
+validate_sources = [validate_c]
+
+# All C source files for the test binary
+sources = ["test_filter_macros.c"] + pb_sources + validate_sources
+
+# Build the test binary
+test_prog = test_env.Program(
+    sources + [
+        "$COMMON/pb_encode.o",
+        "$COMMON/pb_decode.o",
+        "$COMMON/pb_common.o",
+        "pb_validate.o"
+    ]
+)
+
+# Run the test
+test_env.RunTest(test_prog)
