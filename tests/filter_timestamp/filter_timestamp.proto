@@ -1,0 +1,58 @@
+/*
+ * Test proto for filter_tcp/filter_udp validation with google.protobuf.Timestamp fields
+ * 
+ * This tests validation of messages containing Timestamp fields with:
+ * - gt_now validation (must be after current time)
+ * - lt_now validation (must be before current time)
+ * - within validation (must be within N seconds from now)
+ */
+
+syntax = "proto3";
+
+import "validate.proto";
+import "nanopb.proto";
+import "google/protobuf/timestamp.proto";
+
+option (validate.validate) = true;
+
+/* Message with timestamp that must be in the future */
+message FilterTimestampFuture {
+    /* Expiration time must be after current time */
+    google.protobuf.Timestamp expiration = 1 [
+        (validate.rules).timestamp.gt_now = true
+    ];
+}
+
+/* Message with timestamp that must be in the past */
+message FilterTimestampPast {
+    /* Creation time must be before current time */
+    google.protobuf.Timestamp created_at = 1 [
+        (validate.rules).timestamp.lt_now = true
+    ];
+}
+
+/* Message with timestamp that must be recent */
+message FilterTimestampRecent {
+    /* Event time must be within 300 seconds (5 minutes) from now */
+    google.protobuf.Timestamp event_time = 1 [
+        (validate.rules).timestamp.within = { seconds: 300 }
+    ];
+}
+
+/* Message with multiple timestamp fields for testing */
+message FilterTimestampMultiple {
+    /* Must be in the future */
+    google.protobuf.Timestamp future_time = 1 [
+        (validate.rules).timestamp.gt_now = true
+    ];
+    
+    /* Must be in the past */
+    google.protobuf.Timestamp past_time = 2 [
+        (validate.rules).timestamp.lt_now = true
+    ];
+    
+    /* Must be within 60 seconds from now */
+    google.protobuf.Timestamp recent_time = 3 [
+        (validate.rules).timestamp.within = { seconds: 60 }
+    ];
+}

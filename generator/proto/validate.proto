@@ -40,6 +40,7 @@ message FieldRules {
   optional RepeatedRules repeated = 17;
   optional MapRules map = 18;
   optional AnyRules any = 19;  // Rules for google.protobuf.Any fields
+  optional TimestampRules timestamp = 20;  // Rules for google.protobuf.Timestamp fields
   
   // Field presence rules
   optional bool required = 22; // Field must be set (for optional fields)
@@ -247,9 +248,17 @@ message AnyRules {
   repeated string not_in = 2;        // type_url must not be in this list
 }
 
-// Note: Duration and Timestamp validation rules are not implemented
-// in the initial version to keep the implementation simple and avoid
-// complex dependencies.
+// Rules for google.protobuf.Timestamp fields
+message TimestampRules {
+  optional bool gt_now = 1;          // Timestamp must be after current time
+  optional bool lt_now = 2;          // Timestamp must be before current time
+  optional Duration within = 3;      // Timestamp must be within this duration from now
+}
+
+// Duration message for timestamp validation
+message Duration {
+  optional int64 seconds = 1;        // Number of seconds
+}
 
 // MessageRules defines validation rules that apply at the message level
 message MessageRules {

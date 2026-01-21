@@ -93,6 +93,9 @@ RULE_ITEMS = 'ITEMS'
 RULE_NO_SPARSE = 'NO_SPARSE'
 RULE_ANY_IN = 'ANY_IN'
 RULE_ANY_NOT_IN = 'ANY_NOT_IN'
+RULE_TIMESTAMP_GT_NOW = 'TIMESTAMP_GT_NOW'
+RULE_TIMESTAMP_LT_NOW = 'TIMESTAMP_LT_NOW'
+RULE_TIMESTAMP_WITHIN = 'TIMESTAMP_WITHIN'
 
 
 # =============================================================================
@@ -287,6 +290,8 @@ class FieldValidator:
             self._parse_map_rules(rules_option.map)
         if rules_option.HasField('any'):
             self._parse_any_rules(rules_option.any)
+        if rules_option.HasField('timestamp'):
+            self._parse_timestamp_rules(rules_option.timestamp)
         
         # Parse numeric rules for all numeric types (consolidated for clarity)
         numeric_types = [
@@ -589,7 +594,24 @@ class FieldValidator:
             self.rules.append(ValidationRule(RULE_ANY_IN, 'any.in', {'values': list(getattr(rules, 'in'))}))
         if hasattr(rules, 'not_in') and getattr(rules, 'not_in'):
             self.rules.append(ValidationRule(RULE_ANY_NOT_IN, 'any.not_in', {'values': list(getattr(rules, 'not_in'))}))
-
+    
+    def _parse_timestamp_rules(self, rules: Any) -> None:
+        """
+        Parse validation rules for google.protobuf.Timestamp fields.
+        
+        Timestamp field rules can check if timestamp is before/after current time
+        or within a specified duration from now.
+        
+        Args:
+            rules: The TimestampRules message from validate.proto
+        """
+        if hasattr(rules, 'gt_now') and rules.gt_now:
+            self.rules.append(ValidationRule(RULE_TIMESTAMP_GT_NOW, 'timestamp.gt_now'))
+        if hasattr(rules, 'lt_now') and rules.lt_now:
+            self.rules.append(ValidationRule(RULE_TIMESTAMP_LT_NOW, 'timestamp.lt_now'))
+        if hasattr(rules, 'within') and rules.HasField('within'):
+            seconds = rules.within.seconds if hasattr(rules.within, 'seconds') else 0
+            self.rules.append(ValidationRule(RULE_TIMESTAMP_WITHIN, 'timestamp.within', {'seconds': seconds}))
 class MessageValidator:
     """
     Handles validation for an entire protobuf message.
@@ -1078,12 +1100,12 @@ class ValidatorGenerator:
                     is_message_field = getattr(field, 'pbtype', None) in ('MESSAGE', 'MSG_W_CB')
                     submsg_ctype = getattr(field, 'ctype', None)
                     if is_message_field and submsg_ctype:
-                        # Skip google.protobuf.Any - it doesn't have a validation function
+                        # Skip google.protobuf.Any and google.protobuf.Timestamp - they have special validation
                         submsg_ctype_str = str(submsg_ctype).lower()
-                        is_google_any = ('google' in submsg_ctype_str and 
-                                        'protobuf' in submsg_ctype_str and 
-                                        'any' in submsg_ctype_str)
-                        if not is_google_any:
+                        is_google_special = ('google' in submsg_ctype_str and 
+                                            'protobuf' in submsg_ctype_str and 
+                                            ('any' in submsg_ctype_str or 'timestamp' in submsg_ctype_str))
+                        if not is_google_special:
                             # Generate the nested validation function name
                             sub_func = 'pb_validate_' + str(submsg_ctype).replace('.', '_')
                             allocation = getattr(field, 'allocation', None)
@@ -1119,9 +1141,9 @@ class ValidatorGenerator:
                     submsg_ctype = getattr(f, 'ctype', None)
                     if not submsg_ctype:
                         continue
-                    # Skip google.protobuf.Any - no validation function exists for it
+                    # Skip google.protobuf.Any and google.protobuf.Timestamp - they have special validation
                     submsg_ctype_str = str(submsg_ctype).lower()
-                    if 'google' in submsg_ctype_str and 'protobuf' in submsg_ctype_str and 'any' in submsg_ctype_str:
+                    if 'google' in submsg_ctype_str and 'protobuf' in submsg_ctype_str and ('any' in submsg_ctype_str or 'timestamp' in submsg_ctype_str):
                         continue
                     sub_func = 'pb_validate_' + str(submsg_ctype).replace('.', '_')
                     allocation = getattr(f, 'allocation', None)
@@ -1720,6 +1742,22 @@ class ValidatorGenerator:
         code = '    static const char *__pb_%s_urls_notin[] = { %s };\n' % (field_name, urls_array)
         code += '    PB_VALIDATE_ANY_NOT_IN(ctx, msg, %s, __pb_%s_urls_notin, %d, "%s");\n' % (field_name, field_name, len(values), rule.constraint_id)
         return code
+    
+    def _gen_timestamp_gt_now(self, field: Any, rule: ValidationRule) -> str:
+        field_name = field.name
+        code = '    PB_VALIDATE_TIMESTAMP_GT_NOW(ctx, msg, %s, "%s");\n' % (field_name, rule.constraint_id)
+        return code
+    
+    def _gen_timestamp_lt_now(self, field: Any, rule: ValidationRule) -> str:
+        field_name = field.name
+        code = '    PB_VALIDATE_TIMESTAMP_LT_NOW(ctx, msg, %s, "%s");\n' % (field_name, rule.constraint_id)
+        return code
+    
+    def _gen_timestamp_within(self, field: Any, rule: ValidationRule) -> str:
+        field_name = field.name
+        seconds = rule.params.get('seconds', 0)
+        code = '    PB_VALIDATE_TIMESTAMP_WITHIN(ctx, msg, %s, %d, "%s");\n' % (field_name, seconds, rule.constraint_id)
+        return code
 
     def _generate_rule_check(self, field: Any, rule: ValidationRule):
         """Generate code for a single field validation rule."""
@@ -1750,6 +1788,9 @@ class ValidatorGenerator:
             RULE_NO_SPARSE: self._gen_no_sparse,
             RULE_ANY_IN: self._gen_any_in,
             RULE_ANY_NOT_IN: self._gen_any_not_in,
+            RULE_TIMESTAMP_GT_NOW: self._gen_timestamp_gt_now,
+            RULE_TIMESTAMP_LT_NOW: self._gen_timestamp_lt_now,
+            RULE_TIMESTAMP_WITHIN: self._gen_timestamp_within,
             RULE_ITEMS: self._gen_items,
         }
         
