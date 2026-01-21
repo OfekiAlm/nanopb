@@ -5,8 +5,8 @@
  * This test exercises the new validation macros:
  * - PB_VALIDATE_NUMERIC_GTE (uses PB_CHECK_MIN)
  * - PB_VALIDATE_NUMERIC_LTE (uses PB_CHECK_MAX)
- * - PB_VALIDATE_NUMERIC_GT (uses PB_CHECK_MIN with offset)
- * - PB_VALIDATE_NUMERIC_LT (uses PB_CHECK_MAX with offset)
+ * - PB_VALIDATE_NUMERIC_GT (uses PB_CHECK_GT)
+ * - PB_VALIDATE_NUMERIC_LT (uses PB_CHECK_LT)
  * - PB_VALIDATE_NUMERIC_EQ (uses PB_CHECK_EQ)
  * - PB_VALIDATE_ONEOF_NUMERIC_* variants
  * - PB_VALIDATE_REPEATED_ITEMS_* variants
@@ -152,10 +152,10 @@ static void test_numeric_lte(void) {
 }
 
 /*
- * Test PB_VALIDATE_NUMERIC_GT (uses PB_CHECK_MIN with offset)
+ * Test PB_VALIDATE_NUMERIC_GT (uses PB_CHECK_GT)
  */
 static void test_numeric_gt(void) {
-    printf("\n=== Testing PB_VALIDATE_NUMERIC_GT (PB_CHECK_MIN with offset) ===\n");
+    printf("\n=== Testing PB_VALIDATE_NUMERIC_GT (PB_CHECK_GT) ===\n");
     pb_violations_t violations;
     bool result;
     
@@ -209,10 +209,10 @@ static void test_numeric_gt(void) {
 }
 
 /*
- * Test PB_VALIDATE_NUMERIC_LT (uses PB_CHECK_MAX with offset)
+ * Test PB_VALIDATE_NUMERIC_LT (uses PB_CHECK_LT)
  */
 static void test_numeric_lt(void) {
-    printf("\n=== Testing PB_VALIDATE_NUMERIC_LT (PB_CHECK_MAX with offset) ===\n");
+    printf("\n=== Testing PB_VALIDATE_NUMERIC_LT (PB_CHECK_LT) ===\n");
     pb_violations_t violations;
     bool result;
     
