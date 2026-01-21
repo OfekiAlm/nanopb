@@ -2378,6 +2378,7 @@ class ProtoFile:
         # Generate packet filter functions if services exist or an envelope pattern is detected
         envelope_mode = getattr(options, 'envelope_mode', 'oneof')
         envelope_name = getattr(options, 'envelope_name', None)
+        root_message_name = getattr(options, 'root_message', None)
         has_envelope = False
         if envelope_mode == 'any':
             has_envelope = self.detect_any_envelope_pattern(envelope_name) is not None
@@ -2385,7 +2386,8 @@ class ProtoFile:
             has_envelope = self.detect_envelope_pattern(envelope_name) is not None
         
         # Packet filter declarations are only generated when --validate is explicitly enabled.
-        if options.validate and (self.services or has_envelope):
+        # They are generated when: services exist, envelope pattern is detected, OR root_message is specified.
+        if options.validate and (self.services or has_envelope or root_message_name):
             yield '\n'
             yield '#ifdef __cplusplus\n'
             yield 'extern "C" {\n'
@@ -2532,6 +2534,7 @@ class ProtoFile:
         # Generate packet filter function implementations
         envelope_mode = getattr(options, 'envelope_mode', 'oneof')
         envelope_name = getattr(options, 'envelope_name', None)
+        root_message_name = getattr(options, 'root_message', None)
         has_envelope = False
         if envelope_mode == 'any':
             has_envelope = self.detect_any_envelope_pattern(envelope_name) is not None
@@ -2539,7 +2542,8 @@ class ProtoFile:
             has_envelope = self.detect_envelope_pattern(envelope_name) is not None
         
         # Packet filter implementations are only generated when --validate flag is provided.
-        if options.validate and (self.services or has_envelope):
+        # They are generated when: services exist, envelope pattern is detected, OR root_message is specified.
+        if options.validate and (self.services or has_envelope or root_message_name):
             yield '\n'
             yield options.libformat % ('pb_encode.h')
             yield '\n'
@@ -2596,6 +2600,65 @@ class ProtoFile:
         yield " */\n"
         yield 'int filter_tcp(void *ctx, uint8_t *packet, size_t packet_size, bool is_to_server);\n'
         yield '\n'
+    
+    def find_message_by_name(self, message_name):
+        '''Find a message by its fully qualified name or simple name.
+        
+        Args:
+            message_name: Message name like "mypkg.Packet", "mypkg.sub.Packet", or "Packet"
+            
+        Returns:
+            The Message object if found, None otherwise.
+        '''
+        if not message_name:
+            return None
+        
+        # Normalize the message name: remove leading dots
+        normalized_name = message_name.lstrip('.')
+        
+        # Build package prefix
+        pkg_prefix = self.fdesc.package + '.' if self.fdesc.package else ''
+        
+        for msg in self.messages:
+            # msg.name is like "chat_ClientMessage" or "mypackage_sub_Packet"
+            # We need to match against various name forms
+            msg_name_str = str(msg.name)
+            
+            # Extract the simple message name (last part after underscore)
+            msg_name_parts = msg_name_str.split('_')
+            simple_name = msg_name_parts[-1] if len(msg_name_parts) > 1 else msg_name_str
+            
+            # Try to reconstruct the fully qualified name
+            # Replace underscores with dots for nested messages
+            if len(msg_name_parts) > 1 and self.fdesc.package:
+                # If package is "mypkg" and msg.name is "mypkg_sub_Packet", 
+                # the fully qualified name is "mypkg.sub.Packet"
+                # First, try to strip the package prefix from the mangled name
+                pkg_parts = self.fdesc.package.split('.')
+                # Check that msg_name_parts has enough elements to match pkg_parts
+                if len(msg_name_parts) >= len(pkg_parts) and msg_name_parts[:len(pkg_parts)] == pkg_parts:
+                    remaining_parts = msg_name_parts[len(pkg_parts):]
+                else:
+                    remaining_parts = msg_name_parts
+                full_qualified_name = pkg_prefix + '.'.join(remaining_parts)
+            else:
+                full_qualified_name = pkg_prefix + simple_name
+            
+            # Match against:
+            # 1. Fully qualified name: "mypkg.Packet"
+            # 2. Simple name: "Packet"
+            # 3. Partial qualified name: "sub.Packet" (for nested messages)
+            if normalized_name == full_qualified_name:
+                return msg
+            if normalized_name == simple_name:
+                return msg
+            if full_qualified_name.endswith('.' + normalized_name):
+                return msg
+            # Also try matching against the raw msg.name (underscore-separated)
+            if normalized_name.replace('.', '_') == msg_name_str:
+                return msg
+        
+        return None
     
     def detect_envelope_pattern(self, envelope_name=None):
         '''Detect if there's an Envelope message with enum + oneof payload pattern, or just oneof.
@@ -2707,15 +2770,29 @@ class ProtoFile:
         # Determine envelope detection mode and name from options
         envelope_mode = getattr(options, 'envelope_mode', 'oneof')
         envelope_name = getattr(options, 'envelope_name', None)
+        root_message_name = getattr(options, 'root_message', None)
         
-        # Detect envelope pattern based on mode
+        # Check if single-root-message mode is enabled
+        root_message = None
+        if root_message_name:
+            root_message = self.find_message_by_name(root_message_name)
+            if not root_message:
+                # Error: unknown message type - raise an error
+                sys.stderr.write("Error: --root-message '%s' does not match any message in the loaded descriptors.\n" % root_message_name)
+                sys.stderr.write("Available messages:\n")
+                for msg in self.messages:
+                    sys.stderr.write("  - %s\n" % str(msg.name))
+                sys.exit(1)
+        
+        # Detect envelope pattern based on mode (only if root_message is not set)
         envelope_info = None
         any_envelope_info = None
         
-        if envelope_mode == 'any':
-            any_envelope_info = self.detect_any_envelope_pattern(envelope_name)
-        else:  # Default to 'oneof' mode
-            envelope_info = self.detect_envelope_pattern(envelope_name)
+        if not root_message:
+            if envelope_mode == 'any':
+                any_envelope_info = self.detect_any_envelope_pattern(envelope_name)
+            else:  # Default to 'oneof' mode
+                envelope_info = self.detect_envelope_pattern(envelope_name)
         
         # Collect all message types used in services (only if services exist)
         all_msg_types = set()
@@ -2775,7 +2852,27 @@ class ProtoFile:
         yield '    bool status;\n'
         yield '    (void)ctx; /* Context may be unused */\n\n'
         
-        if any_envelope_info:
+        if root_message:
+            # Single-root-message mode: decode and validate directly as the specified message type
+            msg_type = Globals.naming_style.type_name(root_message.name)
+            validate_func_name = 'pb_validate_' + msg_type
+            
+            yield '    /* Single-root-message mode: decode as %s */\n' % msg_type
+            yield '    %s msg = %s;\n' % (msg_type, Globals.naming_style.define_name(str(root_message.name) + '_init_zero'))
+            yield '    stream = pb_istream_from_buffer(packet, packet_size);\n'
+            yield '    status = pb_decode(&stream, &%s_msg, &msg);\n' % msg_type
+            yield '    \n'
+            yield '    if (!status) {\n'
+            yield f'        return {ret_err};\n'
+            yield '    }\n'
+            yield '    \n'
+            yield '    /* Validate the root message */\n'
+            yield '    if (validate_message(&%s_msg, &msg)) {\n' % msg_type
+            yield f'        return {ret_ok};\n'
+            yield '    }\n'
+            yield '    \n'
+            yield f'    return {ret_err};\n'
+        elif any_envelope_info:
             # Use Any-based envelope decoding
             envelope_msg, any_field, all_msg_types = any_envelope_info
             envelope_type = Globals.naming_style.type_name(envelope_msg.name)
@@ -2967,7 +3064,28 @@ class ProtoFile:
         yield '    bool status;\n'
         yield '    (void)ctx; /* Context may be unused */\n\n'
         
-        if any_envelope_info:
+        if root_message:
+            # Single-root-message mode: decode and validate directly as the specified message type
+            msg_type = Globals.naming_style.type_name(root_message.name)
+            validate_func_name = 'pb_validate_' + msg_type
+            
+            yield '    (void)is_to_server; /* Direction unused in single-root-message mode */\n'
+            yield '    /* Single-root-message mode: decode as %s */\n' % msg_type
+            yield '    %s msg = %s;\n' % (msg_type, Globals.naming_style.define_name(str(root_message.name) + '_init_zero'))
+            yield '    stream = pb_istream_from_buffer(packet, packet_size);\n'
+            yield '    status = pb_decode(&stream, &%s_msg, &msg);\n' % msg_type
+            yield '    \n'
+            yield '    if (!status) {\n'
+            yield f'        return {ret_err};\n'
+            yield '    }\n'
+            yield '    \n'
+            yield '    /* Validate the root message */\n'
+            yield '    if (validate_message(&%s_msg, &msg)) {\n' % msg_type
+            yield f'        return {ret_ok};\n'
+            yield '    }\n'
+            yield '    \n'
+            yield f'    return {ret_err};\n'
+        elif any_envelope_info:
             # Use Any-based envelope decoding for TCP
             envelope_msg, any_field, all_msg_types = any_envelope_info
             envelope_type = Globals.naming_style.type_name(envelope_msg.name)
@@ -3339,6 +3457,8 @@ optparser.add_option("--envelope-mode", dest="envelope_mode", metavar="MODE", de
     help="Envelope detection mode: 'oneof' (enum+oneof pattern) or 'any' (google.protobuf.Any field). [default: %default]")
 optparser.add_option("--envelope-name", dest="envelope_name", metavar="NAME", default=None,
     help="Name of the envelope/base message to use for filter generation. If not specified, auto-detection will be used.")
+optparser.add_option("--root-message", dest="root_message", metavar="NAME", default=None,
+    help="Fully qualified message name for single-root-message mode. When set, filter_tcp/filter_udp decode and validate as this message type directly, bypassing envelope/Any detection. Example: 'mypkg.Packet' or 'MyMessage'.")
 
 
 def parse_custom_style(option, opt_str, value, parser):

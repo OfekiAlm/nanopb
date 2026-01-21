@@ -1,0 +1,50 @@
+# Build and run root_message test suite
+# Tests the --root-message CLI option for single-message decode+validate mode
+
+Import("env")
+
+# Clone environment to set root_message-specific options
+test_env = env.Clone()
+
+# Enable validation code generation with --root-message option
+# This generates filter_tcp/filter_udp that decode directly as TestPacket
+test_env.Replace(NANOPBFLAGS = "--validate,--root-message=rootmsg.TestPacket,-x,validate.proto")
+
+# Remove -ansi flag since pb_validate.h requires C99 features (inline)
+# Also enable C99 for stdbool.h
+cflags = str(test_env.get('CFLAGS', ''))
+if '-ansi' in cflags:
+    cflags = cflags.replace('-ansi', '')
+test_env.Replace(CFLAGS = cflags + ' -std=c99 ')
+
+# Prepend the build directory to CPPPATH so our generated headers are found
+test_env.Prepend(CPPPATH = ['.'])
+
+# Build pb_validate.o without extra strict flags
+test_env.Object("pb_validate.o", "$NANOPB/pb_validate.c")
+
+# Generate nanopb sources for root_message proto file
+pb_files = test_env.NanopbProto("root_message")
+pb_sources = ["root_message.pb.c"]
+
+# Mark validation files as side effects
+validate_c = "root_message_validate.c"
+validate_h = "root_message_validate.h"
+test_env.SideEffect(validate_c, pb_files)
+test_env.SideEffect(validate_h, pb_files)
+
+# All C source files for the test binary
+sources = ["test.c", "root_message.pb.c", validate_c]
+
+# Build the test binary
+test_prog = test_env.Program(
+    sources + [
+        "$COMMON/pb_encode.o",
+        "$COMMON/pb_decode.o",
+        "$COMMON/pb_common.o",
+        "pb_validate.o"
+    ]
+)
+
+# Run the test
+test_env.RunTest(test_prog)
