@@ -1,0 +1,30 @@
+// Test proto file for --root-message functionality
+syntax = "proto3";
+package rootmsg;
+
+import "nanopb.proto";
+import "validate.proto";
+
+// Root message for testing single-root-message mode
+message TestPacket {
+    // String field with minimum length validation
+    string name = 1 [(nanopb).max_size = 64, (validate.rules).string.min_len = 1];
+    
+    // Integer field with greater-than validation
+    int32 value = 2 [(validate.rules).int32.gt = 0];
+    
+    // Optional nested message
+    NestedData nested = 3;
+}
+
+// Nested message for testing nested validation
+message NestedData {
+    string description = 1 [(nanopb).max_size = 128, (validate.rules).string.max_len = 100];
+    int32 count = 2 [(validate.rules).int32.gte = 0];
+}
+
+// Alternative message (not used as root in tests)
+// Adding validation rule so it gets a validator function generated
+message OtherMessage {
+    string data = 1 [(nanopb).max_size = 256, (validate.rules).string.max_len = 255];
+}
