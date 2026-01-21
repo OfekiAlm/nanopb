@@ -1,0 +1,2 @@
+google.protobuf.Timestamp.seconds max_size:8
+google.protobuf.Timestamp.nanos max_size:4

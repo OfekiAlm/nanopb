@@ -10,6 +10,7 @@
 #include "pb.h"
 #include <stdbool.h>
 #include <stddef.h>
+#include <time.h>  /* For timestamp validation */
 
 #ifdef __cplusplus
 extern "C"
@@ -635,6 +636,50 @@ extern "C"
                         if ((ctx_var).early_exit) return false;                                                \
                         break;                                                                                 \
                     }                                                                                          \
+                }                                                                                              \
+            }                                                                                                  \
+        } while (0)
+
+    /* Timestamp field validation macros - these check google.protobuf.Timestamp against current time.
+     * Note: These require <time.h> and may not work on all embedded platforms.
+     */
+    #define PB_VALIDATE_TIMESTAMP_GT_NOW(ctx_var, msg_ptr, field_name, CONSTRAINT_ID)                         \
+        do {                                                                                                   \
+            if ((msg_ptr)->has_##field_name) {                                                                 \
+                time_t __pb_now = time(NULL);                                                                  \
+                int64_t __pb_now_seconds = (int64_t)__pb_now;                                                  \
+                if ((msg_ptr)->field_name.seconds <= __pb_now_seconds) {                                       \
+                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),            \
+                                      "timestamp must be after current time");                                 \
+                    if ((ctx_var).early_exit) return false;                                                    \
+                }                                                                                              \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_TIMESTAMP_LT_NOW(ctx_var, msg_ptr, field_name, CONSTRAINT_ID)                         \
+        do {                                                                                                   \
+            if ((msg_ptr)->has_##field_name) {                                                                 \
+                time_t __pb_now = time(NULL);                                                                  \
+                int64_t __pb_now_seconds = (int64_t)__pb_now;                                                  \
+                if ((msg_ptr)->field_name.seconds >= __pb_now_seconds) {                                       \
+                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),            \
+                                      "timestamp must be before current time");                                \
+                    if ((ctx_var).early_exit) return false;                                                    \
+                }                                                                                              \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_TIMESTAMP_WITHIN(ctx_var, msg_ptr, field_name, seconds_val, CONSTRAINT_ID)            \
+        do {                                                                                                   \
+            if ((msg_ptr)->has_##field_name) {                                                                 \
+                time_t __pb_now = time(NULL);                                                                  \
+                int64_t __pb_now_seconds = (int64_t)__pb_now;                                                  \
+                int64_t __pb_diff = (msg_ptr)->field_name.seconds - __pb_now_seconds;                          \
+                if (__pb_diff < 0) __pb_diff = -__pb_diff;                                                     \
+                if (__pb_diff > (seconds_val)) {                                                               \
+                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),            \
+                                      "timestamp not within specified duration from now");                     \
+                    if ((ctx_var).early_exit) return false;                                                    \
                 }                                                                                              \
             }                                                                                                  \
         } while (0)

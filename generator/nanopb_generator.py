@@ -2555,18 +2555,20 @@ class ProtoFile:
         if envelope_info:
             envelope_msg, opcode_field, opcode_enum, oneof_field, opcode_to_msg_map = envelope_info
 
-            # Type name in ALL CAPS: <ENVELOPE_NAME>_OPCODE
-            alias_type = (str(envelope_msg.name) + '_OPCODE').replace('.', '_').replace('-', '_').upper()
-            yield 'typedef enum %s {\n' % alias_type
+            # Only generate the enum alias if we have an opcode enum (not for oneof-only patterns)
+            if opcode_enum:
+                # Type name in ALL CAPS: <ENVELOPE_NAME>_OPCODE
+                alias_type = (str(envelope_msg.name) + '_OPCODE').replace('.', '_').replace('-', '_').upper()
+                yield 'typedef enum %s {\n' % alias_type
 
-            # Map numeric values back to enumerator names and emit alias entries
-            # Format: <ALIAS_TYPE>_<ENUM_ENTRY> = <ENUM_ENTRY>,
-            for (enumname, enumvalue) in opcode_enum.values:
-                original_entry = Globals.naming_style.enum_entry(enumname)
-                alias_entry = original_entry.replace('.', '_').replace('-', '_').upper()
-                yield '    %s_%s = %s,\n' % (alias_type, alias_entry, original_entry)
+                # Map numeric values back to enumerator names and emit alias entries
+                # Format: <ALIAS_TYPE>_<ENUM_ENTRY> = <ENUM_ENTRY>,
+                for (enumname, enumvalue) in opcode_enum.values:
+                    original_entry = Globals.naming_style.enum_entry(enumname)
+                    alias_entry = original_entry.replace('.', '_').replace('-', '_').upper()
+                    yield '    %s_%s = %s,\n' % (alias_type, alias_entry, original_entry)
 
-            yield '} %s;\n\n' % alias_type
+                yield '} %s;\n\n' % alias_type
         
         # Doxygen for filter functions
         yield "/**\n"
@@ -2596,8 +2598,9 @@ class ProtoFile:
         yield '\n'
     
     def detect_envelope_pattern(self, envelope_name=None):
-        '''Detect if there's an Envelope message with enum + oneof payload pattern.
+        '''Detect if there's an Envelope message with enum + oneof payload pattern, or just oneof.
         Returns (envelope_msg, opcode_field, opcode_enum, oneof_field, opcode_to_msg_map) or None.
+        For oneof-only patterns, opcode_field, opcode_enum, and opcode_to_msg_map will be None.
         
         Args:
             envelope_name: Optional name of the envelope message to use. If provided, only that message is checked.
@@ -2621,7 +2624,7 @@ class ProtoFile:
                 elif isinstance(field, OneOf):
                     oneof_field = field
             
-            # If we found both an enum and a oneof, this is likely an envelope
+            # If we found both an enum and a oneof, this is likely an envelope with opcode
             if enum_field and oneof_field:
                 # Try to find the enum definition
                 opcode_enum = None
@@ -2652,6 +2655,11 @@ class ProtoFile:
                 # If we have at least one mapping, consider this a valid envelope pattern
                 if opcode_to_msg_map:
                     return (msg, enum_field, opcode_enum, oneof_field, opcode_to_msg_map)
+            
+            # If we found just a oneof (no enum), this is a simpler envelope pattern
+            elif oneof_field:
+                # Return with None for opcode-related fields
+                return (msg, None, None, oneof_field, None)
         
         return None
     
@@ -2781,6 +2789,11 @@ class ProtoFile:
             yield f'        return {ret_err};\n'
             yield '    }\n'
             yield '    \n'
+            yield '    /* Validate the envelope message first (checks any.in/any.not_in rules) */\n'
+            yield '    if (!validate_message(&%s_msg, &envelope)) {\n' % envelope_type
+            yield f'        return {ret_err};\n'
+            yield '    }\n'
+            yield '    \n'
             yield '    /* Extract type_url from Any field */\n'
             yield '    const char *type_url = (const char *)envelope.%s.type_url;\n' % any_field_name
             yield '    if (!type_url) {\n'
@@ -2834,11 +2847,6 @@ class ProtoFile:
             # Use efficient envelope-based decoding
             envelope_msg, opcode_field, opcode_enum, oneof_field, opcode_to_msg_map = envelope_info
             envelope_type = Globals.naming_style.type_name(envelope_msg.name)
-            opcode_field_name = Globals.naming_style.var_name(opcode_field.name)
-            # CAPS alias type produced in header
-            alias_type = (str(envelope_msg.name) + '_OPCODE').replace('.', '_').replace('-', '_').upper()
-            # Map numeric opcode values to original enumerator names
-            val_to_name = {v: Globals.naming_style.enum_entry(n).replace('.', '_').replace('-', '_').upper() for (n, v) in opcode_enum.values}
             
             yield '    %s envelope = %s;\n' % (envelope_type, Globals.naming_style.define_name(str(envelope_msg.name) + '_init_zero'))
             yield '    stream = pb_istream_from_buffer(packet, packet_size);\n'
@@ -2848,37 +2856,84 @@ class ProtoFile:
             yield f'        return {ret_err};\n'
             yield '    }\n'
             yield '    \n'
-            yield '    switch (envelope.%s) {\n' % opcode_field_name
             
-            for opcode_val, oneof_subfield in sorted(opcode_to_msg_map.items(), key=lambda x: x[0]):
-                submsg_type = Globals.naming_style.type_name(oneof_subfield.ctype)
-                oneof_member_name = Globals.naming_style.var_name(oneof_subfield.name)
+            # Check if we have an opcode-based envelope or oneof-only envelope
+            if opcode_field and opcode_enum and opcode_to_msg_map:
+                # Opcode + oneof pattern
+                opcode_field_name = Globals.naming_style.var_name(opcode_field.name)
+                # CAPS alias type produced in header
+                alias_type = (str(envelope_msg.name) + '_OPCODE').replace('.', '_').replace('-', '_').upper()
+                # Map numeric opcode values to original enumerator names
+                val_to_name = {v: Globals.naming_style.enum_entry(n).replace('.', '_').replace('-', '_').upper() for (n, v) in opcode_enum.values}
+                
+                yield '    switch (envelope.%s) {\n' % opcode_field_name
+                
+                for opcode_val, oneof_subfield in sorted(opcode_to_msg_map.items(), key=lambda x: x[0]):
+                    submsg_type = Globals.naming_style.type_name(oneof_subfield.ctype)
+                    oneof_member_name = Globals.naming_style.var_name(oneof_subfield.name)
+                    oneof_name = Globals.naming_style.var_name(oneof_field.name)
+                    enum_suffix = val_to_name.get(opcode_val, None)
+                    if enum_suffix is not None:
+                        yield '        case %s_%s:\n' % (alias_type, enum_suffix)
+                    else:
+                        # Fallback to numeric value if mapping fails
+                        yield '        case %d:\n' % (opcode_val)
+                    # Use the field tag constant for the which_field comparison
+                    tag_constant = Globals.naming_style.define_name('%s_%s_tag' % (envelope_msg.name, oneof_subfield.name))
+                    yield '            if (envelope.which_%s == %s) {\n' % (
+                        oneof_name,
+                        tag_constant
+                    )
+                    # For MESSAGE types, validate with message descriptor; for scalars, validate the whole envelope
+                    if oneof_subfield.pbtype == 'MESSAGE':
+                        yield '                if (validate_message(&%s_msg, &envelope.%s.%s)) {\n' % (
+                            submsg_type, oneof_name, oneof_member_name
+                        )
+                    else:
+                        # For scalar types, validate the whole envelope message
+                        yield '                if (validate_message(&%s_msg, &envelope)) {\n' % (
+                            Globals.naming_style.type_name(envelope_msg.name)
+                        )
+                    yield f'                    return {ret_ok};\n'
+                    yield '                }\n'
+                    yield '            }\n'
+                    yield '            break;\n'
+                
+                yield '        default:\n'
+                yield f'            return {ret_err};\n'
+                yield '    }\n'
+                yield '    \n'
+                yield f'    return {ret_err};\n'
+            else:
+                # Oneof-only pattern - switch on which_field
                 oneof_name = Globals.naming_style.var_name(oneof_field.name)
-                enum_suffix = val_to_name.get(opcode_val, None)
-                if enum_suffix is not None:
-                    yield '        case %s_%s:\n' % (alias_type, enum_suffix)
-                else:
-                    # Fallback to numeric value if mapping fails
-                    yield '        case %d:\n' % (opcode_val)
-                yield '            if (envelope.which_%s == %s_%s_%s) {\n' % (
-                    oneof_name,
-                    Globals.naming_style.define_name(envelope_msg.name),
-                    oneof_name,
-                    oneof_member_name
-                )
-                yield '                if (validate_message(&%s_msg, &envelope.%s.%s)) {\n' % (
-                    submsg_type, oneof_name, oneof_member_name
-                )
-                yield f'                    return {ret_ok};\n'
-                yield '                }\n'
-                yield '            }\n'
+                yield '    switch (envelope.which_%s) {\n' % oneof_name
+                
+                for oneof_subfield in oneof_field.fields:
+                    submsg_type = Globals.naming_style.type_name(oneof_subfield.ctype)
+                    oneof_member_name = Globals.naming_style.var_name(oneof_subfield.name)
+                    tag_constant = Globals.naming_style.define_name('%s_%s_tag' % (envelope_msg.name, oneof_subfield.name))
+                    
+                    yield '        case %s:\n' % tag_constant
+                    # For MESSAGE types, validate with message descriptor; for scalars, validate the whole envelope
+                    if oneof_subfield.pbtype == 'MESSAGE':
+                        yield '            if (validate_message(&%s_msg, &envelope.%s.%s)) {\n' % (
+                            submsg_type, oneof_name, oneof_member_name
+                        )
+                    else:
+                        # For scalar types, validate the whole envelope message
+                        yield '            if (validate_message(&%s_msg, &envelope)) {\n' % (
+                            Globals.naming_style.type_name(envelope_msg.name)
+                        )
+                    yield f'                return {ret_ok};\n'
+                    yield '            }\n'
+                    yield '            break;\n'
+                
+                yield '        default:\n'
                 yield '            break;\n'
-            
-            yield '        default:\n'
-            yield f'            return {ret_err};\n'
-            yield '    }\n'
-            yield '    \n'
-            yield f'    return {ret_err};\n'
+                yield '    }\n'
+                yield '    \n'
+                yield f'    return {ret_err};\n'
         elif self.services and all_msg_types:
             # Fallback to brute-force decoding
             pass
@@ -2923,6 +2978,11 @@ class ProtoFile:
             yield '    status = pb_decode(&stream, &%s_msg, &envelope);\n' % envelope_type
             yield '    \n'
             yield '    if (!status) {\n'
+            yield f'        return {ret_err};\n'
+            yield '    }\n'
+            yield '    \n'
+            yield '    /* Validate the envelope message first (checks any.in/any.not_in rules) */\n'
+            yield '    if (!validate_message(&%s_msg, &envelope)) {\n' % envelope_type
             yield f'        return {ret_err};\n'
             yield '    }\n'
             yield '    \n'
@@ -2979,9 +3039,6 @@ class ProtoFile:
             # Use efficient envelope-based decoding for TCP too
             envelope_msg, opcode_field, opcode_enum, oneof_field, opcode_to_msg_map = envelope_info
             envelope_type = Globals.naming_style.type_name(envelope_msg.name)
-            opcode_field_name = Globals.naming_style.var_name(opcode_field.name)
-            alias_type = (str(envelope_msg.name) + '_OPCODE').replace('.', '_').replace('-', '_').upper()
-            val_to_name = {v: Globals.naming_style.enum_entry(n).replace('.', '_').replace('-', '_').upper() for (n, v) in opcode_enum.values}
             
             yield '    %s envelope = %s;\n' % (envelope_type, Globals.naming_style.define_name(str(envelope_msg.name) + '_init_zero'))
             yield '    stream = pb_istream_from_buffer(packet, packet_size);\n'
@@ -2991,36 +3048,81 @@ class ProtoFile:
             yield f'        return {ret_err};\n'
             yield '    }\n'
             yield '    \n'
-            yield '    switch (envelope.%s) {\n' % opcode_field_name
             
-            for opcode_val, oneof_subfield in sorted(opcode_to_msg_map.items(), key=lambda x: x[0]):
-                submsg_type = Globals.naming_style.type_name(oneof_subfield.ctype)
-                oneof_member_name = Globals.naming_style.var_name(oneof_subfield.name)
+            # Check if we have an opcode-based envelope or oneof-only envelope
+            if opcode_field and opcode_enum and opcode_to_msg_map:
+                # Opcode + oneof pattern
+                opcode_field_name = Globals.naming_style.var_name(opcode_field.name)
+                alias_type = (str(envelope_msg.name) + '_OPCODE').replace('.', '_').replace('-', '_').upper()
+                val_to_name = {v: Globals.naming_style.enum_entry(n).replace('.', '_').replace('-', '_').upper() for (n, v) in opcode_enum.values}
+                
+                yield '    switch (envelope.%s) {\n' % opcode_field_name
+                
+                for opcode_val, oneof_subfield in sorted(opcode_to_msg_map.items(), key=lambda x: x[0]):
+                    submsg_type = Globals.naming_style.type_name(oneof_subfield.ctype)
+                    oneof_member_name = Globals.naming_style.var_name(oneof_subfield.name)
+                    oneof_name = Globals.naming_style.var_name(oneof_field.name)
+                    enum_suffix = val_to_name.get(opcode_val, None)
+                    if enum_suffix is not None:
+                        yield '        case %s_%s:\n' % (alias_type, enum_suffix)
+                    else:
+                        yield '        case %d:\n' % (opcode_val)
+                    # Use the field tag constant for the which_field comparison
+                    tag_constant = Globals.naming_style.define_name('%s_%s_tag' % (envelope_msg.name, oneof_subfield.name))
+                    yield '            if (envelope.which_%s == %s) {\n' % (
+                        oneof_name,
+                        tag_constant
+                    )
+                    # For MESSAGE types, validate with message descriptor; for scalars, validate the whole envelope
+                    if oneof_subfield.pbtype == 'MESSAGE':
+                        yield '                if (validate_message(&%s_msg, &envelope.%s.%s)) {\n' % (
+                            submsg_type, oneof_name, oneof_member_name
+                        )
+                    else:
+                        # For scalar types, validate the whole envelope message
+                        yield '                if (validate_message(&%s_msg, &envelope)) {\n' % (
+                            Globals.naming_style.type_name(envelope_msg.name)
+                        )
+                    yield f'                    return {ret_ok};\n'
+                    yield '                }\n'
+                    yield '            }\n'
+                    yield '            break;\n'
+                
+                yield '        default:\n'
+                yield f'            return {ret_err};\n'
+                yield '    }\n'
+                yield '    \n'
+                yield f'    return {ret_err};\n'
+            else:
+                # Oneof-only pattern - switch on which_field
                 oneof_name = Globals.naming_style.var_name(oneof_field.name)
-                enum_suffix = val_to_name.get(opcode_val, None)
-                if enum_suffix is not None:
-                    yield '        case %s_%s:\n' % (alias_type, enum_suffix)
-                else:
-                    yield '        case %d:\n' % (opcode_val)
-                yield '            if (envelope.which_%s == %s_%s_%s) {\n' % (
-                    oneof_name,
-                    Globals.naming_style.define_name(envelope_msg.name),
-                    oneof_name,
-                    oneof_member_name
-                )
-                yield '                if (validate_message(&%s_msg, &envelope.%s.%s)) {\n' % (
-                    submsg_type, oneof_name, oneof_member_name
-                )
-                yield f'                    return {ret_ok};\n'
-                yield '                }\n'
-                yield '            }\n'
+                yield '    switch (envelope.which_%s) {\n' % oneof_name
+                
+                for oneof_subfield in oneof_field.fields:
+                    submsg_type = Globals.naming_style.type_name(oneof_subfield.ctype)
+                    oneof_member_name = Globals.naming_style.var_name(oneof_subfield.name)
+                    tag_constant = Globals.naming_style.define_name('%s_%s_tag' % (envelope_msg.name, oneof_subfield.name))
+                    
+                    yield '        case %s:\n' % tag_constant
+                    # For MESSAGE types, validate with message descriptor; for scalars, validate the whole envelope
+                    if oneof_subfield.pbtype == 'MESSAGE':
+                        yield '            if (validate_message(&%s_msg, &envelope.%s.%s)) {\n' % (
+                            submsg_type, oneof_name, oneof_member_name
+                        )
+                    else:
+                        # For scalar types, validate the whole envelope message
+                        yield '            if (validate_message(&%s_msg, &envelope)) {\n' % (
+                            Globals.naming_style.type_name(envelope_msg.name)
+                        )
+                    yield f'                return {ret_ok};\n'
+                    yield '            }\n'
+                    yield '            break;\n'
+                
+                yield '        default:\n'
                 yield '            break;\n'
-            
-            yield '        default:\n'
-            yield f'            return {ret_err};\n'
-            yield '    }\n'
-            yield '    \n'
-            yield f'    return {ret_err};\n'
+                yield '    }\n'
+                yield '    \n'
+                yield f'    return {ret_err};\n'
         elif self.services and all_msg_types:
             # Fallback to brute-force decoding with direction awareness
             pass
