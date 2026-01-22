@@ -44,10 +44,16 @@ try:
     from . import nanopb_validator
     from .proto._utils import invoke_protoc
     from .proto import TemporaryDirectory
+    from .proto import validate_pb2
 except ImportError:
     import nanopb_validator
     from proto._utils import invoke_protoc
     from proto import TemporaryDirectory
+    try:
+        from proto import validate_pb2
+    except ImportError:
+        # validate_pb2 may not exist yet; will be built on demand
+        validate_pb2 = None
 
 
 class OutputFormat(Enum):
@@ -73,13 +79,14 @@ class ValidationConstraint:
 class ProtoFieldInfo:
     """Information about a protobuf field."""
     
-    def __init__(self, field_desc):
+    def __init__(self, field_desc, file_descriptor=None):
         self.name = field_desc.name
         self.number = field_desc.number
         self.type = field_desc.type
         self.type_name = field_desc.type_name
         self.label = field_desc.label
         self.descriptor = field_desc
+        self.file_descriptor = file_descriptor
         
         # Parse validation rules
         self.constraints = []
@@ -87,28 +94,297 @@ class ProtoFieldInfo:
             self._parse_validation_rules(field_desc.options)
     
     def _parse_validation_rules(self, field_options):
-        """Parse validation rules from field options."""
+        """Parse validation rules from field options using validate_pb2."""
         try:
-            parsed_rules = nanopb_validator.parse_validation_rules_from_serialized_options(field_options)
+            # First, try to import validate_pb2 if not already imported
+            global validate_pb2
+            if validate_pb2 is None:
+                try:
+                    from proto import validate_pb2 as vpb2
+                    validate_pb2 = vpb2
+                except ImportError:
+                    try:
+                        import validate_pb2 as vpb2
+                        validate_pb2 = vpb2
+                    except ImportError:
+                        # Can't import, skip validation parsing
+                        return
             
-            for rule_type, rule_data in parsed_rules.items():
-                if rule_type == 'required':
-                    self.constraints.append(
-                        ValidationConstraint(self.name, self.get_type_name(), 'required', True)
-                    )
-                elif isinstance(rule_data, dict):
-                    for constraint_name, constraint_value in rule_data.items():
-                        self.constraints.append(
-                            ValidationConstraint(
-                                self.name,
-                                self.get_type_name(),
-                                constraint_name,
-                                constraint_value
-                            )
-                        )
+            # Check if the validate.rules extension exists
+            if not hasattr(validate_pb2, 'rules'):
+                return
+                
+            # Check if field options has the extension
+            if not field_options.HasExtension(validate_pb2.rules):
+                return
+            
+            # Get the validation rules
+            rules = field_options.Extensions[validate_pb2.rules]
+            
+            # Parse rules based on type
+            type_name = self.get_type_name()
+            
+            # Numeric types
+            if type_name in ['int32', 'int64', 'uint32', 'uint64', 'sint32', 'sint64', 
+                            'fixed32', 'fixed64', 'sfixed32', 'sfixed64', 'float', 'double']:
+                self._parse_numeric_rules(rules, type_name)
+            # String type
+            elif type_name == 'string':
+                self._parse_string_rules(rules)
+            # Bytes type
+            elif type_name == 'bytes':
+                self._parse_bytes_rules(rules)
+            # Bool type
+            elif type_name == 'bool':
+                self._parse_bool_rules(rules)
+            # Enum type
+            elif type_name == 'enum':
+                self._parse_enum_rules(rules)
+            # Any type (google.protobuf.Any)
+            elif type_name == 'message' and '.google.protobuf.Any' in self.type_name:
+                self._parse_any_rules(rules)
+            
+            # Repeated field rules (applies to any repeated field)
+            if self.is_repeated() and rules.HasField('repeated'):
+                self._parse_repeated_rules(rules.repeated)
+                
         except Exception as e:
-            # Validation parsing is optional
+            # Validation parsing is optional, fail silently
+            # But for debugging, uncomment this:
+            # import traceback
+            # print(f"Warning: Failed to parse validation rules for {self.name}: {e}", file=sys.stderr)
+            # traceback.print_exc()
             pass
+    
+    def _parse_numeric_rules(self, rules, type_name):
+        """Parse numeric validation rules."""
+        # Get the rules for this specific numeric type
+        if not rules.HasField(type_name):
+            return
+        numeric_rules = getattr(rules, type_name)
+        
+        # Parse const (use const_value field name)
+        if numeric_rules.HasField('const_value'):
+            self.constraints.append(
+                ValidationConstraint(self.name, type_name, 'const', numeric_rules.const_value)
+            )
+        
+        # Parse less than
+        if numeric_rules.HasField('lt'):
+            self.constraints.append(
+                ValidationConstraint(self.name, type_name, 'lt', numeric_rules.lt)
+            )
+        
+        # Parse less than or equal
+        if numeric_rules.HasField('lte'):
+            self.constraints.append(
+                ValidationConstraint(self.name, type_name, 'lte', numeric_rules.lte)
+            )
+        
+        # Parse greater than
+        if numeric_rules.HasField('gt'):
+            self.constraints.append(
+                ValidationConstraint(self.name, type_name, 'gt', numeric_rules.gt)
+            )
+        
+        # Parse greater than or equal
+        if numeric_rules.HasField('gte'):
+            self.constraints.append(
+                ValidationConstraint(self.name, type_name, 'gte', numeric_rules.gte)
+            )
+        
+        # Parse in list (use getattr since 'in' is a Python keyword)
+        in_list = getattr(numeric_rules, 'in', [])
+        if len(in_list) > 0:
+            self.constraints.append(
+                ValidationConstraint(self.name, type_name, 'in', list(in_list))
+            )
+        
+        # Parse not_in list
+        not_in_list = getattr(numeric_rules, 'not_in', [])
+        if len(not_in_list) > 0:
+            self.constraints.append(
+                ValidationConstraint(self.name, type_name, 'not_in', list(not_in_list))
+            )
+    
+    def _parse_string_rules(self, rules):
+        """Parse string validation rules."""
+        if not rules.HasField('string'):
+            return
+        string_rules = rules.string
+        
+        # Length constraints
+        if string_rules.HasField('min_len'):
+            self.constraints.append(
+                ValidationConstraint(self.name, 'string', 'min_len', string_rules.min_len)
+            )
+        
+        if string_rules.HasField('max_len'):
+            self.constraints.append(
+                ValidationConstraint(self.name, 'string', 'max_len', string_rules.max_len)
+            )
+        
+        # Pattern constraints
+        if string_rules.HasField('prefix'):
+            self.constraints.append(
+                ValidationConstraint(self.name, 'string', 'prefix', string_rules.prefix)
+            )
+        
+        if string_rules.HasField('suffix'):
+            self.constraints.append(
+                ValidationConstraint(self.name, 'string', 'suffix', string_rules.suffix)
+            )
+        
+        if string_rules.HasField('contains'):
+            self.constraints.append(
+                ValidationConstraint(self.name, 'string', 'contains', string_rules.contains)
+            )
+        
+        # Const
+        if string_rules.HasField('const_value'):
+            self.constraints.append(
+                ValidationConstraint(self.name, 'string', 'const', string_rules.const_value)
+            )
+        
+        # Character set
+        if string_rules.HasField('ascii') and string_rules.ascii:
+            self.constraints.append(
+                ValidationConstraint(self.name, 'string', 'ascii', True)
+            )
+        
+        # Format validation
+        if string_rules.HasField('email') and string_rules.email:
+            self.constraints.append(
+                ValidationConstraint(self.name, 'string', 'email', True)
+            )
+        
+        if string_rules.HasField('hostname') and string_rules.hostname:
+            self.constraints.append(
+                ValidationConstraint(self.name, 'string', 'hostname', True)
+            )
+        
+        if string_rules.HasField('ip') and string_rules.ip:
+            self.constraints.append(
+                ValidationConstraint(self.name, 'string', 'ip', True)
+            )
+        
+        if string_rules.HasField('ipv4') and string_rules.ipv4:
+            self.constraints.append(
+                ValidationConstraint(self.name, 'string', 'ipv4', True)
+            )
+        
+        if string_rules.HasField('ipv6') and string_rules.ipv6:
+            self.constraints.append(
+                ValidationConstraint(self.name, 'string', 'ipv6', True)
+            )
+        
+        # Set membership (use getattr since 'in' is a Python keyword)
+        in_list = getattr(string_rules, 'in', [])
+        if len(in_list) > 0:
+            self.constraints.append(
+                ValidationConstraint(self.name, 'string', 'in', list(in_list))
+            )
+        
+        not_in_list = getattr(string_rules, 'not_in', [])
+        if len(not_in_list) > 0:
+            self.constraints.append(
+                ValidationConstraint(self.name, 'string', 'not_in', list(not_in_list))
+            )
+    
+    def _parse_bytes_rules(self, rules):
+        """Parse bytes validation rules."""
+        if not rules.HasField('bytes'):
+            return
+        bytes_rules = rules.bytes
+        
+        if bytes_rules.HasField('min_len'):
+            self.constraints.append(
+                ValidationConstraint(self.name, 'bytes', 'min_len', bytes_rules.min_len)
+            )
+        
+        if bytes_rules.HasField('max_len'):
+            self.constraints.append(
+                ValidationConstraint(self.name, 'bytes', 'max_len', bytes_rules.max_len)
+            )
+        
+        if bytes_rules.HasField('const_value'):
+            self.constraints.append(
+                ValidationConstraint(self.name, 'bytes', 'const', bytes_rules.const_value)
+            )
+    
+    def _parse_bool_rules(self, rules):
+        """Parse bool validation rules."""
+        if not rules.HasField('bool'):
+            return
+        bool_rules = rules.bool
+        
+        if bool_rules.HasField('const_value'):
+            self.constraints.append(
+                ValidationConstraint(self.name, 'bool', 'const', bool_rules.const_value)
+            )
+    
+    def _parse_enum_rules(self, rules):
+        """Parse enum validation rules."""
+        if not rules.HasField('enum'):
+            return
+        enum_rules = rules.enum
+        
+        if enum_rules.HasField('const_value'):
+            self.constraints.append(
+                ValidationConstraint(self.name, 'enum', 'const', enum_rules.const_value)
+            )
+        
+        if enum_rules.HasField('defined_only') and enum_rules.defined_only:
+            self.constraints.append(
+                ValidationConstraint(self.name, 'enum', 'defined_only', True)
+            )
+        
+        in_list = getattr(enum_rules, 'in', [])
+        if len(in_list) > 0:
+            self.constraints.append(
+                ValidationConstraint(self.name, 'enum', 'in', list(in_list))
+            )
+        
+        not_in_list = getattr(enum_rules, 'not_in', [])
+        if len(not_in_list) > 0:
+            self.constraints.append(
+                ValidationConstraint(self.name, 'enum', 'not_in', list(not_in_list))
+            )
+    
+    def _parse_any_rules(self, rules):
+        """Parse google.protobuf.Any validation rules."""
+        if not rules.HasField('any'):
+            return
+        any_rules = rules.any
+        
+        in_list = getattr(any_rules, 'in', [])
+        if len(in_list) > 0:
+            self.constraints.append(
+                ValidationConstraint(self.name, 'any', 'in', list(in_list))
+            )
+        
+        not_in_list = getattr(any_rules, 'not_in', [])
+        if len(not_in_list) > 0:
+            self.constraints.append(
+                ValidationConstraint(self.name, 'any', 'not_in', list(not_in_list))
+            )
+    
+    def _parse_repeated_rules(self, repeated_rules):
+        """Parse repeated field validation rules."""
+        if repeated_rules.HasField('min_items'):
+            self.constraints.append(
+                ValidationConstraint(self.name, 'repeated', 'min_items', repeated_rules.min_items)
+            )
+        
+        if repeated_rules.HasField('max_items'):
+            self.constraints.append(
+                ValidationConstraint(self.name, 'repeated', 'max_items', repeated_rules.max_items)
+            )
+        
+        if repeated_rules.HasField('unique') and repeated_rules.unique:
+            self.constraints.append(
+                ValidationConstraint(self.name, 'repeated', 'unique', True)
+            )
     
     def get_type_name(self) -> str:
         """Get human-readable type name."""
@@ -129,19 +405,23 @@ class ProtoFieldInfo:
 class DataGenerator:
     """Generates test data for protobuf messages with validation rules."""
     
-    def __init__(self, proto_file: str, include_paths: Optional[List[str]] = None):
+    def __init__(self, proto_file: str, include_paths: Optional[List[str]] = None,
+                 any_type_registry: Optional[Dict[str, str]] = None):
         """
         Initialize data generator.
         
         Args:
             proto_file: Path to .proto file
             include_paths: Additional include paths for protoc
+            any_type_registry: Dict mapping type_url to message name for Any fields.
+                              Example: {'type.googleapis.com/MyMessage': 'MyMessage'}
         """
         self.proto_file = proto_file
         self.include_paths = include_paths or []
         self.file_descriptor = None
         self.message_descriptors = {}
         self.proto_module = None
+        self.any_type_registry = any_type_registry or {}
         
         self._load_proto()
     
@@ -255,13 +535,30 @@ class DataGenerator:
         for msg_desc in self.file_descriptor.message_type:
             msg_name = msg_desc.name
             fields = {}
+            oneofs = {}
             
+            # Parse oneof groups
+            for oneof_idx, oneof_desc in enumerate(msg_desc.oneof_decl):
+                oneofs[oneof_idx] = {
+                    'name': oneof_desc.name,
+                    'fields': []
+                }
+            
+            # Parse fields
             for field_desc in msg_desc.field:
-                fields[field_desc.name] = ProtoFieldInfo(field_desc)
+                field_info = ProtoFieldInfo(field_desc, self.file_descriptor)
+                fields[field_desc.name] = field_info
+                
+                # Track which oneof this field belongs to (if any)
+                if field_desc.HasField('oneof_index'):
+                    oneof_idx = field_desc.oneof_index
+                    if oneof_idx in oneofs:
+                        oneofs[oneof_idx]['fields'].append(field_desc.name)
             
             self.message_descriptors[msg_name] = {
                 'descriptor': msg_desc,
-                'fields': fields
+                'fields': fields,
+                'oneofs': oneofs
             }
     
     def get_messages(self) -> List[str]:
@@ -280,13 +577,16 @@ class DataGenerator:
             return {}
         return self.message_descriptors[message_name]['fields']
     
-    def generate_valid(self, message_name: str, seed: Optional[int] = None) -> Dict[str, Any]:
+    def generate_valid(self, message_name: str, seed: Optional[int] = None,
+                       oneof_choice: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """
         Generate valid test data for a message.
         
         Args:
             message_name: Name of the message type
             seed: Random seed for reproducibility
+            oneof_choice: Dict mapping oneof name to chosen field name.
+                         If None, a random field is selected from each oneof.
         
         Returns:
             Dictionary of field values
@@ -297,10 +597,46 @@ class DataGenerator:
         if message_name not in self.message_descriptors:
             raise ValueError(f"Message {message_name} not found")
         
-        fields = self.message_descriptors[message_name]['fields']
+        msg_desc = self.message_descriptors[message_name]
+        fields = msg_desc['fields']
+        oneofs = msg_desc.get('oneofs', {})
         data = {}
         
+        # Determine which fields to skip (for oneofs)
+        fields_to_skip = set()
+        oneof_selections = {}
+        
+        for oneof_idx, oneof_info in oneofs.items():
+            oneof_name = oneof_info['name']
+            oneof_fields = oneof_info['fields']
+            
+            if not oneof_fields:
+                continue
+            
+            # Determine which field to select
+            if oneof_choice and oneof_name in oneof_choice:
+                selected_field = oneof_choice[oneof_name]
+                if selected_field not in oneof_fields:
+                    raise ValueError(
+                        f"Invalid oneof choice: {selected_field} not in {oneof_name} "
+                        f"(valid choices: {oneof_fields})"
+                    )
+            else:
+                # Random selection
+                selected_field = random.choice(oneof_fields)
+            
+            oneof_selections[oneof_name] = selected_field
+            
+            # Skip all other fields in this oneof
+            for field in oneof_fields:
+                if field != selected_field:
+                    fields_to_skip.add(field)
+        
+        # Generate data for all fields except skipped ones
         for field_name, field_info in fields.items():
+            if field_name in fields_to_skip:
+                continue
+                
             value = self._generate_valid_value(field_info)
             if value is not None:
                 data[field_name] = value
@@ -430,6 +766,10 @@ class DataGenerator:
             return self._generate_valid_string(constraints)
         elif type_name == 'bytes':
             return self._generate_valid_bytes(constraints)
+        elif type_name == 'enum':
+            return self._generate_valid_enum(field_info, constraints)
+        elif type_name == 'message':
+            return self._generate_valid_message(field_info, constraints)
         else:
             # Default values for unsupported types
             return None
@@ -703,6 +1043,111 @@ class DataGenerator:
         length = random.randint(min_len, max_len)
         return bytes(random.randint(0, 255) for _ in range(length))
     
+    def _generate_valid_enum(self, field_info: ProtoFieldInfo, constraints: Dict[str, Any]) -> int:
+        """Generate valid enum value."""
+        # Get enum values from the enum type
+        enum_values = self._get_enum_values(field_info.type_name)
+        
+        if not enum_values:
+            # No enum definition found, return 0 (default)
+            return 0
+        
+        # Check for const constraint
+        if 'const' in constraints:
+            return constraints['const']
+        
+        # Check for in constraint
+        if 'in' in constraints:
+            valid_values = [v for v in constraints['in'] if v in enum_values]
+            if valid_values:
+                return random.choice(valid_values)
+        
+        # Check for not_in constraint
+        if 'not_in' in constraints:
+            valid_values = [v for v in enum_values if v not in constraints['not_in']]
+            if valid_values:
+                return random.choice(valid_values)
+        
+        # Default: pick random enum value
+        return random.choice(enum_values)
+    
+    def _get_enum_values(self, type_name: str) -> List[int]:
+        """Get list of valid enum values for an enum type."""
+        if not type_name or not self.file_descriptor:
+            return []
+        
+        # Extract enum name from type_name (format: .package.EnumName)
+        enum_name = type_name.split('.')[-1]
+        
+        # Search for enum in file descriptor
+        for enum_desc in self.file_descriptor.enum_type:
+            if enum_desc.name == enum_name:
+                return [v.number for v in enum_desc.value]
+        
+        # Search in nested enums within messages
+        for msg_desc in self.file_descriptor.message_type:
+            for enum_desc in msg_desc.enum_type:
+                if enum_desc.name == enum_name:
+                    return [v.number for v in enum_desc.value]
+        
+        return []
+    
+    def _generate_valid_message(self, field_info: ProtoFieldInfo, constraints: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate valid nested message value."""
+        # Check if this is a google.protobuf.Any type
+        if '.google.protobuf.Any' in field_info.type_name:
+            return self._generate_valid_any(field_info, constraints)
+        
+        # Extract message name from type_name (format: .package.MessageName)
+        message_name = field_info.type_name.split('.')[-1]
+        
+        # Check if we have this message in our descriptors
+        if message_name in self.message_descriptors:
+            # Recursively generate data for nested message
+            # Note: seed=None maintains current random state for reproducibility
+            return self.generate_valid(message_name, seed=None)
+        
+        # If message not found, return empty dict
+        return {}
+    
+    def _generate_valid_any(self, field_info: ProtoFieldInfo, constraints: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate valid google.protobuf.Any value."""
+        # Determine which type_url to use
+        available_types = list(self.any_type_registry.keys())
+        
+        # Apply in constraint
+        if 'in' in constraints:
+            available_types = [t for t in available_types if t in constraints['in']]
+        
+        # Apply not_in constraint
+        if 'not_in' in constraints:
+            available_types = [t for t in available_types if t not in constraints['not_in']]
+        
+        if not available_types:
+            # No valid types available, generate empty Any
+            return {
+                'type_url': '',
+                'value': b''
+            }
+        
+        # Select a random type
+        type_url = random.choice(available_types)
+        message_name = self.any_type_registry[type_url]
+        
+        # Generate data for the nested message
+        if message_name in self.message_descriptors:
+            # Note: seed=None maintains current random state for reproducibility
+            nested_data = self.generate_valid(message_name, seed=None)
+            # Encode the nested message to bytes
+            value_bytes = self.encode_to_binary(message_name, nested_data)
+        else:
+            value_bytes = b''
+        
+        return {
+            'type_url': type_url,
+            'value': value_bytes
+        }
+    
     def _generate_valid_repeated(self, field_info: ProtoFieldInfo) -> List[Any]:
         """Generate valid repeated field value."""
         constraints = {c.rule_type: c.value for c in field_info.constraints}
@@ -745,6 +1190,10 @@ class DataGenerator:
                 items.append(self._generate_valid_string(item_constraints))
             elif type_name == 'bytes':
                 items.append(self._generate_valid_bytes(item_constraints))
+            elif type_name == 'enum':
+                items.append(self._generate_valid_enum(field_info, item_constraints))
+            elif type_name == 'message':
+                items.append(self._generate_valid_message(field_info, item_constraints))
             else:
                 items.append(None)
         
@@ -945,12 +1394,13 @@ class DataGenerator:
         if field_info.is_repeated():
             result = bytearray()
             for item in value:
-                result.extend(self._encode_single_field(field_number, field_type, item))
+                result.extend(self._encode_single_field(field_number, field_type, item, field_info))
             return bytes(result)
         else:
-            return self._encode_single_field(field_number, field_type, value)
+            return self._encode_single_field(field_number, field_type, value, field_info)
     
-    def _encode_single_field(self, field_number: int, field_type: int, value: Any) -> bytes:
+    def _encode_single_field(self, field_number: int, field_type: int, value: Any, 
+                            field_info: Optional[ProtoFieldInfo] = None) -> bytes:
         """Encode a single field value to protobuf wire format."""
         # Wire types: 0=varint, 1=64bit, 2=length-delimited, 5=32bit
         
@@ -1020,6 +1470,34 @@ class DataGenerator:
                 value_bytes = struct.pack('<q', value)
             
             return self._encode_varint(key) + value_bytes
+        
+        elif field_type == 14:  # enum
+            # Enums are encoded as varints
+            wire_type = 0
+            key = (field_number << 3) | wire_type
+            return self._encode_varint(key) + self._encode_varint(value)
+        
+        elif field_type == 11:  # message
+            # Messages are length-delimited
+            wire_type = 2
+            key = (field_number << 3) | wire_type
+            
+            # value should be a dict representing the nested message
+            if isinstance(value, dict) and field_info:
+                # Extract message name from type_name (format: .package.MessageName)
+                message_name = field_info.type_name.split('.')[-1]
+                
+                # Recursively encode the nested message
+                if message_name in self.message_descriptors:
+                    value_bytes = self.encode_to_binary(message_name, value)
+                else:
+                    value_bytes = b''
+            else:
+                value_bytes = b''
+            
+            return (self._encode_varint(key) +
+                    self._encode_varint(len(value_bytes)) +
+                    value_bytes)
         
         return b''
     
