@@ -476,6 +476,8 @@ class FieldValidator:
             result.extend(self._extract_bool_item_rules(items_rules.bool))
         if items_rules.HasField('enum'):
             result.extend(self._extract_enum_item_rules(items_rules.enum))
+        if items_rules.HasField('message'):
+            result.extend(self._extract_message_item_rules(items_rules.message))
         
         # Extract numeric item rules for all numeric types (consolidated)
         numeric_types = [
@@ -561,6 +563,24 @@ class FieldValidator:
             result.append({'rule': RULE_IN, 'constraint_id': 'enum.in', 'values': list(getattr(rules, 'in'))})
         if rules.not_in:
             result.append({'rule': RULE_NOT_IN, 'constraint_id': 'enum.not_in', 'values': list(rules.not_in)})
+        return result
+    
+    def _extract_message_item_rules(self, rules: Any) -> List[Dict[str, Any]]:
+        """Extract message validation rules for repeated items.
+        
+        For repeated message fields, this indicates that each item should
+        be validated using its own validation function.
+        
+        Args:
+            rules: The MessageRules message from validate.proto
+            
+        Returns:
+            A list containing a single item rule to trigger nested validation
+        """
+        result = []
+        # If message rules exist (even if empty), we should validate each item
+        # The actual validation will be done by calling the message's validation function
+        result.append({'rule': 'NESTED_VALIDATION', 'constraint_id': 'message.required'})
         return result
     
     def _parse_map_rules(self, rules: Any) -> None:
@@ -1711,6 +1731,23 @@ class ValidatorGenerator:
                     code += '            }\n'
                     code += '            pb_validate_context_pop_index(&ctx);\n'
                     code += '        }\n'
+            
+            elif rule_type == 'NESTED_VALIDATION':
+                # Generate code for repeated submessage validation
+                if pbtype in ('MESSAGE', 'MSG_W_CB'):
+                    # Get the message type from the field
+                    submsg_ctype = getattr(field, 'ctype', None)
+                    if submsg_ctype:
+                        # Generate the nested validation function name
+                        sub_func = 'pb_validate_' + str(submsg_ctype).replace('.', '_')
+                        allocation = getattr(field, 'allocation', None)
+                        
+                        # Use appropriate macro based on allocation type
+                        if allocation == 'CALLBACK':
+                            code += '        PB_VALIDATE_REPEATED_NESTED_MSG_CALLBACK(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
+                        else:
+                            # For normal repeated message arrays
+                            code += '        PB_VALIDATE_REPEATED_NESTED_MSG(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
         
         return code
     
