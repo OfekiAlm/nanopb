@@ -759,6 +759,21 @@ class ValidatorGenerator:
         if hasattr(proto_file, 'file_options') and hasattr(proto_file.file_options, 'validate'):
             self.validate_enabled = proto_file.file_options.validate
     
+    @staticmethod
+    def _is_repeated_field(field: Any) -> bool:
+        """
+        Check if a field is a repeated field.
+        
+        Args:
+            field: The field descriptor
+            
+        Returns:
+            True if the field is repeated, False otherwise
+        """
+        allocation = getattr(field, 'allocation', None)
+        rules = getattr(field, 'rules', None)
+        return rules == 'REPEATED' or allocation in ('STATIC', 'CALLBACK')
+    
     def add_message_validator(self, message: Any, message_rules: Optional[Any] = None) -> None:
         """
         Add a validator for a message (only if it has validation rules).
@@ -1111,12 +1126,9 @@ class ValidatorGenerator:
                             # Generate the nested validation function name
                             sub_func = 'pb_validate_' + str(submsg_ctype).replace('.', '_')
                             allocation = getattr(field, 'allocation', None)
-                            rules = getattr(field, 'rules', None)
                             
                             # Check if this is a repeated field
-                            is_repeated = (rules == 'REPEATED' or allocation in ('STATIC', 'CALLBACK'))
-                            
-                            if is_repeated:
+                            if self._is_repeated_field(field):
                                 # For repeated message fields, use the repeated nested msg macro
                                 if allocation == 'CALLBACK':
                                     yield '    PB_VALIDATE_REPEATED_NESTED_MSG_CALLBACK(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
@@ -1125,6 +1137,7 @@ class ValidatorGenerator:
                                     yield '    PB_VALIDATE_REPEATED_NESTED_MSG(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
                             else:
                                 # Use different macros based on allocation type for single message fields
+                                rules = getattr(field, 'rules', None)
                                 if allocation == 'POINTER':
                                     yield '    PB_VALIDATE_NESTED_MSG_POINTER(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
                                 else:
@@ -1166,9 +1179,7 @@ class ValidatorGenerator:
                     yield '    PB_VALIDATE_FIELD_BEGIN(ctx, "%s");\n' % fname
                     
                     # Check if this is a repeated field
-                    is_repeated = (rules == 'REPEATED' or allocation in ('STATIC', 'CALLBACK'))
-                    
-                    if is_repeated:
+                    if self._is_repeated_field(f):
                         # For repeated message fields, use the repeated nested msg macro
                         if allocation == 'CALLBACK':
                             yield '    PB_VALIDATE_REPEATED_NESTED_MSG_CALLBACK(ctx, %s, msg, %s, violations);\n' % (sub_func, fname)
