@@ -506,6 +506,48 @@ extern "C"
             }                                                                                                  \
         } while (0)
 
+    /* Repeated nested message validation macros.
+     * These validate each element in a repeated submessage field.
+     */
+    #define PB_VALIDATE_REPEATED_NESTED_MSG(ctx_var, validate_func, msg_ptr, field_name, violations_ptr)       \
+        do {                                                                                                   \
+            for (pb_size_t __pb_i = 0; __pb_i < (msg_ptr)->field_name##_count; ++__pb_i) {                    \
+                pb_validate_context_push_index(&(ctx_var), __pb_i);                                           \
+                bool __pb_ok_nested = validate_func(&(msg_ptr)->field_name[__pb_i], (violations_ptr));         \
+                if (!__pb_ok_nested && (ctx_var).early_exit) {                                                \
+                    pb_validate_context_pop_index(&(ctx_var));                                                \
+                    pb_validate_context_pop_field(&(ctx_var));                                                \
+                    return false;                                                                             \
+                }                                                                                             \
+                pb_validate_context_pop_index(&(ctx_var));                                                    \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_REPEATED_NESTED_MSG_CALLBACK(ctx_var, validate_func, msg_ptr, field_name, violations_ptr) \
+        do {                                                                                                   \
+            if ((msg_ptr)->field_name.funcs.decode) {                                                          \
+                /* For callback-based repeated fields, we need to iterate through the array */                 \
+                /* The callback should have stored the array in arg */                                         \
+                void *__pb_arg = (msg_ptr)->field_name.arg;                                                    \
+                if (__pb_arg) {                                                                                \
+                    /* Assuming callback has stored array pointer and count as first two members */            \
+                    struct { void *items; pb_size_t count; } *__pb_arr = __pb_arg;                             \
+                    for (pb_size_t __pb_i = 0; __pb_i < __pb_arr->count; ++__pb_i) {                           \
+                        pb_validate_context_push_index(&(ctx_var), __pb_i);                                   \
+                        /* Get the item type from the validation function signature */                         \
+                        void **__pb_items = (void **)__pb_arr->items;                                          \
+                        bool __pb_ok_nested = validate_func(__pb_items[__pb_i], (violations_ptr));             \
+                        if (!__pb_ok_nested && (ctx_var).early_exit) {                                         \
+                            pb_validate_context_pop_index(&(ctx_var));                                         \
+                            pb_validate_context_pop_field(&(ctx_var));                                         \
+                            return false;                                                                      \
+                        }                                                                                      \
+                        pb_validate_context_pop_index(&(ctx_var));                                            \
+                    }                                                                                          \
+                }                                                                                              \
+            }                                                                                                  \
+        } while (0)
+
     /* Oneof member validation macros.
      * These operate on oneof member fields accessed via msg->oneof_name.field_name
      */

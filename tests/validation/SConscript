@@ -29,6 +29,7 @@ protos = [
     "numeric_rules",
     "string_rules", 
     "repeated_rules",
+    "repeated_message_rules",
     "enum_rules",
     "message_rules",
     "oneof_rules",

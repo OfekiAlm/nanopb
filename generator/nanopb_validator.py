@@ -476,6 +476,8 @@ class FieldValidator:
             result.extend(self._extract_bool_item_rules(items_rules.bool))
         if items_rules.HasField('enum'):
             result.extend(self._extract_enum_item_rules(items_rules.enum))
+        # Note: Message types don't need special item rules - they are automatically
+        # validated recursively by checking the field's pbtype in code generation
         
         # Extract numeric item rules for all numeric types (consolidated)
         numeric_types = [
@@ -756,6 +758,21 @@ class ValidatorGenerator:
         self.validate_enabled = False
         if hasattr(proto_file, 'file_options') and hasattr(proto_file.file_options, 'validate'):
             self.validate_enabled = proto_file.file_options.validate
+    
+    @staticmethod
+    def _is_repeated_field(field: Any) -> bool:
+        """
+        Check if a field is a repeated field.
+        
+        Args:
+            field: The field descriptor
+            
+        Returns:
+            True if the field is repeated, False otherwise
+        """
+        allocation = getattr(field, 'allocation', None)
+        rules = getattr(field, 'rules', None)
+        return rules == 'REPEATED' or allocation in ('STATIC', 'CALLBACK')
     
     def add_message_validator(self, message: Any, message_rules: Optional[Any] = None) -> None:
         """
@@ -1109,16 +1126,25 @@ class ValidatorGenerator:
                             # Generate the nested validation function name
                             sub_func = 'pb_validate_' + str(submsg_ctype).replace('.', '_')
                             allocation = getattr(field, 'allocation', None)
-                            rules = getattr(field, 'rules', None)
                             
-                            # Use different macros based on allocation type
-                            if allocation == 'POINTER':
-                                yield '    PB_VALIDATE_NESTED_MSG_POINTER(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
-                            else:
-                                if rules == 'OPTIONAL':
-                                    yield '    PB_VALIDATE_NESTED_MSG_OPTIONAL(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
+                            # Check if this is a repeated field
+                            if self._is_repeated_field(field):
+                                # For repeated message fields, use the repeated nested msg macro
+                                if allocation == 'CALLBACK':
+                                    yield '    PB_VALIDATE_REPEATED_NESTED_MSG_CALLBACK(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
                                 else:
-                                    yield '    PB_VALIDATE_NESTED_MSG(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
+                                    # STATIC allocation or REPEATED rules
+                                    yield '    PB_VALIDATE_REPEATED_NESTED_MSG(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
+                            else:
+                                # Use different macros based on allocation type for single message fields
+                                rules = getattr(field, 'rules', None)
+                                if allocation == 'POINTER':
+                                    yield '    PB_VALIDATE_NESTED_MSG_POINTER(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
+                                else:
+                                    if rules == 'OPTIONAL':
+                                        yield '    PB_VALIDATE_NESTED_MSG_OPTIONAL(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
+                                    else:
+                                        yield '    PB_VALIDATE_NESTED_MSG(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
                 except Exception:
                     # If field shape is unexpected, skip recursion silently to avoid crashes
                     pass
@@ -1151,13 +1177,25 @@ class ValidatorGenerator:
                     # Open path context
                     yield '    /* Validate field: %s */\n' % fname
                     yield '    PB_VALIDATE_FIELD_BEGIN(ctx, "%s");\n' % fname
-                    if allocation == 'POINTER':
-                        yield '    PB_VALIDATE_NESTED_MSG_POINTER(ctx, %s, msg, %s, violations);\n' % (sub_func, fname)
-                    else:
-                        if rules == 'OPTIONAL':
-                            yield '    PB_VALIDATE_NESTED_MSG_OPTIONAL(ctx, %s, msg, %s, violations);\n' % (sub_func, fname)
+                    
+                    # Check if this is a repeated field
+                    if self._is_repeated_field(f):
+                        # For repeated message fields, use the repeated nested msg macro
+                        if allocation == 'CALLBACK':
+                            yield '    PB_VALIDATE_REPEATED_NESTED_MSG_CALLBACK(ctx, %s, msg, %s, violations);\n' % (sub_func, fname)
                         else:
-                            yield '    PB_VALIDATE_NESTED_MSG(ctx, %s, msg, %s, violations);\n' % (sub_func, fname)
+                            # STATIC allocation or REPEATED rules
+                            yield '    PB_VALIDATE_REPEATED_NESTED_MSG(ctx, %s, msg, %s, violations);\n' % (sub_func, fname)
+                    else:
+                        # Single message field
+                        if allocation == 'POINTER':
+                            yield '    PB_VALIDATE_NESTED_MSG_POINTER(ctx, %s, msg, %s, violations);\n' % (sub_func, fname)
+                        else:
+                            if rules == 'OPTIONAL':
+                                yield '    PB_VALIDATE_NESTED_MSG_OPTIONAL(ctx, %s, msg, %s, violations);\n' % (sub_func, fname)
+                            else:
+                                yield '    PB_VALIDATE_NESTED_MSG(ctx, %s, msg, %s, violations);\n' % (sub_func, fname)
+                    
                     yield '    PB_VALIDATE_FIELD_END(ctx);\n'
                     yield '\n'
                 except Exception:

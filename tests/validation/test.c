@@ -31,6 +31,8 @@
 #include "string_rules_validate.h"
 #include "repeated_rules.pb.h"
 #include "repeated_rules_validate.h"
+#include "repeated_message_rules.pb.h"
+#include "repeated_message_rules_validate.h"
 #include "enum_rules.pb.h"
 #include "enum_rules_validate.h"
 #include "message_rules.pb.h"
@@ -1125,6 +1127,128 @@ static void test_message_rules(void)
 }
 
 /*======================================================================
+ * REPEATED MESSAGE RULES TESTS
+ * Tests validation of repeated submessage fields
+ *======================================================================*/
+
+static void test_repeated_message_rules(void)
+{
+    pb_violations_t viol;
+    bool ok;
+    
+    printf("\n=== Repeated Message Rules Tests ===\n");
+    
+    /* Test valid Team with valid members */
+    TEST("Team - valid with 2 members");
+    {
+        Team team = Team_init_zero;
+        strcpy(team.team_name, "Engineering");
+        team.members_count = 2;
+        
+        strcpy(team.members[0].name, "Alice");
+        team.members[0].age = 30;
+        
+        strcpy(team.members[1].name, "Bob");
+        team.members[1].age = 25;
+        
+        pb_violations_init(&viol);
+        ok = pb_validate_Team(&team, &viol);
+        EXPECT_VALID(ok, "Valid team should pass");
+    }
+
+    /* Test team with invalid member (age out of range) */
+    TEST("Team - invalid member age > 150");
+    {
+        Team team = Team_init_zero;
+        strcpy(team.team_name, "Research");
+        team.members_count = 1;
+        
+        strcpy(team.members[0].name, "Charlie");
+        team.members[0].age = 200; /* Invalid: > 150 */
+        
+        pb_violations_init(&viol);
+        ok = pb_validate_Team(&team, &viol);
+        EXPECT_INVALID(ok, "Member with age > 150 should fail");
+    }
+
+    /* Test team with empty member name */
+    TEST("Team - invalid empty member name");
+    {
+        Team team = Team_init_zero;
+        strcpy(team.team_name, "Marketing");
+        team.members_count = 1;
+        
+        team.members[0].name[0] = '\0'; /* Invalid: empty string */
+        team.members[0].age = 28;
+        
+        pb_violations_init(&viol);
+        ok = pb_validate_Team(&team, &viol);
+        EXPECT_INVALID(ok, "Member with empty name should fail");
+    }
+
+    /* Test team with too few members */
+    TEST("Team - too few members (min_items = 1)");
+    {
+        Team team = Team_init_zero;
+        strcpy(team.team_name, "Sales");
+        team.members_count = 0; /* Invalid: < min_items */
+        
+        pb_violations_init(&viol);
+        ok = pb_validate_Team(&team, &viol);
+        EXPECT_INVALID(ok, "Team with 0 members should fail");
+    }
+
+    /* Test team with too many members */
+    TEST("Team - too many members (max_items = 5)");
+    {
+        Team team = Team_init_zero;
+        strcpy(team.team_name, "Support");
+        team.members_count = 6; /* Invalid: > max_items */
+        
+        for (int i = 0; i < 6; i++) {
+            sprintf(team.members[i].name, "Member%d", i);
+            team.members[i].age = 25 + i;
+        }
+        
+        pb_violations_init(&viol);
+        ok = pb_validate_Team(&team, &viol);
+        EXPECT_INVALID(ok, "Team with 6 members should fail (max=5)");
+    }
+
+    /* Test valid team at boundary */
+    TEST("Team - valid at boundary (exactly 5 members)");
+    {
+        Team team = Team_init_zero;
+        strcpy(team.team_name, "Development");
+        team.members_count = 5; /* Valid: exactly max_items */
+        
+        for (int i = 0; i < 5; i++) {
+            sprintf(team.members[i].name, "Dev%d", i);
+            team.members[i].age = 20 + i * 10;
+        }
+        
+        pb_violations_init(&viol);
+        ok = pb_validate_Team(&team, &viol);
+        EXPECT_VALID(ok, "Team with exactly 5 members should pass");
+    }
+
+    /* Test team with negative age */
+    TEST("Team - invalid negative age");
+    {
+        Team team = Team_init_zero;
+        strcpy(team.team_name, "QA");
+        team.members_count = 1;
+        
+        strcpy(team.members[0].name, "Dave");
+        team.members[0].age = -5; /* Invalid: negative age */
+        
+        pb_violations_init(&viol);
+        ok = pb_validate_Team(&team, &viol);
+        EXPECT_INVALID(ok, "Member with negative age should fail");
+    }
+}
+
+/*======================================================================
  * ONEOF RULES TESTS
  * NOTE: Oneof member validation is a known limitation - the generator
  * doesn't currently support validation rules on oneof members.
@@ -1566,6 +1690,7 @@ int main(void)
     test_string_rules();
     test_repeated_rules();
     test_repeated_items_rules();
+    test_repeated_message_rules();
     test_enum_rules();
     test_message_rules();
     test_oneof_rules();
