@@ -1131,14 +1131,25 @@ class ValidatorGenerator:
                             allocation = getattr(field, 'allocation', None)
                             rules = getattr(field, 'rules', None)
                             
-                            # Use different macros based on allocation type
-                            if allocation == 'POINTER':
-                                yield '    PB_VALIDATE_NESTED_MSG_POINTER(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
-                            else:
-                                if rules == 'OPTIONAL':
-                                    yield '    PB_VALIDATE_NESTED_MSG_OPTIONAL(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
+                            # Check if this is a repeated field
+                            is_repeated = (rules == 'REPEATED' or allocation in ('STATIC', 'CALLBACK'))
+                            
+                            if is_repeated:
+                                # For repeated message fields, use the repeated nested msg macro
+                                if allocation == 'CALLBACK':
+                                    yield '    PB_VALIDATE_REPEATED_NESTED_MSG_CALLBACK(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
                                 else:
-                                    yield '    PB_VALIDATE_NESTED_MSG(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
+                                    # STATIC allocation or REPEATED rules
+                                    yield '    PB_VALIDATE_REPEATED_NESTED_MSG(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
+                            else:
+                                # Use different macros based on allocation type for single message fields
+                                if allocation == 'POINTER':
+                                    yield '    PB_VALIDATE_NESTED_MSG_POINTER(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
+                                else:
+                                    if rules == 'OPTIONAL':
+                                        yield '    PB_VALIDATE_NESTED_MSG_OPTIONAL(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
+                                    else:
+                                        yield '    PB_VALIDATE_NESTED_MSG(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
                 except Exception:
                     # If field shape is unexpected, skip recursion silently to avoid crashes
                     pass
@@ -1171,13 +1182,27 @@ class ValidatorGenerator:
                     # Open path context
                     yield '    /* Validate field: %s */\n' % fname
                     yield '    PB_VALIDATE_FIELD_BEGIN(ctx, "%s");\n' % fname
-                    if allocation == 'POINTER':
-                        yield '    PB_VALIDATE_NESTED_MSG_POINTER(ctx, %s, msg, %s, violations);\n' % (sub_func, fname)
-                    else:
-                        if rules == 'OPTIONAL':
-                            yield '    PB_VALIDATE_NESTED_MSG_OPTIONAL(ctx, %s, msg, %s, violations);\n' % (sub_func, fname)
+                    
+                    # Check if this is a repeated field
+                    is_repeated = (rules == 'REPEATED' or allocation in ('STATIC', 'CALLBACK'))
+                    
+                    if is_repeated:
+                        # For repeated message fields, use the repeated nested msg macro
+                        if allocation == 'CALLBACK':
+                            yield '    PB_VALIDATE_REPEATED_NESTED_MSG_CALLBACK(ctx, %s, msg, %s, violations);\n' % (sub_func, fname)
                         else:
-                            yield '    PB_VALIDATE_NESTED_MSG(ctx, %s, msg, %s, violations);\n' % (sub_func, fname)
+                            # STATIC allocation or REPEATED rules
+                            yield '    PB_VALIDATE_REPEATED_NESTED_MSG(ctx, %s, msg, %s, violations);\n' % (sub_func, fname)
+                    else:
+                        # Single message field
+                        if allocation == 'POINTER':
+                            yield '    PB_VALIDATE_NESTED_MSG_POINTER(ctx, %s, msg, %s, violations);\n' % (sub_func, fname)
+                        else:
+                            if rules == 'OPTIONAL':
+                                yield '    PB_VALIDATE_NESTED_MSG_OPTIONAL(ctx, %s, msg, %s, violations);\n' % (sub_func, fname)
+                            else:
+                                yield '    PB_VALIDATE_NESTED_MSG(ctx, %s, msg, %s, violations);\n' % (sub_func, fname)
+                    
                     yield '    PB_VALIDATE_FIELD_END(ctx);\n'
                     yield '\n'
                 except Exception:
