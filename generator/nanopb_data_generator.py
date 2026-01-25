@@ -124,26 +124,45 @@ class ProtoFieldInfo:
     def is_repeated(self) -> bool:
         """Check if field is repeated."""
         return self.label == 3  # LABEL_REPEATED
+    
+    def get_message_type(self) -> Optional[str]:
+        """Get the message type name if this is a message field."""
+        if self.type == 11 and self.type_name:  # TYPE_MESSAGE
+            # type_name is in format ".package.MessageName" or just ".MessageName"
+            # We want just the message name
+            parts = self.type_name.split('.')
+            return parts[-1] if parts else None
+        return None
 
 
 class DataGenerator:
     """Generates test data for protobuf messages with validation rules."""
     
-    def __init__(self, proto_file: str, include_paths: Optional[List[str]] = None):
+    def __init__(self, proto_file: str, include_paths: Optional[List[str]] = None, options_file: Optional[str] = None):
         """
         Initialize data generator.
         
         Args:
             proto_file: Path to .proto file
             include_paths: Additional include paths for protoc
+            options_file: Path to .options file (defaults to <proto_file>.options)
         """
         self.proto_file = proto_file
         self.include_paths = include_paths or []
         self.file_descriptor = None
         self.message_descriptors = {}
         self.proto_module = None
+        self.nanopb_options = {}  # Store parsed .options file data
+        
+        # Determine options file path
+        if options_file is None:
+            # Default: same name as proto file but with .options extension
+            self.options_file = os.path.splitext(proto_file)[0] + '.options'
+        else:
+            self.options_file = options_file
         
         self._load_proto()
+        self._load_options()
     
     def _load_proto(self):
         """Load and compile the proto file."""
@@ -264,6 +283,70 @@ class DataGenerator:
                 'fields': fields
             }
     
+    def _load_options(self):
+        """Load and parse the .options file if it exists."""
+        if not os.path.isfile(self.options_file):
+            # No options file, that's okay
+            return
+        
+        try:
+            import re
+            with open(self.options_file, 'r', encoding='utf-8') as f:
+                data = f.read()
+            
+            # Remove comments (same as nanopb_generator.py does)
+            data = re.sub(r'/\*.*?\*/', '', data, flags=re.MULTILINE)
+            data = re.sub(r'//.*?$', '', data, flags=re.MULTILINE)
+            data = re.sub(r'#.*?$', '', data, flags=re.MULTILINE)
+            
+            for line in data.split('\n'):
+                line = line.strip()
+                if not line:
+                    continue
+                
+                parts = line.split(None, 1)
+                if len(parts) < 2:
+                    continue
+                
+                # Parse the pattern and options
+                # Format: "pattern max_size:value max_count:value ..."
+                pattern = parts[0]
+                options_str = parts[1]
+                
+                # Simple parsing of key:value pairs
+                options = {}
+                for match in re.finditer(r'(\w+):(\S+)', options_str):
+                    key = match.group(1)
+                    value = match.group(2)
+                    # Try to convert to int if possible
+                    try:
+                        options[key] = int(value)
+                    except ValueError:
+                        options[key] = value
+                
+                self.nanopb_options[pattern] = options
+        except Exception as e:
+            # Options file parsing is optional, don't fail
+            pass
+    
+    def _get_field_options(self, message_name: str, field_name: str) -> Dict[str, Any]:
+        """Get nanopb options for a specific field from .options file."""
+        options = {}
+        
+        # Try different patterns in order of specificity
+        patterns = [
+            f"{message_name}.{field_name}",  # Exact match
+            f"*.{field_name}",                # Wildcard message
+            f"{message_name}.*",              # All fields in message
+            "*"                                # Global
+        ]
+        
+        for pattern in patterns:
+            if pattern in self.nanopb_options:
+                options.update(self.nanopb_options[pattern])
+        
+        return options
+    
     def get_messages(self) -> List[str]:
         """Get list of message names in the proto file."""
         return list(self.message_descriptors.keys())
@@ -301,7 +384,7 @@ class DataGenerator:
         data = {}
         
         for field_name, field_info in fields.items():
-            value = self._generate_valid_value(field_info)
+            value = self._generate_valid_value(field_info, message_name, field_name)
             if value is not None:
                 data[field_name] = value
         
@@ -397,15 +480,27 @@ class DataGenerator:
 
         return data
     
-    def _generate_valid_value(self, field_info: ProtoFieldInfo) -> Any:
+    def _generate_valid_value(self, field_info: ProtoFieldInfo, message_name: str = "", field_name: str = "") -> Any:
         """Generate a valid value for a field."""
         type_name = field_info.get_type_name()
         
         if field_info.is_repeated():
-            return self._generate_valid_repeated(field_info)
+            return self._generate_valid_repeated(field_info, message_name, field_name)
         
         # Find constraints
         constraints = {c.rule_type: c.value for c in field_info.constraints}
+        
+        # Merge with options from .options file
+        if message_name and field_name:
+            nanopb_opts = self._get_field_options(message_name, field_name)
+            if 'max_size' in nanopb_opts and type_name in ('string', 'bytes'):
+                # max_size constraint from .options file
+                if 'max_len' not in constraints:
+                    # For strings, max_size includes null terminator in nanopb
+                    constraints['max_len'] = nanopb_opts['max_size'] - 1 if type_name == 'string' else nanopb_opts['max_size']
+            if 'max_count' in nanopb_opts and field_info.is_repeated():
+                # This will be handled in _generate_valid_repeated
+                pass
         
         # Generate based on type
         if type_name == 'int32':
@@ -430,6 +525,9 @@ class DataGenerator:
             return self._generate_valid_string(constraints)
         elif type_name == 'bytes':
             return self._generate_valid_bytes(constraints)
+        elif type_name == 'message':
+            # Handle submessage
+            return self._generate_valid_message(field_info)
         else:
             # Default values for unsupported types
             return None
@@ -703,12 +801,31 @@ class DataGenerator:
         length = random.randint(min_len, max_len)
         return bytes(random.randint(0, 255) for _ in range(length))
     
-    def _generate_valid_repeated(self, field_info: ProtoFieldInfo) -> List[Any]:
+    def _generate_valid_message(self, field_info: ProtoFieldInfo) -> Optional[Dict[str, Any]]:
+        """Generate valid submessage value."""
+        message_type = field_info.get_message_type()
+        if not message_type:
+            return None
+        
+        # Check if message type exists in our descriptors
+        if message_type not in self.message_descriptors:
+            return None
+        
+        # Recursively generate data for the submessage
+        return self.generate_valid(message_type)
+    
+    def _generate_valid_repeated(self, field_info: ProtoFieldInfo, message_name: str = "", field_name: str = "") -> List[Any]:
         """Generate valid repeated field value."""
         constraints = {c.rule_type: c.value for c in field_info.constraints}
         
         min_items = constraints.get('min_items', 1)
         max_items = constraints.get('max_items', 5)
+        
+        # Check for max_count from .options file
+        if message_name and field_name:
+            nanopb_opts = self._get_field_options(message_name, field_name)
+            if 'max_count' in nanopb_opts:
+                max_items = min(max_items, nanopb_opts['max_count'])
         
         count = random.randint(min_items, max_items)
         
@@ -745,11 +862,15 @@ class DataGenerator:
                 items.append(self._generate_valid_string(item_constraints))
             elif type_name == 'bytes':
                 items.append(self._generate_valid_bytes(item_constraints))
+            elif type_name == 'message':
+                # Handle repeated submessages
+                submsg = self._generate_valid_message(field_info)
+                items.append(submsg)
             else:
                 items.append(None)
         
-        # Handle unique constraint
-        if constraints.get('unique', False):
+        # Handle unique constraint (only for hashable types, skip for messages)
+        if constraints.get('unique', False) and type_name != 'message':
             items = list(set(items))
             # Generate more items if needed
             while len(items) < min_items:
