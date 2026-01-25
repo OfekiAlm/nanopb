@@ -20,6 +20,7 @@ Example usage:
 
 import os
 import sys
+import re
 import struct
 import random
 import string
@@ -100,7 +101,21 @@ class ProtoFieldInfo:
             self._parse_validation_rules(field_desc.options)
     
     def _parse_validation_rules(self, field_options):
-        """Parse validation rules from field options using validate_pb2."""
+        """
+        Parse validation rules from field options using validate_pb2.
+        
+        Extracts validation constraints from the (validate.rules) extension in
+        field options. Falls back gracefully if validate_pb2 is not available.
+        
+        Supports parsing:
+        - required: Field must be present
+        - String rules: min_len, max_len, contains, prefix, suffix, email, hostname, ip, ipv4, ipv6
+        - Numeric rules (int32, int64): gte, gt, lte, lt, const
+        - Repeated rules: min_items, max_items, unique
+        
+        Args:
+            field_options: The FieldOptions object from the field descriptor
+        """
         if not validate_pb2:
             # No validate_pb2 available, skip parsing
             return
@@ -414,7 +429,6 @@ class DataGenerator:
             return
         
         try:
-            import re
             with open(self.options_file, 'r', encoding='utf-8') as f:
                 data = f.read()
             
@@ -438,6 +452,7 @@ class DataGenerator:
                 options_str = parts[1]
                 
                 # Simple parsing of key:value pairs
+                # Matches patterns like max_size:128 or type:FT_CALLBACK
                 options = {}
                 for match in re.finditer(r'(\w+):(\S+)', options_str):
                     key = match.group(1)
@@ -449,8 +464,8 @@ class DataGenerator:
                         options[key] = value
                 
                 self.nanopb_options[pattern] = options
-        except Exception as e:
-            # Options file parsing is optional, don't fail
+        except (IOError, OSError, UnicodeDecodeError) as e:
+            # Options file parsing is optional, don't fail on file errors
             pass
     
     def _get_field_options(self, message_name: str, field_name: str) -> Dict[str, Any]:
@@ -994,22 +1009,29 @@ class DataGenerator:
             else:
                 items.append(None)
         
-        # Handle unique constraint (only for hashable types, skip for messages)
-        if constraints.get('unique', False) and type_name != 'message':
-            items = list(set(items))
-            # Generate more items if needed
-            while len(items) < min_items:
-                if type_name == 'int32':
-                    items.append(self._generate_valid_int32(item_constraints))
-                elif type_name == 'int64':
-                    items.append(self._generate_valid_int64(item_constraints))
-                elif type_name == 'uint32':
-                    items.append(self._generate_valid_uint32(item_constraints))
-                elif type_name == 'uint64':
-                    items.append(self._generate_valid_uint64(item_constraints))
-                elif type_name == 'string':
-                    # For strings, append a unique suffix
-                    items.append(self._generate_valid_string(item_constraints) + f"_{len(items)}")
+        # Handle unique constraint
+        # Only apply to hashable types (skip dicts/lists like messages)
+        if constraints.get('unique', False):
+            # Check if items are hashable (primitives like int, string, bytes)
+            # Messages (dicts) are not hashable and should be skipped
+            try:
+                items = list(set(items))
+                # Generate more items if needed
+                while len(items) < min_items:
+                    if type_name == 'int32':
+                        items.append(self._generate_valid_int32(item_constraints))
+                    elif type_name == 'int64':
+                        items.append(self._generate_valid_int64(item_constraints))
+                    elif type_name == 'uint32':
+                        items.append(self._generate_valid_uint32(item_constraints))
+                    elif type_name == 'uint64':
+                        items.append(self._generate_valid_uint64(item_constraints))
+                    elif type_name == 'string':
+                        # For strings, append a unique suffix
+                        items.append(self._generate_valid_string(item_constraints) + f"_{len(items)}")
+            except TypeError:
+                # Items are not hashable (e.g., dicts/lists), skip unique constraint
+                pass
         
         return items
     
