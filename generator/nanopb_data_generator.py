@@ -1191,13 +1191,16 @@ class DataGenerator:
         if field_info.is_repeated():
             result = bytearray()
             for item in value:
-                result.extend(self._encode_single_field(field_number, field_type, item))
+                result.extend(self._encode_single_field(field_info, item))
             return bytes(result)
         else:
-            return self._encode_single_field(field_number, field_type, value)
+            return self._encode_single_field(field_info, value)
     
-    def _encode_single_field(self, field_number: int, field_type: int, value: Any) -> bytes:
+    def _encode_single_field(self, field_info: ProtoFieldInfo, value: Any) -> bytes:
         """Encode a single field value to protobuf wire format."""
+        field_number = field_info.number
+        field_type = field_info.type
+        
         # Wire types: 0=varint, 1=64bit, 2=length-delimited, 5=32bit
         
         if field_type in (1, 2):  # double, float
@@ -1266,6 +1269,23 @@ class DataGenerator:
                 value_bytes = struct.pack('<q', value)
             
             return self._encode_varint(key) + value_bytes
+        
+        elif field_type == 11:  # message
+            # Encode submessage recursively
+            wire_type = 2  # length-delimited
+            key = (field_number << 3) | wire_type
+            
+            # Get the message type name and encode the submessage
+            if isinstance(value, dict):
+                message_type = field_info.get_message_type()
+                if message_type:
+                    # Recursively encode the submessage
+                    submsg_bytes = self.encode_to_binary(message_type, value)
+                    return (self._encode_varint(key) +
+                            self._encode_varint(len(submsg_bytes)) +
+                            submsg_bytes)
+            
+            return b''
         
         return b''
     
@@ -1341,12 +1361,13 @@ def main():
     parser.add_argument('--seed', type=int, help='Random seed for reproducibility')
     parser.add_argument('-I', '--include', action='append', default=[],
                         help='Include path for proto files')
+    parser.add_argument('--options-file', '-f', help='Path to .options file (default: <proto_file>.options)')
     
     args = parser.parse_args()
     
     # Create generator
     try:
-        generator = DataGenerator(args.proto_file, args.include)
+        generator = DataGenerator(args.proto_file, args.include, options_file=args.options_file)
     except Exception as e:
         print(f"Error loading proto file: {e}", file=sys.stderr)
         return 1
