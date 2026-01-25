@@ -49,6 +49,19 @@ except ImportError:
     from proto._utils import invoke_protoc
     from proto import TemporaryDirectory
 
+# Import validate_pb2 for parsing validation rules
+validate_pb2 = None
+try:
+    from .proto import validate_pb2
+except ImportError:
+    try:
+        from proto import validate_pb2
+    except ImportError:
+        try:
+            import validate_pb2
+        except ImportError:
+            validate_pb2 = None
+
 
 class OutputFormat(Enum):
     """Output format for generated data."""
@@ -87,27 +100,138 @@ class ProtoFieldInfo:
             self._parse_validation_rules(field_desc.options)
     
     def _parse_validation_rules(self, field_options):
-        """Parse validation rules from field options."""
+        """Parse validation rules from field options using validate_pb2."""
+        if not validate_pb2:
+            # No validate_pb2 available, skip parsing
+            return
+        
         try:
-            parsed_rules = nanopb_validator.parse_validation_rules_from_serialized_options(field_options)
+            # Check if field has validation rules extension
+            if not field_options.HasExtension(validate_pb2.rules):
+                return
             
-            for rule_type, rule_data in parsed_rules.items():
-                if rule_type == 'required':
+            # Get the validate.rules extension
+            rules = field_options.Extensions[validate_pb2.rules]
+            
+            # Parse required field
+            if rules.HasField('required') and rules.required:
+                self.constraints.append(
+                    ValidationConstraint(self.name, self.get_type_name(), 'required', True)
+                )
+            
+            # Parse type-specific rules
+            type_name = self.get_type_name()
+            
+            # String rules
+            if type_name == 'string' and rules.HasField('string'):
+                str_rules = rules.string
+                if str_rules.HasField('min_len'):
                     self.constraints.append(
-                        ValidationConstraint(self.name, self.get_type_name(), 'required', True)
+                        ValidationConstraint(self.name, type_name, 'min_len', str_rules.min_len)
                     )
-                elif isinstance(rule_data, dict):
-                    for constraint_name, constraint_value in rule_data.items():
-                        self.constraints.append(
-                            ValidationConstraint(
-                                self.name,
-                                self.get_type_name(),
-                                constraint_name,
-                                constraint_value
-                            )
-                        )
+                if str_rules.HasField('max_len'):
+                    self.constraints.append(
+                        ValidationConstraint(self.name, type_name, 'max_len', str_rules.max_len)
+                    )
+                if str_rules.HasField('contains'):
+                    self.constraints.append(
+                        ValidationConstraint(self.name, type_name, 'contains', str_rules.contains)
+                    )
+                if str_rules.HasField('prefix'):
+                    self.constraints.append(
+                        ValidationConstraint(self.name, type_name, 'prefix', str_rules.prefix)
+                    )
+                if str_rules.HasField('suffix'):
+                    self.constraints.append(
+                        ValidationConstraint(self.name, type_name, 'suffix', str_rules.suffix)
+                    )
+                if str_rules.HasField('email') and str_rules.email:
+                    self.constraints.append(
+                        ValidationConstraint(self.name, type_name, 'email', True)
+                    )
+                if str_rules.HasField('hostname') and str_rules.hostname:
+                    self.constraints.append(
+                        ValidationConstraint(self.name, type_name, 'hostname', True)
+                    )
+                if str_rules.HasField('ip') and str_rules.ip:
+                    self.constraints.append(
+                        ValidationConstraint(self.name, type_name, 'ip', True)
+                    )
+                if str_rules.HasField('ipv4') and str_rules.ipv4:
+                    self.constraints.append(
+                        ValidationConstraint(self.name, type_name, 'ipv4', True)
+                    )
+                if str_rules.HasField('ipv6') and str_rules.ipv6:
+                    self.constraints.append(
+                        ValidationConstraint(self.name, type_name, 'ipv6', True)
+                    )
+            
+            # Int32 rules
+            elif type_name in ('int32', 'sint32') and rules.HasField('int32'):
+                int_rules = rules.int32
+                if int_rules.HasField('gte'):
+                    self.constraints.append(
+                        ValidationConstraint(self.name, type_name, 'gte', int_rules.gte)
+                    )
+                if int_rules.HasField('gt'):
+                    self.constraints.append(
+                        ValidationConstraint(self.name, type_name, 'gt', int_rules.gt)
+                    )
+                if int_rules.HasField('lte'):
+                    self.constraints.append(
+                        ValidationConstraint(self.name, type_name, 'lte', int_rules.lte)
+                    )
+                if int_rules.HasField('lt'):
+                    self.constraints.append(
+                        ValidationConstraint(self.name, type_name, 'lt', int_rules.lt)
+                    )
+                if int_rules.HasField('const'):
+                    self.constraints.append(
+                        ValidationConstraint(self.name, type_name, 'const', int_rules.const)
+                    )
+            
+            # Int64 rules
+            elif type_name in ('int64', 'sint64') and rules.HasField('int64'):
+                int_rules = rules.int64
+                if int_rules.HasField('gte'):
+                    self.constraints.append(
+                        ValidationConstraint(self.name, type_name, 'gte', int_rules.gte)
+                    )
+                if int_rules.HasField('gt'):
+                    self.constraints.append(
+                        ValidationConstraint(self.name, type_name, 'gt', int_rules.gt)
+                    )
+                if int_rules.HasField('lte'):
+                    self.constraints.append(
+                        ValidationConstraint(self.name, type_name, 'lte', int_rules.lte)
+                    )
+                if int_rules.HasField('lt'):
+                    self.constraints.append(
+                        ValidationConstraint(self.name, type_name, 'lt', int_rules.lt)
+                    )
+                if int_rules.HasField('const'):
+                    self.constraints.append(
+                        ValidationConstraint(self.name, type_name, 'const', int_rules.const)
+                    )
+            
+            # Repeated rules
+            if self.is_repeated() and rules.HasField('repeated'):
+                rep_rules = rules.repeated
+                if rep_rules.HasField('min_items'):
+                    self.constraints.append(
+                        ValidationConstraint(self.name, type_name, 'min_items', rep_rules.min_items)
+                    )
+                if rep_rules.HasField('max_items'):
+                    self.constraints.append(
+                        ValidationConstraint(self.name, type_name, 'max_items', rep_rules.max_items)
+                    )
+                if rep_rules.HasField('unique') and rep_rules.unique:
+                    self.constraints.append(
+                        ValidationConstraint(self.name, type_name, 'unique', True)
+                    )
+            
         except Exception as e:
-            # Validation parsing is optional
+            # Validation parsing is optional, don't fail
             pass
     
     def get_type_name(self) -> str:
@@ -333,12 +457,13 @@ class DataGenerator:
         """Get nanopb options for a specific field from .options file."""
         options = {}
         
-        # Try different patterns in order of specificity
+        # Try different patterns in order of specificity (least to most specific)
+        # More specific patterns will override less specific ones
         patterns = [
-            f"{message_name}.{field_name}",  # Exact match
-            f"*.{field_name}",                # Wildcard message
-            f"{message_name}.*",              # All fields in message
-            "*"                                # Global
+            "*",                                # Global (least specific)
+            f"{message_name}.*",                # All fields in message
+            f"*.{field_name}",                  # Wildcard message
+            f"{message_name}.{field_name}",     # Exact match (most specific)
         ]
         
         for pattern in patterns:
