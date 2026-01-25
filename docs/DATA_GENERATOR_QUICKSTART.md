@@ -136,6 +136,150 @@ for field_name, field_info in all_fields.items():
 ### Boolean
 - `const` - Exact value
 
+## Submessage Support
+
+The data generator now fully supports submessages, including:
+- Single submessage fields
+- Repeated submessage fields
+- Deeply nested submessages (multiple levels)
+- Recursive encoding to binary format
+
+### Example: Generating Submessages
+
+```protobuf
+syntax = "proto3";
+import "validate.proto";
+import "nanopb.proto";
+
+message Address {
+    string street = 1 [(nanopb).max_size = 64, (validate.rules).string.min_len = 5];
+    string city = 2 [(nanopb).max_size = 32, (validate.rules).string.min_len = 2];
+    int32 zip_code = 3 [(validate.rules).int32.gte = 10000];
+}
+
+message Person {
+    string name = 1 [(nanopb).max_size = 64];
+    int32 age = 2 [(validate.rules).int32.gte = 0];
+    Address address = 3;  // Submessage field
+}
+
+message Company {
+    string name = 1 [(nanopb).max_size = 128];
+    repeated Person employees = 2 [(nanopb).max_count = 10];  // Repeated submessage
+}
+```
+
+### Python API
+
+```python
+from generator.nanopb_data_generator import DataGenerator
+
+gen = DataGenerator('company.proto', include_paths=['generator/proto'])
+
+# Generate data with nested submessages
+company_data = gen.generate_valid('Company', seed=42)
+print(company_data)
+# {
+#   'name': 'ACME Corp',
+#   'employees': [
+#     {
+#       'name': 'John Doe',
+#       'age': 30,
+#       'address': {
+#         'street': '123 Main St',
+#         'city': 'Springfield',
+#         'zip_code': 12345
+#       }
+#     },
+#     ...
+#   ]
+# }
+
+# Encode to binary (includes all nested submessages)
+binary = gen.encode_to_binary('Company', company_data)
+```
+
+### CLI Usage
+
+```bash
+# Generate data for a message with submessages
+python3 generator/nanopb_data_generator.py company.proto Company \
+    -I generator/proto --seed 42
+
+# Outputs:
+# const uint8_t company_data[] = {0x0a, 0x09, ...};
+# const size_t company_data_size = 250;
+```
+
+The generated binary data includes all nested submessages properly encoded according to the protobuf wire format.
+
+## Nanopb .options File Support
+
+The data generator can parse and apply constraints from nanopb `.options` files. This is useful for respecting nanopb-specific settings like `max_size` and `max_count`.
+
+### Example .options File
+
+```
+# Global defaults
+* max_size:16
+
+# Specific field overrides
+Person.name max_size:64
+Address.street max_size:100
+Company.employees max_count:5
+```
+
+### Using .options Files
+
+#### Python API
+
+```python
+from generator.nanopb_data_generator import DataGenerator
+
+# Specify the .options file explicitly
+gen = DataGenerator('company.proto',
+                   include_paths=['generator/proto'],
+                   options_file='company.options')
+
+# Or rely on the default (same name as proto file with .options extension)
+gen = DataGenerator('company.proto', include_paths=['generator/proto'])
+# Automatically looks for company.options
+```
+
+#### CLI
+
+```bash
+# Specify .options file explicitly
+python3 generator/nanopb_data_generator.py company.proto Company \
+    -I generator/proto --options-file company.options
+
+# Or use default (company.options in same directory as company.proto)
+python3 generator/nanopb_data_generator.py company.proto Company \
+    -I generator/proto
+```
+
+### Supported .options Constraints
+
+The following nanopb options are applied during data generation:
+
+- `max_size` - Maximum size for string/bytes fields (applied as max_len)
+- `max_count` - Maximum count for repeated fields
+- Pattern matching follows nanopb conventions:
+  - `MessageName.field_name` - Exact field match
+  - `*.field_name` - All fields with that name
+  - `MessageName.*` - All fields in that message
+  - `*` - Global default for all fields
+
+Example:
+```
+# Set different limits for different contexts
+* max_size:32                    # Global default
+UserProfile.* max_size:128       # All fields in UserProfile
+*.description max_size:256       # All description fields
+User.email max_size:64           # Specific field
+```
+
+
 ## Example Proto File
 
 ```protobuf
@@ -175,6 +319,7 @@ message User {
 usage: nanopb_data_generator.py [-h] [--invalid] [--field FIELD] [--rule RULE]
                                 [--format {binary,c_array,hex,dict}]
                                 [--output OUTPUT] [--seed SEED] [-I INCLUDE]
+                                [--options-file OPTIONS_FILE]
                                 proto_file message
 
 positional arguments:
@@ -190,6 +335,8 @@ optional arguments:
   --output FILE, -o     Output file (default: stdout)
   --seed SEED           Random seed for reproducibility
   -I DIR, --include     Include path for proto files
+  -f FILE, --options-file FILE
+                        Path to .options file (default: <proto_file>.options)
 ```
 
 ## Integration with Nanopb
