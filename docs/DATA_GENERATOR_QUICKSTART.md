@@ -54,6 +54,22 @@ python3 generator/nanopb_data_generator.py test_basic_validation.proto BasicVali
     --format binary -o test_data.bin -I generator/proto
 ```
 
+### 5. Generate Data for All Messages
+
+```bash
+# Generate C arrays for all messages in the proto file
+python3 generator/nanopb_data_generator.py my_proto.proto --all-messages -I generator/proto
+
+# Save to separate binary files (one per message)
+python3 generator/nanopb_data_generator.py my_proto.proto --all-messages \
+    --format binary -o test_data.bin -I generator/proto
+# Creates: test_data_message1.bin, test_data_message2.bin, etc.
+
+# Output all messages as hex
+python3 generator/nanopb_data_generator.py my_proto.proto --all-messages \
+    --format hex -I generator/proto
+```
+
 > **Tip:** The generator works for any proto that uses `validate.proto` style
 > constraints, not just the bundled examples. When compiling standalone files
 > (like `basic.proto` in the repo root), pass the path to `validate.proto`
@@ -172,17 +188,18 @@ message User {
 ## CLI Options Reference
 
 ```
-usage: nanopb_data_generator.py [-h] [--invalid] [--field FIELD] [--rule RULE]
+usage: nanopb_data_generator.py [-h] [--all-messages] [--invalid] [--field FIELD] [--rule RULE]
                                 [--format {binary,c_array,hex,dict}]
                                 [--output OUTPUT] [--seed SEED] [-I INCLUDE]
-                                proto_file message
+                                proto_file [message]
 
 positional arguments:
   proto_file            Path to .proto file
-  message               Message name to generate data for
+  message               Message name to generate data for (optional if --all-messages is used)
 
 optional arguments:
   -h, --help            Show help message
+  --all-messages        Generate data for all messages in the proto file
   --invalid             Generate invalid data
   --field FIELD         Field to violate (for invalid data)
   --rule RULE           Rule to violate (for invalid data)
