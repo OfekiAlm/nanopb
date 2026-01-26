@@ -1076,7 +1076,9 @@ def main():
         description='Generate test data for protobuf messages with validation'
     )
     parser.add_argument('proto_file', help='Path to .proto file')
-    parser.add_argument('message', help='Message name to generate data for')
+    parser.add_argument('message', nargs='?', help='Message name to generate data for (optional if --all-messages is used)')
+    parser.add_argument('--all-messages', action='store_true',
+                        help='Generate data for all messages in the proto file')
     parser.add_argument('--invalid', action='store_true',
                         help='Generate invalid data instead of valid')
     # Allow multiple --field entries or comma-separated values
@@ -1098,6 +1100,13 @@ def main():
     
     args = parser.parse_args()
     
+    # Validate arguments
+    if not args.all_messages and not args.message:
+        parser.error('Either message name or --all-messages must be specified')
+    
+    if args.all_messages and args.message:
+        parser.error('Cannot specify both message name and --all-messages')
+    
     # Create generator
     try:
         generator = DataGenerator(args.proto_file, args.include)
@@ -1105,52 +1114,88 @@ def main():
         print(f"Error loading proto file: {e}", file=sys.stderr)
         return 1
     
-    # Generate data
+    # Determine which messages to generate
+    if args.all_messages:
+        messages = generator.get_messages()
+        if not messages:
+            print("Error: No messages found in proto file", file=sys.stderr)
+            return 1
+    else:
+        messages = [args.message]
+    
+    # Generate data for each message
     try:
-        if args.invalid:
-            data_dict = generator.generate_invalid(
-                args.message,
-                violate_field=args.fields,
-                violate_rule=args.rules,
-                seed=args.seed
+        all_outputs = []
+        
+        for message_name in messages:
+            if args.invalid:
+                data_dict = generator.generate_invalid(
+                    message_name,
+                    violate_field=args.fields,
+                    violate_rule=args.rules,
+                    seed=args.seed
+                )
+            else:
+                data_dict = generator.generate_valid(message_name, seed=args.seed)
+            
+            # Encode to binary
+            binary_data = generator.encode_to_binary(message_name, data_dict)
+            
+            # Format output
+            format_map = {
+                'binary': OutputFormat.BINARY,
+                'c_array': OutputFormat.C_ARRAY,
+                'hex': OutputFormat.HEX_STRING,
+                'dict': OutputFormat.PYTHON_DICT,
+            }
+            
+            output = generator.format_output(
+                binary_data,
+                format_map[args.format],
+                f"{message_name.lower()}_data"
             )
+            
+            all_outputs.append(output)
+            
+            # Print data dict to stderr for debugging
+            print(f"\n// {message_name} generated data: {data_dict}", file=sys.stderr)
+        
+        # Combine outputs
+        if args.format == 'binary':
+            # For binary format with multiple messages, warn user
+            if len(all_outputs) > 1 and not args.output:
+                print("Warning: Binary format with multiple messages requires --output", file=sys.stderr)
+                print("Only the first message will be written to stdout", file=sys.stderr)
+            final_output = all_outputs[0] if all_outputs else b''
         else:
-            data_dict = generator.generate_valid(args.message, seed=args.seed)
-        
-        # Encode to binary
-        binary_data = generator.encode_to_binary(args.message, data_dict)
-        
-        # Format output
-        format_map = {
-            'binary': OutputFormat.BINARY,
-            'c_array': OutputFormat.C_ARRAY,
-            'hex': OutputFormat.HEX_STRING,
-            'dict': OutputFormat.PYTHON_DICT,
-        }
-        
-        output = generator.format_output(
-            binary_data,
-            format_map[args.format],
-            f"{args.message.lower()}_data"
-        )
+            # For text formats, concatenate with separators
+            final_output = '\n\n'.join(all_outputs)
         
         # Write output
         if args.output:
             if args.format == 'binary':
-                with open(args.output, 'wb') as f:
-                    f.write(output)
+                if len(all_outputs) > 1:
+                    # Write separate files for each message
+                    base_name = args.output
+                    for message_name, output in zip(messages, all_outputs):
+                        # Add message name to filename
+                        name_parts = os.path.splitext(base_name)
+                        output_file = f"{name_parts[0]}_{message_name.lower()}{name_parts[1]}"
+                        with open(output_file, 'wb') as f:
+                            f.write(output)
+                        print(f"// Written binary data to {output_file}", file=sys.stderr)
+                else:
+                    with open(args.output, 'wb') as f:
+                        f.write(final_output)
             else:
                 with open(args.output, 'w') as f:
-                    f.write(output)
+                    f.write(final_output)
                     f.write('\n')
         else:
             if args.format == 'binary':
-                sys.stdout.buffer.write(output)
+                sys.stdout.buffer.write(final_output)
             else:
-                print(output)
-        
-        # Print data dict to stderr for debugging
-        print(f"\n// Generated data: {data_dict}", file=sys.stderr)
+                print(final_output)
         
     except Exception as e:
         print(f"Error generating data: {e}", file=sys.stderr)
