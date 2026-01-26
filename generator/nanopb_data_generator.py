@@ -1177,13 +1177,10 @@ def main():
                 if len(all_outputs) > 1:
                     # Write separate files for each message
                     base_name = args.output
-                    for i, (message_name, output) in enumerate(zip(messages, all_outputs)):
-                        if len(messages) > 1:
-                            # Add message name to filename
-                            name_parts = os.path.splitext(base_name)
-                            output_file = f"{name_parts[0]}_{message_name.lower()}{name_parts[1]}"
-                        else:
-                            output_file = base_name
+                    for message_name, output in zip(messages, all_outputs):
+                        # Add message name to filename
+                        name_parts = os.path.splitext(base_name)
+                        output_file = f"{name_parts[0]}_{message_name.lower()}{name_parts[1]}"
                         with open(output_file, 'wb') as f:
                             f.write(output)
                         print(f"// Written binary data to {output_file}", file=sys.stderr)
