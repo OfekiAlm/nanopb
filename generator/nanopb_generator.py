@@ -2973,8 +2973,47 @@ class ProtoFile:
         yield '    return 1; /* Default: message is valid */\n'
         yield '}\n\n'
         
-        # Generate callback decode helpers and wiring functions for messages with callback fields
+        # Generate callback decode helpers and wiring functions for messages that need them
+        # Only generate for: root_message, envelope messages, or messages used in filters
+        # Also need to generate for nested messages that have callback fields
+        messages_needing_callbacks = set()
+        
+        if root_message:
+            messages_needing_callbacks.add(root_message)
+        elif any_envelope_info:
+            envelope_msg, any_field, all_msg_types = any_envelope_info
+            messages_needing_callbacks.add(envelope_msg)
+            # Also add all payload types that might be in the Any field
+            for msg_type in all_msg_types:
+                messages_needing_callbacks.add(msg_type)
+        elif envelope_info:
+            envelope_msg, opcode_field, opcode_enum, oneof_field, opcode_to_msg_map = envelope_info
+            messages_needing_callbacks.add(envelope_msg)
+        
+        # Recursively add nested message types that are referenced by callback fields
+        def add_nested_callback_messages(msg):
+            for field in msg.fields:
+                if isinstance(field, OneOf):
+                    continue
+                if field.allocation == 'CALLBACK' and field.pbtype == 'MESSAGE':
+                    # Find the message type for this field
+                    submsg_ctype = field.ctype
+                    for candidate_msg in self.messages:
+                        if str(candidate_msg.name) == str(submsg_ctype):
+                            if candidate_msg not in messages_needing_callbacks:
+                                messages_needing_callbacks.add(candidate_msg)
+                                # Recursively check this message's nested types
+                                add_nested_callback_messages(candidate_msg)
+                            break
+        
+        # Start from the root messages and recursively add nested types
+        for msg in list(messages_needing_callbacks):
+            add_nested_callback_messages(msg)
+        
+        # Generate callback helpers only for messages that need them
         for msg in self.messages:
+            if msg not in messages_needing_callbacks:
+                continue
             has_callback_fields = any(f.allocation == 'CALLBACK' for f in msg.fields if not isinstance(f, OneOf))
             if has_callback_fields:
                 # Generate callback helpers and wiring function for this message

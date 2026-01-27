@@ -190,8 +190,6 @@ static void test_repeated_submessage_callback(void) {
  */
 static void test_string_bytes_callback(void) {
     printf("\n=== Testing String/Bytes Callback Validation ===\n");
-    uint8_t buffer[512];
-    size_t msg_len;
     
     /* Note: CallbackTestMessage has callback_string and callback_bytes as callbacks,
      * so we can't easily encode them in this test. Instead, we test that the
