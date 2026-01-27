@@ -6,7 +6,7 @@ import "validate.proto";
 // Nested message type for callback testing
 message NestedItem {
     int32 item_id = 1 [(validate.rules).int32 = {gt: 0}];
-    string item_name = 2 [(validate.rules).string = {min_len: 1, max_len: 50}];
+    string item_name = 2 [(nanopb).max_length = 50, (validate.rules).string = {min_len: 1, max_len: 50}];
 }
 
 // Message with callback fields for testing
@@ -28,5 +28,5 @@ message CallbackTestMessage {
 message RootMessage {
     int32 root_id = 1 [(validate.rules).int32 = {gt: 0}];
     repeated NestedItem nested_items = 2 [(nanopb).type = FT_CALLBACK];
-    string name = 3 [(validate.rules).string = {min_len: 1, max_len: 100}];
+    string name = 3 [(nanopb).max_length = 100, (validate.rules).string = {min_len: 1, max_len: 100}];
 }

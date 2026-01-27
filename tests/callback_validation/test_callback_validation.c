@@ -47,6 +47,21 @@ static int tests_failed = 0;
     } \
 } while(0)
 
+/* Helper to encode a NestedItem for callback testing */
+static bool encode_nested_item(pb_ostream_t *stream, const pb_field_iter_t *field, void * const *arg) {
+    NestedItem *item = (NestedItem *)*arg;
+    
+    if (!pb_encode_tag_for_field(stream, field)) {
+        return false;
+    }
+    
+    if (!pb_encode_submessage(stream, &NestedItem_msg, item)) {
+        return false;
+    }
+    
+    return true;
+}
+
 /* Helper function to encode a message to a buffer */
 static bool encode_message(const pb_msgdesc_t *fields, const void *src_struct, 
                           uint8_t *buffer, size_t buffer_size, size_t *msg_len) {
@@ -67,15 +82,13 @@ static void test_repeated_submessage_callback(void) {
     size_t msg_len;
     int result;
     
-    /* Test 1: Valid RootMessage with valid nested items */
-    TEST("Valid RootMessage with valid nested items");
+    /* Test 1: Valid RootMessage with no nested items */
+    TEST("Valid RootMessage with no nested items");
     {
         RootMessage msg = RootMessage_init_zero;
         msg.root_id = 123;
         strcpy(msg.name, "Test Root");
         
-        /* Since items is a callback, we need to encode it properly */
-        /* For now, test with no items (empty repeated field) */
         assert(encode_message(&RootMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
         
         result = filter_udp(NULL, buffer, msg_len);
@@ -107,6 +120,104 @@ static void test_repeated_submessage_callback(void) {
         result = filter_udp(NULL, buffer, msg_len);
         EXPECT_INVALID(result == 0, "RootMessage with empty name");
     }
+    
+    /* Test 4: Valid RootMessage with valid nested item (callback field) */
+    TEST("Valid RootMessage with one valid nested item");
+    {
+        /* Create the nested item */
+        NestedItem item1 = NestedItem_init_zero;
+        item1.item_id = 42;
+        strcpy(item1.item_name, "Item42");
+        
+        /* Create root message with callback for nested_items */
+        RootMessage msg = RootMessage_init_zero;
+        msg.root_id = 123;
+        strcpy(msg.name, "Test Root");
+        msg.nested_items.funcs.encode = encode_nested_item;
+        msg.nested_items.arg = &item1;
+        
+        assert(encode_message(&RootMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
+        
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_VALID(result == 0, "RootMessage with valid nested item");
+    }
+    
+    /* Test 5: Invalid RootMessage with invalid nested item (item_id <= 0) */
+    TEST("Invalid RootMessage with invalid nested item (item_id = 0)");
+    {
+        /* Create an invalid nested item */
+        NestedItem item1 = NestedItem_init_zero;
+        item1.item_id = 0;  /* Invalid: must be > 0 */
+        strcpy(item1.item_name, "InvalidItem");
+        
+        /* Create root message */
+        RootMessage msg = RootMessage_init_zero;
+        msg.root_id = 123;
+        strcpy(msg.name, "Test Root");
+        msg.nested_items.funcs.encode = encode_nested_item;
+        msg.nested_items.arg = &item1;
+        
+        assert(encode_message(&RootMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
+        
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_INVALID(result == 0, "RootMessage with invalid nested item");
+    }
+    
+    /* Test 6: Invalid RootMessage with nested item having empty item_name */
+    TEST("Invalid RootMessage with nested item having empty name");
+    {
+        /* Create nested item with invalid name */
+        NestedItem item1 = NestedItem_init_zero;
+        item1.item_id = 42;
+        item1.item_name[0] = '\0';  /* Invalid: min_len is 1 */
+        
+        /* Create root message */
+        RootMessage msg = RootMessage_init_zero;
+        msg.root_id = 123;
+        strcpy(msg.name, "Test Root");
+        msg.nested_items.funcs.encode = encode_nested_item;
+        msg.nested_items.arg = &item1;
+        
+        assert(encode_message(&RootMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
+        
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_INVALID(result == 0, "RootMessage with nested item having empty name");
+    }
+}
+
+/*
+ * Test that callback fields for strings and bytes work correctly
+ */
+static void test_string_bytes_callback(void) {
+    printf("\n=== Testing String/Bytes Callback Validation ===\n");
+    uint8_t buffer[512];
+    size_t msg_len;
+    
+    /* Note: CallbackTestMessage has callback_string and callback_bytes as callbacks,
+     * so we can't easily encode them in this test. Instead, we test that the
+     * validators correctly skip them (which we verified in the generated code). */
+    
+    TEST("CallbackTestMessage validators skip callback fields");
+    {
+        CallbackTestMessage msg = CallbackTestMessage_init_zero;
+        msg.static_field = 500;  /* Valid: 0 <= 500 <= 1000 */
+        
+        pb_violations_t violations = {0};
+        bool valid = pb_validate_CallbackTestMessage(&msg, &violations);
+        
+        EXPECT_VALID(valid, "CallbackTestMessage with only static_field set");
+    }
+    
+    TEST("CallbackTestMessage with invalid static_field");
+    {
+        CallbackTestMessage msg = CallbackTestMessage_init_zero;
+        msg.static_field = 2000;  /* Invalid: > 1000 */
+        
+        pb_violations_t violations = {0};
+        bool valid = pb_validate_CallbackTestMessage(&msg, &violations);
+        
+        EXPECT_INVALID(valid, "CallbackTestMessage with static_field > 1000");
+    }
 }
 
 /*
@@ -115,18 +226,36 @@ static void test_repeated_submessage_callback(void) {
 static void test_callback_wiring(void) {
     printf("\n=== Testing Callback Wiring ===\n");
     
-    /* Test that pb_wire_callbacks function exists and can be called */
-    TEST("pb_wire_callbacks_RootMessage function exists");
+    /* Test indirectly by checking that nested validation occurs during filter_udp */
+    TEST("Callback wiring via filter_udp with nested validation");
     {
+        uint8_t buffer[512];
+        size_t msg_len;
+        int result;
+        
+        /* Create a message with an invalid nested item to verify callbacks are wired */
+        NestedItem item1 = NestedItem_init_zero;
+        item1.item_id = 0;  /* Invalid: must be > 0 */
+        strcpy(item1.item_name, "InvalidItem");
+        
         RootMessage msg = RootMessage_init_zero;
-        pb_violations_t violations = {0};
+        msg.root_id = 123;
+        strcpy(msg.name, "Test Root");
+        msg.nested_items.funcs.encode = encode_nested_item;
+        msg.nested_items.arg = &item1;
         
-        /* This should compile and run without error */
-        pb_wire_callbacks_RootMessage(&msg, &violations);
+        assert(encode_message(&RootMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
         
-        /* Check that callback was wired */
-        tests_passed++;
-        printf("    [PASS] pb_wire_callbacks_RootMessage callable\n");
+        result = filter_udp(NULL, buffer, msg_len);
+        
+        /* If callbacks are properly wired, nested validation should fail */
+        if (result != 0) {
+            tests_passed++;
+            printf("    [PASS] Callback validation detected invalid nested item\n");
+        } else {
+            tests_failed++;
+            printf("    [FAIL] Callback validation did not detect invalid nested item\n");
+        }
     }
 }
 
@@ -134,6 +263,7 @@ int main(void) {
     printf("=== Callback Validation Test Suite ===\n");
     
     test_repeated_submessage_callback();
+    test_string_bytes_callback();
     test_callback_wiring();
     
     printf("\n=== Test Results ===\n");
