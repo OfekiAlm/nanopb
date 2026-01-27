@@ -2831,6 +2831,7 @@ class ProtoFile:
         yield '    }\n'
         yield '\n'
         yield '    /* Validate the decoded submessage */\n'
+        yield '    /* Note: pb_validate_%s is always generated when --validate is enabled */\n' % submsg_type_name
         yield '    if (!pb_validate_%s(&tmp, ctx->violations)) {\n' % submsg_type_name
         yield '        return false; /* Validation failed */\n'
         yield '    }\n'
@@ -2851,6 +2852,7 @@ class ProtoFile:
         yield '    (void)field; /* Unused parameter */\n'
         yield '\n'
         yield '    /* Read and discard the field data while validating length */\n'
+        yield '    /* Note: stream->bytes_left is the field length (set by pb_make_string_substream) */\n'
         yield '    size_t len = stream->bytes_left;\n'
         yield '\n'
         
