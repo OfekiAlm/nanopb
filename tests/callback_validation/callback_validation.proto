@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+import "nanopb.proto";
+import "validate.proto";
+
+// Nested message type for callback testing
+message NestedItem {
+    int32 item_id = 1 [(validate.rules).int32 = {gt: 0}];
+    string item_name = 2 [(validate.rules).string = {min_len: 1, max_len: 50}];
+}
+
+// Message with callback fields for testing
+message CallbackTestMessage {
+    // Repeated submessage as callback (most common case)
+    repeated NestedItem items = 1 [(nanopb).type = FT_CALLBACK];
+    
+    // String as callback
+    string callback_string = 2 [(nanopb).type = FT_CALLBACK, (validate.rules).string = {min_len: 5, max_len: 100}];
+    
+    // Bytes as callback  
+    bytes callback_bytes = 3 [(nanopb).type = FT_CALLBACK, (validate.rules).bytes = {min_len: 1, max_len: 256}];
+    
+    // A static field for comparison
+    int32 static_field = 4 [(validate.rules).int32 = {gte: 0, lte: 1000}];
+}
+
+// Simple top-level message for root-message mode testing
+message RootMessage {
+    int32 root_id = 1 [(validate.rules).int32 = {gt: 0}];
+    repeated NestedItem nested_items = 2 [(nanopb).type = FT_CALLBACK];
+    string name = 3 [(validate.rules).string = {min_len: 1, max_len: 100}];
+}
