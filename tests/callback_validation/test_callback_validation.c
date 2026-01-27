@@ -190,12 +190,83 @@ static void test_repeated_submessage_callback(void) {
  */
 static void test_string_bytes_callback(void) {
     printf("\n=== Testing String/Bytes Callback Validation ===\n");
+    uint8_t buffer[512];
+    size_t msg_len;
+    int result;
     
-    /* Note: CallbackTestMessage has callback_string and callback_bytes as callbacks,
-     * so we can't easily encode them in this test. Instead, we test that the
-     * validators correctly skip them (which we verified in the generated code). */
+    /* Helper to encode callback strings */
+    typedef struct {
+        const char *str;
+    } string_encode_ctx;
     
-    TEST("CallbackTestMessage validators skip callback fields");
+    bool encode_callback_string(pb_ostream_t *stream, const pb_field_iter_t *field, void * const *arg) {
+        string_encode_ctx *ctx = (string_encode_ctx *)*arg;
+        if (!pb_encode_tag_for_field(stream, field)) {
+            return false;
+        }
+        return pb_encode_string(stream, (const pb_byte_t *)ctx->str, strlen(ctx->str));
+    }
+    
+    /* Test 1: Valid callback string (meets min_len requirement) */
+    TEST("Valid RootMessage with valid callback_description");
+    {
+        RootMessage msg = RootMessage_init_zero;
+        msg.root_id = 123;
+        strcpy(msg.name, "Test Root");
+        
+        /* Wire the callback string encoder */
+        string_encode_ctx str_ctx = {"This is a valid description that is long enough"};
+        msg.callback_description.funcs.encode = encode_callback_string;
+        msg.callback_description.arg = &str_ctx;
+        
+        assert(encode_message(&RootMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
+        
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_VALID(result == 0, "RootMessage with valid callback_description");
+    }
+    
+    /* Test 2: Invalid callback string (too short - less than min_len=10) */
+    TEST("Invalid RootMessage with callback_description too short");
+    {
+        RootMessage msg = RootMessage_init_zero;
+        msg.root_id = 123;
+        strcpy(msg.name, "Test Root");
+        
+        /* Wire the callback string encoder with short string */
+        string_encode_ctx str_ctx = {"Short"};  /* Only 5 chars, min is 10 */
+        msg.callback_description.funcs.encode = encode_callback_string;
+        msg.callback_description.arg = &str_ctx;
+        
+        assert(encode_message(&RootMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
+        
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_INVALID(result == 0, "RootMessage with callback_description too short");
+    }
+    
+    /* Test 3: Invalid callback string (too long - exceeds max_len=200) */
+    TEST("Invalid RootMessage with callback_description too long");
+    {
+        RootMessage msg = RootMessage_init_zero;
+        msg.root_id = 123;
+        strcpy(msg.name, "Test Root");
+        
+        /* Wire the callback string encoder with very long string */
+        char long_str[250];
+        memset(long_str, 'A', 249);
+        long_str[249] = '\0';  /* 249 chars, max is 200 */
+        
+        string_encode_ctx str_ctx = {long_str};
+        msg.callback_description.funcs.encode = encode_callback_string;
+        msg.callback_description.arg = &str_ctx;
+        
+        assert(encode_message(&RootMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
+        
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_INVALID(result == 0, "RootMessage with callback_description too long");
+    }
+    
+    /* Test 4: Validator can still validate static fields even with callback fields present */
+    TEST("CallbackTestMessage validators work for non-callback fields");
     {
         CallbackTestMessage msg = CallbackTestMessage_init_zero;
         msg.static_field = 500;  /* Valid: 0 <= 500 <= 1000 */

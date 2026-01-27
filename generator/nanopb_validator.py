@@ -1089,6 +1089,7 @@ class ValidatorGenerator:
                 field = field_validator.field
                 
                 # Skip validation for CALLBACK fields - they're validated during decode
+                # Callback fields (pb_callback_t) don't contain the actual data, so we can't validate them here
                 allocation = getattr(field, 'allocation', None)
                 if allocation == 'CALLBACK':
                     yield '    /* Field %s uses CALLBACK: validated during decode */\n' % field_name

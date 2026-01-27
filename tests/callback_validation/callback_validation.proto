@@ -29,4 +29,6 @@ message RootMessage {
     int32 root_id = 1 [(validate.rules).int32 = {gt: 0}];
     repeated NestedItem nested_items = 2 [(nanopb).type = FT_CALLBACK];
     string name = 3 [(nanopb).max_length = 100, (validate.rules).string = {min_len: 1, max_len: 100}];
+    // Callback string field for testing string validation during decode
+    string callback_description = 4 [(nanopb).type = FT_CALLBACK, (validate.rules).string = {min_len: 10, max_len: 200}];
 }
