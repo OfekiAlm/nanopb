@@ -1087,6 +1087,13 @@ class ValidatorGenerator:
             # Generate field validations
             for field_name, field_validator in validator.field_validators.items():
                 field = field_validator.field
+                
+                # Skip validation for CALLBACK fields - they're validated during decode
+                allocation = getattr(field, 'allocation', None)
+                if allocation == 'CALLBACK':
+                    yield '    /* Field %s uses CALLBACK: validated during decode */\n' % field_name
+                    continue
+                
                 yield '    /* Validate field: %s */\n' % field_name
                 yield '    PB_VALIDATE_FIELD_BEGIN(ctx, "%s");\n' % field_name
                 
@@ -1106,19 +1113,23 @@ class ValidatorGenerator:
                                             'protobuf' in submsg_ctype_str and 
                                             ('any' in submsg_ctype_str or 'timestamp' in submsg_ctype_str))
                         if not is_google_special:
-                            # Generate the nested validation function name
-                            sub_func = 'pb_validate_' + str(submsg_ctype).replace('.', '_')
+                            # Skip nested validation for CALLBACK fields - they're validated during decode
                             allocation = getattr(field, 'allocation', None)
-                            rules = getattr(field, 'rules', None)
-                            
-                            # Use different macros based on allocation type
-                            if allocation == 'POINTER':
-                                yield '    PB_VALIDATE_NESTED_MSG_POINTER(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
+                            if allocation == 'CALLBACK':
+                                yield '    /* Field %s uses CALLBACK: validated during decode */\n' % field_name
                             else:
-                                if rules == 'OPTIONAL':
-                                    yield '    PB_VALIDATE_NESTED_MSG_OPTIONAL(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
+                                # Generate the nested validation function name
+                                sub_func = 'pb_validate_' + str(submsg_ctype).replace('.', '_')
+                                rules = getattr(field, 'rules', None)
+                                
+                                # Use different macros based on allocation type
+                                if allocation == 'POINTER':
+                                    yield '    PB_VALIDATE_NESTED_MSG_POINTER(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
                                 else:
-                                    yield '    PB_VALIDATE_NESTED_MSG(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
+                                    if rules == 'OPTIONAL':
+                                        yield '    PB_VALIDATE_NESTED_MSG_OPTIONAL(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
+                                    else:
+                                        yield '    PB_VALIDATE_NESTED_MSG(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
                 except Exception:
                     # If field shape is unexpected, skip recursion silently to avoid crashes
                     pass
@@ -1145,8 +1156,14 @@ class ValidatorGenerator:
                     submsg_ctype_str = str(submsg_ctype).lower()
                     if 'google' in submsg_ctype_str and 'protobuf' in submsg_ctype_str and ('any' in submsg_ctype_str or 'timestamp' in submsg_ctype_str):
                         continue
-                    sub_func = 'pb_validate_' + str(submsg_ctype).replace('.', '_')
+                    
+                    # Skip nested validation for CALLBACK fields - they're validated during decode
                     allocation = getattr(f, 'allocation', None)
+                    if allocation == 'CALLBACK':
+                        # Callback fields are validated during decode, no need to validate here
+                        continue
+                    
+                    sub_func = 'pb_validate_' + str(submsg_ctype).replace('.', '_')
                     rules = getattr(f, 'rules', None)
                     # Open path context
                     yield '    /* Validate field: %s */\n' % fname
