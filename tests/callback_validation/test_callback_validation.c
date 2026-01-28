@@ -62,6 +62,28 @@ static bool encode_nested_item(pb_ostream_t *stream, const pb_field_iter_t *fiel
     return true;
 }
 
+/* Helper to encode multiple NestedItems for repeated callback testing */
+typedef struct {
+    NestedItem *items;
+    size_t count;
+} NestedItemArray;
+
+static bool encode_nested_items_array(pb_ostream_t *stream, const pb_field_iter_t *field, void * const *arg) {
+    NestedItemArray *array = (NestedItemArray *)*arg;
+    
+    for (size_t i = 0; i < array->count; i++) {
+        if (!pb_encode_tag_for_field(stream, field)) {
+            return false;
+        }
+        
+        if (!pb_encode_submessage(stream, &NestedItem_msg, &array->items[i])) {
+            return false;
+        }
+    }
+    
+    return true;
+}
+
 /* Helper function to encode a message to a buffer */
 static bool encode_message(const pb_msgdesc_t *fields, const void *src_struct, 
                           uint8_t *buffer, size_t buffer_size, size_t *msg_len) {
@@ -182,6 +204,101 @@ static void test_repeated_submessage_callback(void) {
         
         result = filter_udp(NULL, buffer, msg_len);
         EXPECT_INVALID(result == 0, "RootMessage with nested item having empty name");
+    }
+    
+    /* Test 7: Multiple valid repeated nested items (testing repeated FT_CALLBACK) */
+    TEST("Valid RootMessage with multiple valid nested items");
+    {
+        /* Create multiple nested items */
+        NestedItem items[3];
+        
+        items[0] = (NestedItem)NestedItem_init_zero;
+        items[0].item_id = 1;
+        strcpy(items[0].item_name, "First Item");
+        
+        items[1] = (NestedItem)NestedItem_init_zero;
+        items[1].item_id = 2;
+        strcpy(items[1].item_name, "Second Item");
+        
+        items[2] = (NestedItem)NestedItem_init_zero;
+        items[2].item_id = 3;
+        strcpy(items[2].item_name, "Third Item");
+        
+        NestedItemArray array = {items, 3};
+        
+        /* Create root message with callback for nested_items */
+        RootMessage msg = RootMessage_init_zero;
+        msg.root_id = 456;
+        strcpy(msg.name, "Test Multiple Items");
+        msg.nested_items.funcs.encode = encode_nested_items_array;
+        msg.nested_items.arg = &array;
+        
+        assert(encode_message(&RootMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
+        
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_VALID(result == 0, "RootMessage with multiple valid nested items");
+    }
+    
+    /* Test 8: Multiple repeated items with one invalid (testing repeated FT_CALLBACK validation) */
+    TEST("Invalid RootMessage with multiple nested items (one invalid)");
+    {
+        /* Create multiple nested items, one with invalid data */
+        NestedItem items[3];
+        
+        items[0] = (NestedItem)NestedItem_init_zero;
+        items[0].item_id = 1;
+        strcpy(items[0].item_name, "First Item");
+        
+        items[1] = (NestedItem)NestedItem_init_zero;
+        items[1].item_id = 0;  /* Invalid: must be > 0 */
+        strcpy(items[1].item_name, "Invalid Item");
+        
+        items[2] = (NestedItem)NestedItem_init_zero;
+        items[2].item_id = 3;
+        strcpy(items[2].item_name, "Third Item");
+        
+        NestedItemArray array = {items, 3};
+        
+        /* Create root message with callback for nested_items */
+        RootMessage msg = RootMessage_init_zero;
+        msg.root_id = 456;
+        strcpy(msg.name, "Test Multiple Items");
+        msg.nested_items.funcs.encode = encode_nested_items_array;
+        msg.nested_items.arg = &array;
+        
+        assert(encode_message(&RootMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
+        
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_INVALID(result == 0, "RootMessage with one invalid nested item among multiple");
+    }
+    
+    /* Test 9: Many repeated items to stress test FT_CALLBACK */
+    TEST("Valid RootMessage with many repeated nested items");
+    {
+        /* Create many nested items */
+        #define NUM_ITEMS 10
+        NestedItem items[NUM_ITEMS];
+        
+        for (int i = 0; i < NUM_ITEMS; i++) {
+            items[i] = (NestedItem)NestedItem_init_zero;
+            items[i].item_id = i + 1;
+            snprintf(items[i].item_name, sizeof(items[i].item_name), "Item %d", i + 1);
+        }
+        
+        NestedItemArray array = {items, NUM_ITEMS};
+        
+        /* Create root message with callback for nested_items */
+        RootMessage msg = RootMessage_init_zero;
+        msg.root_id = 789;
+        strcpy(msg.name, "Test Many Items");
+        msg.nested_items.funcs.encode = encode_nested_items_array;
+        msg.nested_items.arg = &array;
+        
+        assert(encode_message(&RootMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
+        
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_VALID(result == 0, "RootMessage with many valid nested items");
+        #undef NUM_ITEMS
     }
 }
 
