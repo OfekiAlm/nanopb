@@ -1149,7 +1149,7 @@ class ValidatorGenerator:
                             
                             # Generate validation for the stored length
                             for rule in field_validator.rules:
-                                if rule.type in ['MIN_LEN', 'MAX_LEN']:
+                                if rule.rule_type in ['MIN_LEN', 'MAX_LEN']:
                                     yield self._generate_callback_string_bytes_rule_check(field_var_name, rule)
                             
                             yield '    }\n'
