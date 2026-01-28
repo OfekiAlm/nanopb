@@ -59,6 +59,24 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+# Import Globals and OneOf from nanopb_generator for naming and type checks
+try:
+    from . import nanopb_generator
+    Globals = nanopb_generator.Globals
+    OneOf = nanopb_generator.OneOf
+except (ImportError, AttributeError):
+    # Fallback for when used as standalone - define minimal stubs
+    class Globals:
+        class naming_style:
+            @staticmethod
+            def type_name(name):
+                return str(name).replace('.', '_')
+            @staticmethod
+            def var_name(name):
+                return str(name)
+    class OneOf:
+        pass
+
 # =============================================================================
 # MODULE CONSTANTS
 # =============================================================================
@@ -1006,10 +1024,25 @@ class ValidatorGenerator:
                         yield ' * - (message rule)\n'
             yield ' *\n'
             yield ' * @param msg [in] Pointer to %s instance to validate.\n' % struct_name
-            yield ' * @param violations [out] Optional violations accumulator (can be NULL).\n'
+            yield ' * @param violations [out] Violations accumulator for collecting errors.\n'
+            
+            # Check if message has callback fields - if so, add callback_ctx parameter docs
+            has_callback_fields = any(getattr(f, 'allocation', None) == 'CALLBACK' 
+                                     for f in getattr(validator.message, 'fields', []) 
+                                     if not isinstance(f, OneOf))
+            
+            if has_callback_fields:
+                yield ' * @param callback_ctx [in] Callback context with decoded callback field data.\n'
+            
             yield ' * @return true if valid, false otherwise.\n'
             yield ' */\n'
-            yield 'bool %s(const %s *msg, pb_violations_t *violations);\n' % (func_name, struct_name)
+            
+            msg_type_name = Globals.naming_style.type_name(validator.message.name)
+            if has_callback_fields:
+                yield 'bool %s(const %s *msg, pb_violations_t *violations, %s_callback_ctx_t *callback_ctx);\n' % (func_name, struct_name, msg_type_name)
+            else:
+                yield 'bool %s(const %s *msg, pb_violations_t *violations);\n' % (func_name, struct_name)
+            
             yield '\n'
         
         yield '#ifdef __cplusplus\n'
@@ -1069,7 +1102,17 @@ class ValidatorGenerator:
             )
 
             # Generate validation function
-            yield 'bool %s(const %s *msg, pb_violations_t *violations)\n' % (func_name, struct_name)
+            # If message has callback fields, accept callback context parameter for validation
+            has_callback_fields = any(getattr(f, 'allocation', None) == 'CALLBACK' 
+                                     for f in getattr(validator.message, 'fields', []) 
+                                     if not isinstance(f, OneOf))
+            
+            if has_callback_fields:
+                msg_type_name = Globals.naming_style.type_name(validator.message.name)
+                yield 'bool %s(const %s *msg, pb_violations_t *violations, %s_callback_ctx_t *callback_ctx)\n' % (func_name, struct_name, msg_type_name)
+            else:
+                yield 'bool %s(const %s *msg, pb_violations_t *violations)\n' % (func_name, struct_name)
+            
             yield '{\n'
             if fields_without_constraints:
                     yield '    /* Fields without constraints:\n'
@@ -1087,12 +1130,37 @@ class ValidatorGenerator:
             # Generate field validations
             for field_name, field_validator in validator.field_validators.items():
                 field = field_validator.field
+                field_var_name = Globals.naming_style.var_name(field_name)
                 
-                # Skip validation for CALLBACK fields - they're validated during decode
-                # Callback fields (pb_callback_t) don't contain the actual data, so we can't validate them here
+                # Handle CALLBACK fields - validate from context instead of from msg struct
+                # Callback fields (pb_callback_t) don't contain data in the struct - data is in callback context
                 allocation = getattr(field, 'allocation', None)
                 if allocation == 'CALLBACK':
-                    yield '    /* Field %s uses CALLBACK: validated during decode */\n' % field_name
+                    if has_callback_fields:
+                        # Validate from callback context
+                        yield '    /* Validate callback field %s from context */\n' % field_name
+                        yield '    PB_VALIDATE_FIELD_BEGIN(ctx, "%s");\n' % field_name
+                        
+                        # Check if field was decoded
+                        pbtype = getattr(field, 'pbtype', None)
+                        if pbtype in ['STRING', 'BYTES']:
+                            # Validate string/bytes length from context
+                            yield '    if (callback_ctx->%s_decoded) {\n' % field_var_name
+                            
+                            # Generate validation for the stored length
+                            for rule in field_validator.rules:
+                                if rule.type in ['MIN_LEN', 'MAX_LEN']:
+                                    yield self._generate_callback_string_bytes_rule_check(field_var_name, rule)
+                            
+                            yield '    }\n'
+                        elif pbtype == 'MESSAGE':
+                            # Submessage was already validated during decode
+                            yield '    /* Submessage validated during decode (callback_ctx->%s_validated) */\n' % field_var_name
+                        
+                        yield '    PB_VALIDATE_FIELD_END(ctx);\n'
+                    else:
+                        # No callback context available - skip
+                        yield '    /* Field %s uses CALLBACK: validated during decode */\n' % field_name
                     continue
                 
                 yield '    /* Validate field: %s */\n' % field_name
@@ -1375,6 +1443,29 @@ class ValidatorGenerator:
             return self._wrap_optional(field,
                 '        PB_VALIDATE_BYTES_MAX_LEN(ctx, msg, %s, %d, "%s");\n' % (field_name, max_len, rule.constraint_id)
             )
+    
+    def _generate_callback_string_bytes_rule_check(self, field_var_name: str, rule: ValidationRule):
+        """Generate validation check for callback string/bytes field from context.
+        
+        Args:
+            field_var_name: Variable name of the field in callback context  
+            rule: ValidationRule (MIN_LEN or MAX_LEN)
+            
+        Yields:
+            Lines of C code implementing the validation check on callback_ctx->field_length
+        """
+        if rule.rule_type == RULE_MIN_LEN:
+            min_len = rule.params.get('value', 0)
+            yield '        if (callback_ctx->%s_length < %d) {\n' % (field_var_name, min_len)
+            yield '            pb_violations_add(violations, ctx.path_buffer, "%s", "String/bytes too short");\n' % rule.constraint_id
+            yield '            if (ctx.early_exit) return false;\n'
+            yield '        }\n'
+        elif rule.rule_type == RULE_MAX_LEN:
+            max_len = rule.params.get('value', 0)
+            yield '        if (callback_ctx->%s_length > %d) {\n' % (field_var_name, max_len)
+            yield '            pb_violations_add(violations, ctx.path_buffer, "%s", "String/bytes too long");\n' % rule.constraint_id
+            yield '            if (ctx.early_exit) return false;\n'
+            yield '        }\n'
 
     def _gen_prefix(self, field: Any, rule: ValidationRule) -> str:
         prefix = rule.params.get('value', '')

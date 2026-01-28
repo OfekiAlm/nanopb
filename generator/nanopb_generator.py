@@ -2769,11 +2769,29 @@ class ProtoFile:
         '''Generate decode callback helpers and wiring function for a message with callback fields'''
         msg_type_name = Globals.naming_style.type_name(msg.name)
         
-        # Structure to pass violations context to callbacks
+        # Structure to pass violations context to callbacks AND store decoded data
         yield '/* Callback context structure for %s */\n' % msg_type_name
+        yield '/* Stores decoded callback field data for validation by pb_validate_%s() */\n' % msg_type_name
         yield 'typedef struct {\n'
         yield '    pb_violations_t *violations;\n'
         yield '    const char *field_path;\n'
+        
+        # Add storage for each callback field
+        for field in msg.fields:
+            if isinstance(field, OneOf):
+                continue
+            if field.allocation == 'CALLBACK':
+                field_var_name = Globals.naming_style.var_name(field.name)
+                if field.pbtype in ['STRING', 'BYTES']:
+                    # Store length for string/bytes validation
+                    yield '    /* Decoded data for callback field: %s */\n' % field.name
+                    yield '    size_t %s_length;\n' % field_var_name
+                    yield '    bool %s_decoded;\n' % field_var_name
+                elif field.pbtype == 'MESSAGE':
+                    # For submessages, we can validate immediately but set a flag
+                    yield '    /* Validation status for callback field: %s */\n' % field.name
+                    yield '    bool %s_validated;\n' % field_var_name
+        
         yield '} %s_callback_ctx_t;\n\n' % msg_type_name
         
         # Generate decode callbacks for each callback field
@@ -2812,8 +2830,8 @@ class ProtoFile:
     
     def generate_submessage_decode_callback(self, msg, field, options):
         '''Generate decode callback for a submessage field
-        Decodes the submessage and validates it by calling the validator function.
-        Note: Validation happens via function call to pb_validate_*, not inline logic.
+        Decodes and validates submessage, sets flag in context.
+        Validation happens here because we can't store entire submessage (too large).
         '''
         msg_type_name = Globals.naming_style.type_name(msg.name)
         field_var_name = Globals.naming_style.var_name(field.name)
@@ -2821,7 +2839,7 @@ class ProtoFile:
         callback_func_name = 'pb_decode_callback_%s_%s' % (msg_type_name, field_var_name)
         
         yield '/* Decode callback for %s.%s */\n' % (msg_type_name, field_var_name)
-        yield '/* Decodes submessage and calls validator function (not inline validation) */\n'
+        yield '/* Validates submessage and sets flag - validation logic in pb_validate_%s() */\n' % submsg_type_name
         yield 'static bool %s(pb_istream_t *stream, const pb_field_iter_t *field, void **arg) {\n' % callback_func_name
         yield '    %s_callback_ctx_t *ctx = (%s_callback_ctx_t *)*arg;\n' % (msg_type_name, msg_type_name)
         yield '    (void)field; /* Unused parameter */\n'
@@ -2835,64 +2853,41 @@ class ProtoFile:
         yield '    }\n'
         yield '\n'
         yield '    /* Validate by calling validator function */\n'
-        yield '    /* Decode callback calls validator - validation logic is in pb_validate_%s() */\n' % submsg_type_name
+        yield '    /* Validation logic is in pb_validate_%s() - called from decode callback */\n' % submsg_type_name
+        yield '    /* because submessage is too large to store in context */\n'
         yield '    if (!pb_validate_%s(&tmp, ctx->violations)) {\n' % submsg_type_name
         yield '        return false;\n'
         yield '    }\n'
+        yield '\n'
+        yield '    /* Set flag that this field was validated */\n'
+        yield '    ctx->%s_validated = true;\n' % field_var_name
         yield '\n'
         yield '    return true;\n'
         yield '}\n\n'
     
     def generate_string_bytes_decode_callback(self, msg, field, options):
         '''Generate decode callback for a string or bytes field  
-        Decodes and validates the field by calling validation helper functions.
-        Note: Validation happens via function call to pb_validate_*, not inline logic.
+        Stores decoded field length in context for validation by pb_validate_Msg().
+        Does NOT validate - validation happens in pb_validate_Msg() function.
         '''
         msg_type_name = Globals.naming_style.type_name(msg.name)
         field_var_name = Globals.naming_style.var_name(field.name)
         callback_func_name = 'pb_decode_callback_%s_%s' % (msg_type_name, field_var_name)
         
         yield '/* Decode callback for %s.%s */\n' % (msg_type_name, field_var_name)
-        yield '/* Decodes field and calls validation function (not inline validation) */\n'
+        yield '/* Stores field length in context - validation happens in pb_validate_%s() */\n' % msg_type_name
         yield 'static bool %s(pb_istream_t *stream, const pb_field_iter_t *field, void **arg) {\n' % callback_func_name
         yield '    %s_callback_ctx_t *ctx = (%s_callback_ctx_t *)*arg;\n' % (msg_type_name, msg_type_name)
-        yield '    (void)ctx; /* May be unused if no validation rules */\n'
         yield '    (void)field; /* Unused parameter */\n'
         yield '\n'
         yield '    /* Get field length from stream */\n'
         yield '    size_t len = stream->bytes_left;\n'
         yield '\n'
-        
-        # Add length validation if we have validation rules
-        # Call validation functions instead of inline checks
-        if field.validate_rules:
-            field_rules = field.validate_rules
-            if field.pbtype == 'STRING' and hasattr(field_rules, 'string'):
-                str_rules = field_rules.string
-                min_len = str_rules.min_len if str_rules.HasField('min_len') else 0
-                max_len = str_rules.max_len if str_rules.HasField('max_len') else 0
-                
-                if min_len > 0 or max_len > 0:
-                    yield '    /* Validate by calling validation function */\n'
-                    yield '    /* Validation logic is in pb_validate_string_length() */\n'
-                    yield '    if (!pb_validate_string_length(len, %d, %d)) {\n' % (min_len, max_len)
-                    yield '        return false;\n'
-                    yield '    }\n'
-                    
-            elif field.pbtype == 'BYTES' and hasattr(field_rules, 'bytes'):
-                bytes_rules = field_rules.bytes
-                min_len = bytes_rules.min_len if bytes_rules.HasField('min_len') else 0
-                max_len = bytes_rules.max_len if bytes_rules.HasField('max_len') else 0
-                
-                if min_len > 0 or max_len > 0:
-                    yield '    /* Validate by calling validation function */\n'
-                    yield '    /* Validation logic is in pb_validate_bytes_length() */\n'
-                    yield '    if (!pb_validate_bytes_length(len, %d, %d)) {\n' % (min_len, max_len)
-                    yield '        return false;\n'
-                    yield '    }\n'
-        
+        yield '    /* Store length in context for validation by pb_validate_%s() */\n' % msg_type_name
+        yield '    ctx->%s_length = len;\n' % field_var_name
+        yield '    ctx->%s_decoded = true;\n' % field_var_name
         yield '\n'
-        yield '    /* Consume all bytes from the stream */\n'
+        yield '    /* Consume all bytes from the stream (no validation here) */\n'
         yield '    while (stream->bytes_left > 0) {\n'
         yield '        uint8_t byte;\n'
         yield '        if (!pb_read(stream, &byte, 1)) {\n'
@@ -3051,7 +3046,7 @@ class ProtoFile:
                 yield '    \n'
                 yield '    /* Wire callbacks for automatic decode+validation */\n'
                 yield '    pb_violations_t violations = {0};\n'
-                yield '    %s_callback_ctx_t callback_ctx;\n' % msg_type
+                yield '    %s_callback_ctx_t callback_ctx = {0};\n' % msg_type
                 yield '    callback_ctx.violations = &violations;\n'
                 yield '    callback_ctx.field_path = "%s";\n' % msg_type
                 yield '    pb_wire_callbacks_%s(&msg, &callback_ctx);\n' % msg_type
@@ -3063,12 +3058,20 @@ class ProtoFile:
             yield f'        return {ret_err};\n'
             yield '    }\n'
             yield '    \n'
-            yield '    /* Validate the root message */\n'
-            yield '    if (validate_message(&%s_msg, &msg)) {\n' % msg_type
-            yield f'        return {ret_ok};\n'
-            yield '    }\n'
-            yield '    \n'
-            yield f'    return {ret_err};\n'
+            # Validate - pass callback_ctx if we have callback fields
+            if has_callback_fields:
+                yield '    /* Validate the root message with callback context */\n'
+                yield '    if (!%s(&msg, &violations, &callback_ctx)) {\n' % validate_func_name
+                yield f'        return {ret_err};\n'
+                yield '    }\n'
+                yield f'    return {ret_ok};\n'
+            else:
+                yield '    /* Validate the root message */\n'
+                yield '    if (validate_message(&%s_msg, &msg)) {\n' % msg_type
+                yield f'        return {ret_ok};\n'
+                yield '    }\n'
+                yield '    \n'
+                yield f'    return {ret_err};\n'
         elif any_envelope_info:
             # Use Any-based envelope decoding
             envelope_msg, any_field, all_msg_types = any_envelope_info
