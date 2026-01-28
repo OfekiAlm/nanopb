@@ -781,6 +781,15 @@ extern "C"
      */
     bool pb_validate_enum_defined_only(int value, const int *values, pb_size_t count);
 
+    /* Helper function for validating string/bytes length during decode.
+     * This is used by decode callbacks when the full string/bytes data is not stored.
+     * For strings: validates length constraints (min_len, max_len).
+     * For bytes: validates length constraints (min_len, max_len).
+     * Returns true if the length passes validation, false otherwise.
+     */
+    bool pb_validate_string_length(pb_size_t length, pb_size_t min_len, pb_size_t max_len);
+    bool pb_validate_bytes_length(pb_size_t length, pb_size_t min_len, pb_size_t max_len);
+
     /* Helper to obtain const char* and length from a pb_callback_t string field for validation.
      * Usage model: The application should set the callback's arg pointer to a buffer that
      * contains a NUL-terminated string after decoding. This helper simply exposes that

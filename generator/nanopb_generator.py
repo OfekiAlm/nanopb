@@ -2765,6 +2765,139 @@ class ProtoFile:
         
         return None
     
+    def generate_callback_helpers_for_message(self, msg, options):
+        '''Generate decode callback helpers and wiring function for a message with callback fields'''
+        msg_type_name = Globals.naming_style.type_name(msg.name)
+        
+        # Structure to pass violations context to callbacks AND store decoded data
+        yield '/* Callback context structure for %s */\n' % msg_type_name
+        yield '/* Stores decoded callback field data for validation by pb_validate_%s() */\n' % msg_type_name
+        yield 'typedef struct {\n'
+        yield '    pb_violations_t *violations;\n'
+        yield '    const char *field_path;\n'
+        
+        # Add storage for each callback field
+        for field in msg.fields:
+            if isinstance(field, OneOf):
+                continue
+            if field.allocation == 'CALLBACK':
+                field_var_name = Globals.naming_style.var_name(field.name)
+                if field.pbtype in ['STRING', 'BYTES']:
+                    # Store length for string/bytes validation
+                    yield '    /* Decoded data for callback field: %s */\n' % field.name
+                    yield '    size_t %s_length;\n' % field_var_name
+                    yield '    bool %s_decoded;\n' % field_var_name
+                elif field.pbtype == 'MESSAGE':
+                    # For submessages, we can validate immediately but set a flag
+                    yield '    /* Validation status for callback field: %s */\n' % field.name
+                    yield '    bool %s_validated;\n' % field_var_name
+        
+        yield '} %s_callback_ctx_t;\n\n' % msg_type_name
+        
+        # Generate decode callbacks for each callback field
+        for field in msg.fields:
+            if isinstance(field, OneOf):
+                continue  # Skip oneofs for now
+            
+            if field.allocation == 'CALLBACK':
+                # Generate callback function for this field
+                if field.pbtype == 'MESSAGE':
+                    # Submessage callback
+                    for line in self.generate_submessage_decode_callback(msg, field, options):
+                        yield line
+                elif field.pbtype in ['STRING', 'BYTES']:
+                    # String/bytes callback
+                    for line in self.generate_string_bytes_decode_callback(msg, field, options):
+                        yield line
+        
+        # Generate pb_wire_callbacks function
+        yield '/* Wire decode callbacks for %s */\n' % msg_type_name
+        yield 'static void pb_wire_callbacks_%s(%s *msg, %s_callback_ctx_t *ctx) {\n' % (msg_type_name, msg_type_name, msg_type_name)
+        yield '\n'
+        
+        for field in msg.fields:
+            if isinstance(field, OneOf):
+                continue
+            
+            if field.allocation == 'CALLBACK':
+                field_var_name = Globals.naming_style.var_name(field.name)
+                callback_func_name = 'pb_decode_callback_%s_%s' % (msg_type_name, field_var_name)
+                
+                yield '    msg->%s.funcs.decode = %s;\n' % (field_var_name, callback_func_name)
+                yield '    msg->%s.arg = ctx;\n' % field_var_name
+        
+        yield '}\n\n'
+    
+    def generate_submessage_decode_callback(self, msg, field, options):
+        '''Generate decode callback for a submessage field
+        Decodes and validates submessage, sets flag in context.
+        Validation happens here because we can't store entire submessage (too large).
+        '''
+        msg_type_name = Globals.naming_style.type_name(msg.name)
+        field_var_name = Globals.naming_style.var_name(field.name)
+        submsg_type_name = Globals.naming_style.type_name(field.ctype)
+        callback_func_name = 'pb_decode_callback_%s_%s' % (msg_type_name, field_var_name)
+        
+        yield '/* Decode callback for %s.%s */\n' % (msg_type_name, field_var_name)
+        yield '/* Validates submessage and sets flag - validation logic in pb_validate_%s() */\n' % submsg_type_name
+        yield 'static bool %s(pb_istream_t *stream, const pb_field_iter_t *field, void **arg) {\n' % callback_func_name
+        yield '    %s_callback_ctx_t *ctx = (%s_callback_ctx_t *)*arg;\n' % (msg_type_name, msg_type_name)
+        yield '    (void)field; /* Unused parameter */\n'
+        yield '\n'
+        yield '    /* Allocate temporary message on stack */\n'
+        yield '    %s tmp = %s;\n' % (submsg_type_name, Globals.naming_style.define_name(str(field.ctype) + '_init_zero'))
+        yield '\n'
+        yield '    /* Decode the submessage */\n'
+        yield '    if (!pb_decode(stream, &%s_msg, &tmp)) {\n' % submsg_type_name
+        yield '        return false;\n'
+        yield '    }\n'
+        yield '\n'
+        yield '    /* Validate by calling validator function */\n'
+        yield '    /* Validation logic is in pb_validate_%s() - called from decode callback */\n' % submsg_type_name
+        yield '    /* because submessage is too large to store in context */\n'
+        yield '    if (!pb_validate_%s(&tmp, ctx->violations)) {\n' % submsg_type_name
+        yield '        return false;\n'
+        yield '    }\n'
+        yield '\n'
+        yield '    /* Set flag that this field was validated */\n'
+        yield '    ctx->%s_validated = true;\n' % field_var_name
+        yield '\n'
+        yield '    return true;\n'
+        yield '}\n\n'
+    
+    def generate_string_bytes_decode_callback(self, msg, field, options):
+        '''Generate decode callback for a string or bytes field  
+        Stores decoded field length in context for validation by pb_validate_Msg().
+        Does NOT validate - validation happens in pb_validate_Msg() function.
+        '''
+        msg_type_name = Globals.naming_style.type_name(msg.name)
+        field_var_name = Globals.naming_style.var_name(field.name)
+        callback_func_name = 'pb_decode_callback_%s_%s' % (msg_type_name, field_var_name)
+        
+        yield '/* Decode callback for %s.%s */\n' % (msg_type_name, field_var_name)
+        yield '/* Stores field length in context - validation happens in pb_validate_%s() */\n' % msg_type_name
+        yield 'static bool %s(pb_istream_t *stream, const pb_field_iter_t *field, void **arg) {\n' % callback_func_name
+        yield '    %s_callback_ctx_t *ctx = (%s_callback_ctx_t *)*arg;\n' % (msg_type_name, msg_type_name)
+        yield '    (void)field; /* Unused parameter */\n'
+        yield '\n'
+        yield '    /* Get field length from stream */\n'
+        yield '    size_t len = stream->bytes_left;\n'
+        yield '\n'
+        yield '    /* Store length in context for validation by pb_validate_%s() */\n' % msg_type_name
+        yield '    ctx->%s_length = len;\n' % field_var_name
+        yield '    ctx->%s_decoded = true;\n' % field_var_name
+        yield '\n'
+        yield '    /* Consume all bytes from the stream (no validation here) */\n'
+        yield '    while (stream->bytes_left > 0) {\n'
+        yield '        uint8_t byte;\n'
+        yield '        if (!pb_read(stream, &byte, 1)) {\n'
+        yield '            return false;\n'
+        yield '        }\n'
+        yield '    }\n'
+        yield '\n'
+        yield '    return true;\n'
+        yield '}\n\n'
+    
     def generate_service_filter_implementations(self, options):
         '''Generate implementation of packet filter functions (service- or envelope-driven)'''
         # Determine envelope detection mode and name from options
@@ -2842,6 +2975,53 @@ class ProtoFile:
         yield '    return 1; /* Default: message is valid */\n'
         yield '}\n\n'
         
+        # Generate callback decode helpers and wiring functions for messages that need them
+        # Only generate for: root_message, envelope messages, or messages used in filters
+        # Also need to generate for nested messages that have callback fields
+        messages_needing_callbacks = set()
+        
+        if root_message:
+            messages_needing_callbacks.add(root_message)
+        elif any_envelope_info:
+            envelope_msg, any_field, all_msg_types = any_envelope_info
+            messages_needing_callbacks.add(envelope_msg)
+            # Also add all payload types that might be in the Any field
+            for msg_type in all_msg_types:
+                messages_needing_callbacks.add(msg_type)
+        elif envelope_info:
+            envelope_msg, opcode_field, opcode_enum, oneof_field, opcode_to_msg_map = envelope_info
+            messages_needing_callbacks.add(envelope_msg)
+        
+        # Recursively add nested message types that are referenced by callback fields
+        def add_nested_callback_messages(msg):
+            for field in msg.fields:
+                if isinstance(field, OneOf):
+                    continue
+                if field.allocation == 'CALLBACK' and field.pbtype == 'MESSAGE':
+                    # Find the message type for this field
+                    submsg_ctype = field.ctype
+                    for candidate_msg in self.messages:
+                        if str(candidate_msg.name) == str(submsg_ctype):
+                            if candidate_msg not in messages_needing_callbacks:
+                                messages_needing_callbacks.add(candidate_msg)
+                                # Recursively check this message's nested types
+                                add_nested_callback_messages(candidate_msg)
+                            break
+        
+        # Start from the root messages and recursively add nested types
+        for msg in list(messages_needing_callbacks):
+            add_nested_callback_messages(msg)
+        
+        # Generate callback helpers only for messages that need them
+        for msg in self.messages:
+            if msg not in messages_needing_callbacks:
+                continue
+            has_callback_fields = any(f.allocation == 'CALLBACK' for f in msg.fields if not isinstance(f, OneOf))
+            if has_callback_fields:
+                # Generate callback helpers and wiring function for this message
+                for line in self.generate_callback_helpers_for_message(msg, options):
+                    yield line
+        
         # Configure return codes (success/failure)
         ret_ok = '0'
         ret_err = '-1'
@@ -2859,6 +3039,18 @@ class ProtoFile:
             
             yield '    /* Single-root-message mode: decode as %s */\n' % msg_type
             yield '    %s msg = %s;\n' % (msg_type, Globals.naming_style.define_name(str(root_message.name) + '_init_zero'))
+            
+            # Wire callbacks if the message has callback fields
+            has_callback_fields = any(f.allocation == 'CALLBACK' for f in root_message.fields if not isinstance(f, OneOf))
+            if has_callback_fields:
+                yield '    \n'
+                yield '    /* Wire callbacks for automatic decode+validation */\n'
+                yield '    pb_violations_t violations = {0};\n'
+                yield '    %s_callback_ctx_t callback_ctx = {0};\n' % msg_type
+                yield '    callback_ctx.violations = &violations;\n'
+                yield '    callback_ctx.field_path = "%s";\n' % msg_type
+                yield '    pb_wire_callbacks_%s(&msg, &callback_ctx);\n' % msg_type
+            
             yield '    stream = pb_istream_from_buffer(packet, packet_size);\n'
             yield '    status = pb_decode(&stream, &%s_msg, &msg);\n' % msg_type
             yield '    \n'
@@ -2866,12 +3058,20 @@ class ProtoFile:
             yield f'        return {ret_err};\n'
             yield '    }\n'
             yield '    \n'
-            yield '    /* Validate the root message */\n'
-            yield '    if (validate_message(&%s_msg, &msg)) {\n' % msg_type
-            yield f'        return {ret_ok};\n'
-            yield '    }\n'
-            yield '    \n'
-            yield f'    return {ret_err};\n'
+            # Validate - pass callback_ctx if we have callback fields
+            if has_callback_fields:
+                yield '    /* Validate the root message with callback context */\n'
+                yield '    if (!%s(&msg, &violations, &callback_ctx)) {\n' % validate_func_name
+                yield f'        return {ret_err};\n'
+                yield '    }\n'
+                yield f'    return {ret_ok};\n'
+            else:
+                yield '    /* Validate the root message */\n'
+                yield '    if (validate_message(&%s_msg, &msg)) {\n' % msg_type
+                yield f'        return {ret_ok};\n'
+                yield '    }\n'
+                yield '    \n'
+                yield f'    return {ret_err};\n'
         elif any_envelope_info:
             # Use Any-based envelope decoding
             envelope_msg, any_field, all_msg_types = any_envelope_info
@@ -3072,6 +3272,18 @@ class ProtoFile:
             yield '    (void)is_to_server; /* Direction unused in single-root-message mode */\n'
             yield '    /* Single-root-message mode: decode as %s */\n' % msg_type
             yield '    %s msg = %s;\n' % (msg_type, Globals.naming_style.define_name(str(root_message.name) + '_init_zero'))
+            
+            # Wire callbacks if the message has callback fields
+            has_callback_fields = any(f.allocation == 'CALLBACK' for f in root_message.fields if not isinstance(f, OneOf))
+            if has_callback_fields:
+                yield '    \n'
+                yield '    /* Wire callbacks for automatic decode+validation */\n'
+                yield '    pb_violations_t violations = {0};\n'
+                yield '    %s_callback_ctx_t callback_ctx;\n' % msg_type
+                yield '    callback_ctx.violations = &violations;\n'
+                yield '    callback_ctx.field_path = "%s";\n' % msg_type
+                yield '    pb_wire_callbacks_%s(&msg, &callback_ctx);\n' % msg_type
+            
             yield '    stream = pb_istream_from_buffer(packet, packet_size);\n'
             yield '    status = pb_decode(&stream, &%s_msg, &msg);\n' % msg_type
             yield '    \n'
