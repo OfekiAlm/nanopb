@@ -2851,36 +2851,34 @@ class ProtoFile:
         yield '    (void)ctx; /* May be unused if no validation rules */\n'
         yield '    (void)field; /* Unused parameter */\n'
         yield '\n'
-        yield '    /* Read and discard the field data while validating length */\n'
+        yield '    /* Get field length from stream */\n'
         yield '    /* Note: stream->bytes_left is the field length (set by pb_make_string_substream) */\n'
         yield '    size_t len = stream->bytes_left;\n'
         yield '\n'
         
         # Add length validation if we have validation rules
+        # Instead of inline checks, call validation functions
         if field.validate_rules:
             field_rules = field.validate_rules
             if field.pbtype == 'STRING' and hasattr(field_rules, 'string'):
                 str_rules = field_rules.string
-                if str_rules.HasField('min_len'):
-                    yield '    /* Validate min_len */\n'
-                    yield '    if (len < %d) {\n' % str_rules.min_len
+                min_len = str_rules.min_len if str_rules.HasField('min_len') else 0
+                max_len = str_rules.max_len if str_rules.HasField('max_len') else 0
+                
+                if min_len > 0 or max_len > 0:
+                    yield '    /* Validate string length using validation function */\n'
+                    yield '    if (!pb_validate_string_length(len, %d, %d)) {\n' % (min_len, max_len)
                     yield '        return false;\n'
                     yield '    }\n'
-                if str_rules.HasField('max_len'):
-                    yield '    /* Validate max_len */\n'
-                    yield '    if (len > %d) {\n' % str_rules.max_len
-                    yield '        return false;\n'
-                    yield '    }\n'
+                    
             elif field.pbtype == 'BYTES' and hasattr(field_rules, 'bytes'):
                 bytes_rules = field_rules.bytes
-                if bytes_rules.HasField('min_len'):
-                    yield '    /* Validate min_len */\n'
-                    yield '    if (len < %d) {\n' % bytes_rules.min_len
-                    yield '        return false;\n'
-                    yield '    }\n'
-                if bytes_rules.HasField('max_len'):
-                    yield '    /* Validate max_len */\n'
-                    yield '    if (len > %d) {\n' % bytes_rules.max_len
+                min_len = bytes_rules.min_len if bytes_rules.HasField('min_len') else 0
+                max_len = bytes_rules.max_len if bytes_rules.HasField('max_len') else 0
+                
+                if min_len > 0 or max_len > 0:
+                    yield '    /* Validate bytes length using validation function */\n'
+                    yield '    if (!pb_validate_bytes_length(len, %d, %d)) {\n' % (min_len, max_len)
                     yield '        return false;\n'
                     yield '    }\n'
         

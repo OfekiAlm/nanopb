@@ -569,6 +569,37 @@ bool pb_validate_enum_defined_only(int value, const int *values, pb_size_t count
     return value_in_list(&value, values, count, sizeof(int));
 }
 
+/* Helper function for validating string length during decode callbacks.
+ * Used when the full string data is not stored (callback fields).
+ * min_len: minimum allowed length (0 = no minimum)
+ * max_len: maximum allowed length (0 = no maximum)
+ * Returns true if length is within bounds, false otherwise.
+ */
+bool pb_validate_string_length(pb_size_t length, pb_size_t min_len, pb_size_t max_len)
+{
+    if (min_len > 0 && length < min_len)
+        return false;
+    if (max_len > 0 && length > max_len)
+        return false;
+    return true;
+}
+
+/* Helper function for validating bytes length during decode callbacks.
+ * Used when the full bytes data is not stored (callback fields).
+ * min_len: minimum allowed length (0 = no minimum)
+ * max_len: maximum allowed length (0 = no maximum)
+ * Returns true if length is within bounds, false otherwise.
+ */
+bool pb_validate_bytes_length(pb_size_t length, pb_size_t min_len, pb_size_t max_len)
+{
+    if (min_len > 0 && length < min_len)
+        return false;
+    if (max_len > 0 && length > max_len)
+        return false;
+    return true;
+}
+
+
 /* Helper: read NUL-terminated string pointer from pb_callback_t.
  * Assumptions:
  * - For decoded messages, user provided a decode callback that stores pointer
