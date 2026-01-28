@@ -2811,79 +2811,48 @@ class ProtoFile:
         yield '}\n\n'
     
     def generate_submessage_decode_callback(self, msg, field, options):
-        '''Generate decode callback for a submessage field'''
+        '''Generate decode callback for a submessage field - DECODE ONLY, no validation'''
         msg_type_name = Globals.naming_style.type_name(msg.name)
         field_var_name = Globals.naming_style.var_name(field.name)
         submsg_type_name = Globals.naming_style.type_name(field.ctype)
         callback_func_name = 'pb_decode_callback_%s_%s' % (msg_type_name, field_var_name)
         
-        yield '/* Decode callback for %s.%s */\n' % (msg_type_name, field_var_name)
+        yield '/* Decode callback for %s.%s - decode only, validation happens in validator */\n' % (msg_type_name, field_var_name)
         yield 'static bool %s(pb_istream_t *stream, const pb_field_iter_t *field, void **arg) {\n' % callback_func_name
         yield '    %s_callback_ctx_t *ctx = (%s_callback_ctx_t *)*arg;\n' % (msg_type_name, msg_type_name)
+        yield '    (void)ctx; /* May be unused */\n'
         yield '    (void)field; /* Unused parameter */\n'
         yield '\n'
         yield '    /* Allocate temporary message on stack */\n'
         yield '    %s tmp = %s;\n' % (submsg_type_name, Globals.naming_style.define_name(str(field.ctype) + '_init_zero'))
         yield '\n'
-        yield '    /* Decode the submessage */\n'
+        yield '    /* Decode the submessage - no validation here */\n'
         yield '    if (!pb_decode(stream, &%s_msg, &tmp)) {\n' % submsg_type_name
         yield '        return false;\n'
         yield '    }\n'
         yield '\n'
-        yield '    /* Validate the decoded submessage */\n'
-        yield '    /* Note: pb_validate_%s is always generated when --validate is enabled */\n' % submsg_type_name
-        yield '    if (!pb_validate_%s(&tmp, ctx->violations)) {\n' % submsg_type_name
-        yield '        return false; /* Validation failed */\n'
-        yield '    }\n'
-        yield '\n'
+        yield '    /* Data decoded successfully - validation happens later in validator function */\n'
         yield '    return true;\n'
         yield '}\n\n'
     
     def generate_string_bytes_decode_callback(self, msg, field, options):
-        '''Generate decode callback for a string or bytes field'''
+        '''Generate decode callback for a string or bytes field - DECODE ONLY, no validation'''
         msg_type_name = Globals.naming_style.type_name(msg.name)
         field_var_name = Globals.naming_style.var_name(field.name)
         callback_func_name = 'pb_decode_callback_%s_%s' % (msg_type_name, field_var_name)
         
-        yield '/* Decode callback for %s.%s */\n' % (msg_type_name, field_var_name)
+        yield '/* Decode callback for %s.%s - decode only, validation happens in validator */\n' % (msg_type_name, field_var_name)
         yield 'static bool %s(pb_istream_t *stream, const pb_field_iter_t *field, void **arg) {\n' % callback_func_name
         yield '    %s_callback_ctx_t *ctx = (%s_callback_ctx_t *)*arg;\n' % (msg_type_name, msg_type_name)
-        yield '    (void)ctx; /* May be unused if no validation rules */\n'
+        yield '    (void)ctx; /* May be unused */\n'
         yield '    (void)field; /* Unused parameter */\n'
         yield '\n'
         yield '    /* Get field length from stream */\n'
         yield '    /* Note: stream->bytes_left is the field length (set by pb_make_string_substream) */\n'
         yield '    size_t len = stream->bytes_left;\n'
+        yield '    (void)len; /* May be unused if no validation */\n'
         yield '\n'
-        
-        # Add length validation if we have validation rules
-        # Instead of inline checks, call validation functions
-        if field.validate_rules:
-            field_rules = field.validate_rules
-            if field.pbtype == 'STRING' and hasattr(field_rules, 'string'):
-                str_rules = field_rules.string
-                min_len = str_rules.min_len if str_rules.HasField('min_len') else 0
-                max_len = str_rules.max_len if str_rules.HasField('max_len') else 0
-                
-                if min_len > 0 or max_len > 0:
-                    yield '    /* Validate string length using validation function */\n'
-                    yield '    if (!pb_validate_string_length(len, %d, %d)) {\n' % (min_len, max_len)
-                    yield '        return false;\n'
-                    yield '    }\n'
-                    
-            elif field.pbtype == 'BYTES' and hasattr(field_rules, 'bytes'):
-                bytes_rules = field_rules.bytes
-                min_len = bytes_rules.min_len if bytes_rules.HasField('min_len') else 0
-                max_len = bytes_rules.max_len if bytes_rules.HasField('max_len') else 0
-                
-                if min_len > 0 or max_len > 0:
-                    yield '    /* Validate bytes length using validation function */\n'
-                    yield '    if (!pb_validate_bytes_length(len, %d, %d)) {\n' % (min_len, max_len)
-                    yield '        return false;\n'
-                    yield '    }\n'
-        
-        yield '\n'
-        yield '    /* Consume all bytes from the stream */\n'
+        yield '    /* Consume all bytes from the stream - no validation here */\n'
         yield '    while (stream->bytes_left > 0) {\n'
         yield '        uint8_t byte;\n'
         yield '        if (!pb_read(stream, &byte, 1)) {\n'
@@ -2891,6 +2860,7 @@ class ProtoFile:
         yield '        }\n'
         yield '    }\n'
         yield '\n'
+        yield '    /* Data decoded successfully - validation happens later in validator function */\n'
         yield '    return true;\n'
         yield '}\n\n'
     
