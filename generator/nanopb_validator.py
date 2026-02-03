@@ -250,8 +250,14 @@ class FieldContext:
     
     This dataclass encapsulates all information needed to generate validation
     code for a field, whether it's a regular message field or a member of a
-    oneof group. By using a unified context, we avoid duplicating code generation
-    logic between regular and oneof paths.
+    oneof group. By using a unified context, we can consolidate duplicated
+    code generation logic between regular and oneof paths.
+    
+    Note:
+        This is infrastructure for future consolidation of the `_gen_*` and
+        `_gen_oneof_*` methods. Currently these methods remain separate for
+        backward compatibility, but this class provides the foundation for
+        unifying them in subsequent refactoring.
     
     Attributes:
         field: The protobuf field descriptor
