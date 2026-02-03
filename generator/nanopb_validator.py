@@ -1388,6 +1388,10 @@ class ValidatorGenerator:
             yield '}\n'
             yield '\n'
     
+    # =========================================================================
+    # Code Emission Utilities
+    # =========================================================================
+    
     def _wrap_optional(self, field: Any, code: str) -> str:
         """If the field is OPTIONAL, guard checks with has_ flag."""
         try:
@@ -1399,6 +1403,12 @@ class ValidatorGenerator:
         field_name = field.name
         indented = ''.join(('    ' + line) if line.strip() else line for line in code.splitlines(True))
         return '        if (msg->has_%s) {\n%s        }\n' % (field_name, indented)
+
+    # =========================================================================
+    # Regular Field Rule Code Generators
+    # =========================================================================
+    # These methods generate C code snippets for individual validation rules
+    # applied to regular (non-oneof) message fields.
 
     def _gen_required(self, field: Any, rule: ValidationRule) -> str:
         if getattr(field, 'rules', None) == 'OPTIONAL':
@@ -1937,6 +1947,11 @@ class ValidatorGenerator:
         code = '    PB_VALIDATE_TIMESTAMP_WITHIN(ctx, msg, %s, %d, "%s");\n' % (field_name, seconds, rule.constraint_id)
         return code
 
+    # =========================================================================
+    # Rule Dispatch
+    # =========================================================================
+    # The dispatch methods route validation rules to appropriate code generators.
+
     def _generate_rule_check(self, field: Any, rule: ValidationRule):
         """Generate code for a single field validation rule."""
         dispatch = {
@@ -1977,6 +1992,12 @@ class ValidatorGenerator:
             return handler(field, rule)
         
         return '        /* TODO: Implement rule type %s */\n' % rule.rule_type
+
+    # =========================================================================
+    # Oneof Field Rule Code Generators
+    # =========================================================================
+    # These methods generate C code snippets for validation rules applied to
+    # fields within oneof groups. They handle both anonymous and named oneofs.
 
     def _generate_oneof_rule_check(self, field: Any, rule: ValidationRule, oneof_name: str, oneof_obj: Any):
         """Generate code for a single oneof member validation rule.
@@ -2259,8 +2280,12 @@ class ValidatorGenerator:
             pass
         return ''
 
+    # =========================================================================
+    # Message-Level Rule Code Generators
+    # =========================================================================
+    # These methods generate C code for message-level validation rules
+    # (requires, mutex, at_least constraints).
 
-    
     def _generate_message_rule_check(self, message: Any, rule: ValidationRule) -> str:
         """
         Generate code for a message-level validation rule.
