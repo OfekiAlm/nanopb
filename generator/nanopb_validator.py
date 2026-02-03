@@ -242,6 +242,64 @@ class ValidationRule:
     constraint_id: str
     params: Dict[str, Any] = field(default_factory=dict)
 
+
+@dataclass
+class FieldContext:
+    """
+    Context for code generation that unifies regular fields and oneof members.
+    
+    This dataclass encapsulates all information needed to generate validation
+    code for a field, whether it's a regular message field or a member of a
+    oneof group. By using a unified context, we avoid duplicating code generation
+    logic between regular and oneof paths.
+    
+    Attributes:
+        field: The protobuf field descriptor
+        field_name: The field's name (used in generated code)
+        is_oneof: True if this field is inside a oneof group
+        oneof_name: Name of the containing oneof (None for regular fields)
+        is_anonymous: True for C11 anonymous unions (field accessed directly)
+        
+    Properties:
+        field_access: Returns the C expression to access this field from msg
+                      E.g., "field_name" for regular/anonymous oneof,
+                      "oneof_name.field_name" for non-anonymous oneof
+    """
+    field: Any
+    field_name: str
+    is_oneof: bool = False
+    oneof_name: Optional[str] = None
+    is_anonymous: bool = False
+    
+    @property
+    def field_access(self) -> str:
+        """Return C expression for accessing this field from msg pointer."""
+        if self.is_oneof and not self.is_anonymous:
+            return f"{self.oneof_name}.{self.field_name}"
+        return self.field_name
+    
+    @classmethod
+    def for_regular_field(cls, field: Any) -> 'FieldContext':
+        """Create context for a regular (non-oneof) field."""
+        return cls(
+            field=field,
+            field_name=field.name,
+            is_oneof=False,
+            oneof_name=None,
+            is_anonymous=False
+        )
+    
+    @classmethod
+    def for_oneof_member(cls, field: Any, oneof_name: str, anonymous: bool) -> 'FieldContext':
+        """Create context for a field within a oneof group."""
+        return cls(
+            field=field,
+            field_name=field.name,
+            is_oneof=True,
+            oneof_name=oneof_name,
+            is_anonymous=anonymous
+        )
+
 class FieldValidator:
     """
     Handles validation rule parsing and storage for a single protobuf field.
@@ -757,6 +815,50 @@ class ValidatorGenerator:
         bypass: Whether to generate code in bypass mode
         validate_enabled: Whether validation is enabled for this proto file
     """
+    
+    # =========================================================================
+    # Class Constants: Rule Type to C Enum Mappings
+    # =========================================================================
+    # These mappings centralize the conversion from Python rule types to C macro names.
+    # By defining them as class constants, we ensure consistency across all code paths.
+    
+    NUMERIC_RULE_TO_C_ENUM = {
+        RULE_GT: 'PB_VALIDATE_RULE_GT',
+        RULE_GTE: 'PB_VALIDATE_RULE_GTE',
+        RULE_LT: 'PB_VALIDATE_RULE_LT',
+        RULE_LTE: 'PB_VALIDATE_RULE_LTE',
+        RULE_EQ: 'PB_VALIDATE_RULE_EQ',
+    }
+    
+    STRING_FORMAT_RULE_TO_C_ENUM = {
+        RULE_EMAIL: 'PB_VALIDATE_RULE_EMAIL',
+        RULE_HOSTNAME: 'PB_VALIDATE_RULE_HOSTNAME',
+        RULE_IP: 'PB_VALIDATE_RULE_IP',
+        RULE_IPV4: 'PB_VALIDATE_RULE_IPV4',
+        RULE_IPV6: 'PB_VALIDATE_RULE_IPV6',
+        RULE_ASCII: 'PB_VALIDATE_RULE_ASCII',
+        RULE_PREFIX: 'PB_VALIDATE_RULE_PREFIX',
+        RULE_SUFFIX: 'PB_VALIDATE_RULE_SUFFIX',
+        RULE_CONTAINS: 'PB_VALIDATE_RULE_CONTAINS',
+    }
+    
+    # Macros for callback string validation
+    CALLBACK_STRING_FORMAT_MACROS = {
+        RULE_EMAIL: 'PB_VALIDATE_STRING_EMAIL',
+        RULE_HOSTNAME: 'PB_VALIDATE_STRING_HOSTNAME',
+        RULE_IP: 'PB_VALIDATE_STRING_IP',
+        RULE_IPV4: 'PB_VALIDATE_STRING_IPV4',
+        RULE_IPV6: 'PB_VALIDATE_STRING_IPV6',
+    }
+    
+    # Macros for normal string validation
+    NORMAL_STRING_FORMAT_MACROS = {
+        RULE_EMAIL: 'PB_VALIDATE_STR_EMAIL',
+        RULE_HOSTNAME: 'PB_VALIDATE_STR_HOSTNAME',
+        RULE_IP: 'PB_VALIDATE_STR_IP',
+        RULE_IPV4: 'PB_VALIDATE_STR_IPV4',
+        RULE_IPV6: 'PB_VALIDATE_STR_IPV6',
+    }
     
     def __init__(self, proto_file: Any, bypass: bool = False):
         """
@@ -1324,15 +1426,8 @@ class ValidatorGenerator:
 
         value = rule.params.get('value', 0)
         
-        # Map rule type to C enum constant
-        rule_enum_map = {
-            RULE_GT: 'PB_VALIDATE_RULE_GT',
-            RULE_GTE: 'PB_VALIDATE_RULE_GTE',
-            RULE_LT: 'PB_VALIDATE_RULE_LT',
-            RULE_LTE: 'PB_VALIDATE_RULE_LTE',
-            RULE_EQ: 'PB_VALIDATE_RULE_EQ'
-        }
-        rule_enum = rule_enum_map.get(rule.rule_type)
+        # Use class constant for rule type to C enum mapping
+        rule_enum = self.NUMERIC_RULE_TO_C_ENUM.get(rule.rule_type)
         if not rule_enum:
             return ''
 
@@ -1547,25 +1642,11 @@ class ValidatorGenerator:
     def _gen_string_format(self, field: Any, rule: ValidationRule) -> str:
         field_name = field.name
         if 'string' in rule.constraint_id:
-            # Map rule types to macro names for callback and normal string fields
-            callback_macro_map = {
-                RULE_EMAIL: 'PB_VALIDATE_STRING_EMAIL',
-                RULE_HOSTNAME: 'PB_VALIDATE_STRING_HOSTNAME',
-                RULE_IP: 'PB_VALIDATE_STRING_IP',
-                RULE_IPV4: 'PB_VALIDATE_STRING_IPV4',
-                RULE_IPV6: 'PB_VALIDATE_STRING_IPV6',
-            }
-            normal_macro_map = {
-                RULE_EMAIL: 'PB_VALIDATE_STR_EMAIL',
-                RULE_HOSTNAME: 'PB_VALIDATE_STR_HOSTNAME',
-                RULE_IP: 'PB_VALIDATE_STR_IP',
-                RULE_IPV4: 'PB_VALIDATE_STR_IPV4',
-                RULE_IPV6: 'PB_VALIDATE_STR_IPV6',
-            }
+            # Use class constants for macro name lookup
             if getattr(field, 'allocation', None) == 'CALLBACK':
-                macro_name = callback_macro_map.get(rule.rule_type)
+                macro_name = self.CALLBACK_STRING_FORMAT_MACROS.get(rule.rule_type)
             else:
-                macro_name = normal_macro_map.get(rule.rule_type)
+                macro_name = self.NORMAL_STRING_FORMAT_MACROS.get(rule.rule_type)
             if not macro_name:
                 return ''
             return self._wrap_optional(field,
@@ -1675,13 +1756,7 @@ class ValidatorGenerator:
                 type_name = constraint_id.split('.', 1)[0]
                 ctype, func = _get_numeric_validator_info(type_name)
                 if ctype and func:
-                    rule_enum = {
-                        RULE_GT: 'PB_VALIDATE_RULE_GT',
-                        RULE_GTE: 'PB_VALIDATE_RULE_GTE',
-                        RULE_LT: 'PB_VALIDATE_RULE_LT',
-                        RULE_LTE: 'PB_VALIDATE_RULE_LTE',
-                        RULE_EQ: 'PB_VALIDATE_RULE_EQ'
-                    }.get(rule_type)
+                    rule_enum = self.NUMERIC_RULE_TO_C_ENUM.get(rule_type)
                     if rule_enum:
                         code += '        PB_VALIDATE_REPEATED_ITEMS_NUMERIC(ctx, msg, %s, %s, %s, %s, %s, "%s");\n' % (
                             field_name, ctype, func, rule_enum, value, constraint_id)
@@ -1742,13 +1817,7 @@ class ValidatorGenerator:
             
             elif rule_type in (RULE_EMAIL, RULE_HOSTNAME, RULE_IP, RULE_IPV4, RULE_IPV6):
                 if pbtype == 'STRING':
-                    rule_enum = {
-                        RULE_EMAIL: 'PB_VALIDATE_RULE_EMAIL',
-                        RULE_HOSTNAME: 'PB_VALIDATE_RULE_HOSTNAME',
-                        RULE_IP: 'PB_VALIDATE_RULE_IP',
-                        RULE_IPV4: 'PB_VALIDATE_RULE_IPV4',
-                        RULE_IPV6: 'PB_VALIDATE_RULE_IPV6',
-                    }.get(rule_type)
+                    rule_enum = self.STRING_FORMAT_RULE_TO_C_ENUM.get(rule_type)
                     code += '        /* repeated.items %s validation */\n' % constraint_id
                     code += '        for (pb_size_t __pb_i = 0; __pb_i < msg->%s_count; ++__pb_i) {\n' % field_name
                     code += '            pb_validate_context_push_index(&ctx, __pb_i);\n'
@@ -1972,15 +2041,8 @@ class ValidatorGenerator:
 
         value = rule.params.get('value', 0)
         
-        # Map rule type to C enum constant
-        rule_enum_map = {
-            RULE_GT: 'PB_VALIDATE_RULE_GT',
-            RULE_GTE: 'PB_VALIDATE_RULE_GTE',
-            RULE_LT: 'PB_VALIDATE_RULE_LT',
-            RULE_LTE: 'PB_VALIDATE_RULE_LTE',
-            RULE_EQ: 'PB_VALIDATE_RULE_EQ'
-        }
-        rule_enum = rule_enum_map.get(rule.rule_type)
+        # Use class constant for rule type to C enum mapping
+        rule_enum = self.NUMERIC_RULE_TO_C_ENUM.get(rule.rule_type)
         if not rule_enum:
             return ''
 
@@ -2098,15 +2160,10 @@ class ValidatorGenerator:
     def _gen_oneof_string_format(self, field: Any, rule: ValidationRule, oneof_name: str, field_name: str, anonymous: bool) -> str:
         """Generate format validation (email, hostname, ip) for oneof string member."""
         if 'string' in rule.constraint_id:
-            enum_map = {
-                RULE_EMAIL: ('PB_VALIDATE_RULE_EMAIL', 'PB_VALIDATE_STR_EMAIL'),
-                RULE_HOSTNAME: ('PB_VALIDATE_RULE_HOSTNAME', 'PB_VALIDATE_STR_HOSTNAME'),
-                RULE_IP: ('PB_VALIDATE_RULE_IP', 'PB_VALIDATE_STR_IP'),
-                RULE_IPV4: ('PB_VALIDATE_RULE_IPV4', 'PB_VALIDATE_STR_IPV4'),
-                RULE_IPV6: ('PB_VALIDATE_RULE_IPV6', 'PB_VALIDATE_STR_IPV6'),
-            }
-            rule_enum, macro_name = enum_map.get(rule.rule_type, (None, None))
-            if not rule_enum:
+            # Use class constants for lookups
+            rule_enum = self.STRING_FORMAT_RULE_TO_C_ENUM.get(rule.rule_type)
+            macro_name = self.NORMAL_STRING_FORMAT_MACROS.get(rule.rule_type)
+            if not rule_enum or not macro_name:
                 return ''
             if anonymous:
                 return (
