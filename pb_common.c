@@ -5,6 +5,29 @@
 
 #include "pb_common.h"
 
+/* Field descriptor format explanation:
+ * 
+ * Nanopb uses a compact binary format to encode field descriptors. The format
+ * is optimized for code size by using variable-length encoding based on field
+ * complexity. There are four format variants: 1-word, 2-word, 4-word, and 8-word.
+ * 
+ * Format selection (determined by bits 0-1 of word0):
+ *   0 = 1-word: Simple fields (tag < 64, small offsets/sizes)
+ *   1 = 2-word: Medium fields (tag < 16384, medium offsets/sizes)
+ *   2 = 4-word: Complex fields (large tags/offsets, no array)
+ *   3 = 8-word: Maximum complexity (large tags/offsets/arrays)
+ * 
+ * All formats encode these properties:
+ *   - Field type (wire type + allocation type + handling type)
+ *   - Tag number (protobuf field number)
+ *   - Data offset (byte offset from message start to field data)
+ *   - Data size (size of field in bytes)
+ *   - Size offset (byte offset from field to its size counter, if any)
+ *   - Array size (element count for repeated fields)
+ * 
+ * The bit layouts are optimized to fit common values in fewer words.
+ * See comments in each case for specific bit positions.
+ */
 static bool load_descriptor_values(pb_field_iter_t *iter)
 {
     uint32_t word0;
@@ -20,7 +43,18 @@ static bool load_descriptor_values(pb_field_iter_t *iter)
     switch(word0 & 3)
     {
         case 0: {
-            /* 1-word format */
+            /* 1-word format: For simple fields with small tags and offsets.
+             * 
+             * Bit layout of word0:
+             *   [1:0]   = format (00 = 1-word)
+             *   [7:2]   = tag number (0-63)
+             *   [15:8]  = field type
+             *   [23:16] = data offset (0-255 bytes)
+             *   [27:24] = size offset (0-15 bytes, signed relative to field)
+             *   [31:28] = data size (0-15 bytes)
+             * 
+             * Array size is always 1 (non-array field).
+             */
             iter->array_size = 1;
             iter->tag = (pb_size_t)((word0 >> 2) & 0x3F);
             size_offset = (int_least8_t)((word0 >> 24) & 0x0F);
@@ -30,7 +64,21 @@ static bool load_descriptor_values(pb_field_iter_t *iter)
         }
 
         case 1: {
-            /* 2-word format */
+            /* 2-word format: For fields with medium-sized tags and arrays.
+             * 
+             * Bit layout:
+             * word0:
+             *   [1:0]   = format (01 = 2-word)
+             *   [7:2]   = tag number low 6 bits
+             *   [15:8]  = field type
+             *   [27:16] = array size (0-4095 elements)
+             *   [31:28] = size offset (0-15 bytes)
+             * 
+             * word1:
+             *   [15:0]  = data offset (0-65535 bytes)
+             *   [27:16] = data size (0-4095 bytes)
+             *   [31:28] = tag number high 4 bits (allows tag 0-1023)
+             */
             uint32_t word1 = PB_PROGMEM_READU32(iter->descriptor->field_info[iter->field_info_index + 1]);
 
             iter->array_size = (pb_size_t)((word0 >> 16) & 0x0FFF);
@@ -42,7 +90,25 @@ static bool load_descriptor_values(pb_field_iter_t *iter)
         }
 
         case 2: {
-            /* 4-word format */
+            /* 4-word format: For fields with large tags or offsets, no large arrays.
+             * 
+             * Bit layout:
+             * word0:
+             *   [1:0]   = format (10 = 4-word)
+             *   [7:2]   = tag number low 6 bits
+             *   [15:8]  = field type
+             *   [31:16] = array size (0-65535 elements)
+             * 
+             * word1:
+             *   [7:0]   = size offset (0-127 bytes, signed)
+             *   [31:8]  = tag number high 24 bits (allows very large tags)
+             * 
+             * word2:
+             *   [31:0]  = data offset (full 32-bit offset)
+             * 
+             * word3:
+             *   [31:0]  = data size (full 32-bit size)
+             */
             uint32_t word1 = PB_PROGMEM_READU32(iter->descriptor->field_info[iter->field_info_index + 1]);
             uint32_t word2 = PB_PROGMEM_READU32(iter->descriptor->field_info[iter->field_info_index + 2]);
             uint32_t word3 = PB_PROGMEM_READU32(iter->descriptor->field_info[iter->field_info_index + 3]);
@@ -56,7 +122,30 @@ static bool load_descriptor_values(pb_field_iter_t *iter)
         }
 
         default: {
-            /* 8-word format */
+            /* 8-word format: Maximum complexity (large arrays + large tags/offsets).
+             * 
+             * Bit layout:
+             * word0:
+             *   [1:0]   = format (11 = 8-word)
+             *   [7:2]   = tag number low 6 bits
+             *   [15:8]  = field type
+             *   [31:16] = (reserved, unused in current implementation)
+             * 
+             * word1:
+             *   [7:0]   = size offset (0-127 bytes, signed)
+             *   [31:8]  = tag number high 24 bits
+             * 
+             * word2:
+             *   [31:0]  = data offset (full 32-bit offset)
+             * 
+             * word3:
+             *   [31:0]  = data size (full 32-bit size)
+             * 
+             * word4:
+             *   [31:0]  = array size (full 32-bit element count)
+             * 
+             * Remaining words (5-7) are reserved for future use.
+             */
             uint32_t word1 = PB_PROGMEM_READU32(iter->descriptor->field_info[iter->field_info_index + 1]);
             uint32_t word2 = PB_PROGMEM_READU32(iter->descriptor->field_info[iter->field_info_index + 2]);
             uint32_t word3 = PB_PROGMEM_READU32(iter->descriptor->field_info[iter->field_info_index + 3]);
@@ -192,6 +281,27 @@ bool pb_field_iter_next(pb_field_iter_t *iter)
     return iter->index != 0;
 }
 
+/* Find a field by tag number.
+ * 
+ * This function performs a circular search through the field descriptors to find
+ * a field with the given tag number. The search is optimized with a fast path
+ * that checks only the low 6 bits of the tag before doing a full descriptor load.
+ * 
+ * Search strategy:
+ * 1. If we're already on the target tag, return immediately
+ * 2. If tag is larger than any in this message, return false
+ * 3. If tag is less than current position, wrap around to start
+ * 4. Search forward from current position using circular iteration
+ * 5. Fast check: Compare low 6 bits of tag (stored in all formats)
+ * 6. On match, do full descriptor load and verify complete tag
+ * 7. Continue until we wrap back to starting position
+ * 
+ * Why circular search?
+ * Fields are generated in tag number order, but the user may decode fields
+ * in any order (especially when skipping unknown fields). Starting from the
+ * last found position and wrapping around gives O(n) worst case but often
+ * O(1) for sequential access.
+ */
 bool pb_field_iter_find(pb_field_iter_t *iter, uint32_t tag)
 {
     if (iter->tag == tag)
