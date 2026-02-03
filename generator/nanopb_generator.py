@@ -539,12 +539,18 @@ class ProtoElement(object):
     comments for each element using a path-based addressing scheme.
     
     The path system uses integers defined in descriptor.proto to identify
-    element types within the FileDescriptor hierarchy:
-    - FIELD (2): Field within a message
-    - MESSAGE (4): Top-level message in file  
-    - ENUM (5): Top-level enum in file
-    - NESTED_TYPE (3): Nested message within a message
-    - NESTED_ENUM (4): Nested enum within a message
+    element types within the FileDescriptor hierarchy. Note that some values
+    appear duplicated because they represent different fields in different
+    descriptor types:
+    
+    At FileDescriptor level:
+    - MESSAGE (4): FileDescriptorProto.message_type
+    - ENUM (5): FileDescriptorProto.enum_type
+    
+    At DescriptorProto (message) level:
+    - FIELD (2): DescriptorProto.field
+    - NESTED_TYPE (3): DescriptorProto.nested_type
+    - NESTED_ENUM (4): DescriptorProto.enum_type
     
     Attributes:
         element_path (tuple): Path to this element in the FileDescriptor.
