@@ -389,7 +389,8 @@ static void test_string_bytes_callback(void) {
         msg.static_field = 500;  /* Valid: 0 <= 500 <= 1000 */
         
         pb_violations_t violations = {0};
-        bool valid = pb_validate_CallbackTestMessage(&msg, &violations);
+        CallbackTestMessage_callback_ctx_t callback_ctx = {0};
+        bool valid = pb_validate_CallbackTestMessage(&msg, &violations, &callback_ctx);
         
         EXPECT_VALID(valid, "CallbackTestMessage with only static_field set");
     }
@@ -400,7 +401,8 @@ static void test_string_bytes_callback(void) {
         msg.static_field = 2000;  /* Invalid: > 1000 */
         
         pb_violations_t violations = {0};
-        bool valid = pb_validate_CallbackTestMessage(&msg, &violations);
+        CallbackTestMessage_callback_ctx_t callback_ctx = {0};
+        bool valid = pb_validate_CallbackTestMessage(&msg, &violations, &callback_ctx);
         
         EXPECT_INVALID(valid, "CallbackTestMessage with static_field > 1000");
     }

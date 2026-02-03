@@ -1,0 +1,78 @@
+scons: Reading SConscript files ...
+Checking for C header file stdbool.h... (cached) yes
+Checking for C header file stdint.h... (cached) yes
+Checking for C header file stddef.h... (cached) yes
+Checking for C header file string.h... (cached) yes
+Checking for C header file stdlib.h... (cached) yes
+Checking for C header file limits.h... (cached) yes
+Checking support for CCFLAGS="" LINKFLAGS="-lm"... (cached) yes
+Checking protoc version... error: 
+Checking for C library mudflap... (cached) no
+Checking support for CCFLAGS="-Wcast-qual -Wlogical-op -Wconversion -fstrict-aliasing -Wstrict-aliasing=1 -Wmissing-prototypes -Wmissing-declarations -Wredundant-decls -Wstack-protector " LINKFLAGS=""... (cached) yes
+Checking whether the C++ compiler works... (cached) yes
+Checking for C++ header file vector... (cached) yes
+Checking whether the C++ compiler works... (cached) yes
+Checking for C++ header file vector... (cached) yes
+Checking whether the C++ compiler works... (cached) yes
+Checking for C++ header file vector... (cached) yes
+Checking whether the C++ compiler works... (cached) yes
+Checking for C++ header file vector... (cached) yes
+Checking whether the C++ compiler works... (cached) yes
+Checking whether the C++ compiler works... (cached) yes
+Checking whether the C++ compiler works... (cached) yes
+Checking whether the C++ compiler works... (cached) yes
+Checking whether the C++ compiler works... (cached) yes
+scons: done reading SConscript files.
+scons: Building targets ...
+compare_files(["build/alltypes/encode_alltypes.equal"], ["build/alltypes/encode_alltypes.output", "build/alltypes/encode_alltypes.output.recoded"])
+[ OK ]   Files equal: build/alltypes/encode_alltypes.output and build/alltypes/encode_alltypes.output.recoded
+compare_files(["build/alltypes/optionals.equal"], ["build/alltypes/optionals.output", "build/alltypes/optionals.output.recoded"])
+[ OK ]   Files equal: build/alltypes/optionals.output and build/alltypes/optionals.output.recoded
+compare_files(["build/alltypes/zeroinit.equal"], ["build/alltypes/zeroinit.output", "build/alltypes/zeroinit.output.recoded"])
+[ OK ]   Files equal: build/alltypes/zeroinit.output and build/alltypes/zeroinit.output.recoded
+compare_files(["build/alltypes_pointer/encode_alltypes_pointer.equal"], ["build/alltypes_pointer/encode_alltypes_pointer.output", "build/alltypes/encode_alltypes.output"])
+[ OK ]   Files equal: build/alltypes_pointer/encode_alltypes_pointer.output and build/alltypes/encode_alltypes.output
+compare_files(["build/alltypes_pointer/optionals.equal"], ["build/alltypes_pointer/optionals.output", "build/alltypes/optionals.output"])
+[ OK ]   Files equal: build/alltypes_pointer/optionals.output and build/alltypes/optionals.output
+compare_files(["build/alltypes_proto3/encode_alltypes.equal"], ["build/alltypes_proto3/encode_alltypes.output", "build/alltypes_proto3/encode_alltypes.output.recoded"])
+[ OK ]   Files equal: build/alltypes_proto3/encode_alltypes.output and build/alltypes_proto3/encode_alltypes.output.recoded
+compare_files(["build/alltypes_proto3/optionals.equal"], ["build/alltypes_proto3/optionals.output", "build/alltypes_proto3/optionals.output.recoded"])
+[ OK ]   Files equal: build/alltypes_proto3/optionals.output and build/alltypes_proto3/optionals.output.recoded
+os.chdir('build/any_type/google/protobuf')
+"/home/runner/work/nanopb/nanopb/generator/protoc" -I. -I"../../../.." -I"/home/runner/work/nanopb/nanopb/generator/proto" -I"/home/runner/work/nanopb/nanopb/generator" -I"../../../../any_type" "--nanopb_out=--source-extension=.c,--header-extension=.h:." "any.proto"
+os.chdir('/home/runner/work/nanopb/nanopb/tests')
+gcc -o build/any_type/anytest.pb.o -c -g -Wall -Werror -ansi -fprofile-arcs -ftest-coverage -Wno-long-long -I/home/runner/work/nanopb/nanopb -Ibuild/common -Ibuild/any_type build/any_type/anytest.pb.c
+gcc -o build/any_type/decode_any.o -c -g -Wall -Werror -ansi -fprofile-arcs -ftest-coverage -Wno-long-long -I/home/runner/work/nanopb/nanopb -Ibuild/common -Ibuild/any_type build/any_type/decode_any.c
+gcc -o build/any_type/google/protobuf/any.pb.o -c -g -Wall -Werror -ansi -fprofile-arcs -ftest-coverage -Wno-long-long -I/home/runner/work/nanopb/nanopb -Ibuild/common -Ibuild/any_type build/any_type/google/protobuf/any.pb.c
+gcc -o build/any_type/decode_any -lm -g --coverage build/any_type/decode_any.o build/any_type/anytest.pb.o build/any_type/google/protobuf/any.pb.o build/any_type/google/protobuf/duration.pb.o build/common/pb_decode.o build/common/pb_common.o
+gcc -o build/any_type/encode_any.o -c -g -Wall -Werror -ansi -fprofile-arcs -ftest-coverage -Wno-long-long -I/home/runner/work/nanopb/nanopb -Ibuild/common -Ibuild/any_type build/any_type/encode_any.c
+gcc -o build/any_type/encode_any -lm -g --coverage build/any_type/encode_any.o build/any_type/anytest.pb.o build/any_type/google/protobuf/any.pb.o build/any_type/google/protobuf/duration.pb.o build/common/pb_encode.o build/common/pb_common.o
+run_test(["build/any_type/encode_any.output"], ["build/any_type/encode_any"])
+Command line: ['build/any_type/encode_any']
+[ OK ]   Ran build/any_type/encode_any
+run_test(["build/any_type/decode_any.output"], ["build/any_type/decode_any", "build/any_type/encode_any.output"])
+Command line: ['build/any_type/decode_any']
+[ OK ]   Ran build/any_type/decode_any
+compare_files(["build/basic_buffer/decode_buffer.equal"], ["build/basic_buffer/decode_buffer.output", "build/basic_buffer/encode_buffer.decoded"])
+[ OK ]   Files equal: build/basic_buffer/decode_buffer.output and build/basic_buffer/encode_buffer.decoded
+compare_files(["build/basic_stream/decode_stream.equal"], ["build/basic_stream/decode_stream.output", "build/basic_stream/encode_stream.decoded"])
+[ OK ]   Files equal: build/basic_stream/decode_stream.output and build/basic_stream/encode_stream.decoded
+gcc -o build/callback_validation/callback_validation_validate.o -c -g -Wall -Werror -fprofile-arcs -ftest-coverage -Wno-long-long -std=c99 -Ibuild/callback_validation -I/home/runner/work/nanopb/nanopb -Ibuild/common build/callback_validation/callback_validation_validate.c
+gcc -o build/callback_validation/pb_validate.o -c -g -Wall -Werror -fprofile-arcs -ftest-coverage -Wno-long-long -std=c99 -Ibuild/callback_validation -I/home/runner/work/nanopb/nanopb -Ibuild/common /home/runner/work/nanopb/nanopb/pb_validate.c
+gcc -o build/callback_validation/test_callback_validation.o -c -g -Wall -Werror -fprofile-arcs -ftest-coverage -Wno-long-long -std=c99 -Ibuild/callback_validation -I/home/runner/work/nanopb/nanopb -Ibuild/common build/callback_validation/test_callback_validation.c
+build/callback_validation/test_callback_validation.c: In function ‘test_string_bytes_callback’:
+build/callback_validation/test_callback_validation.c:392:22: error: too few arguments to function ‘pb_validate_CallbackTestMessage’
+  392 |         bool valid = pb_validate_CallbackTestMessage(&msg, &violations);
+      |                      ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from build/callback_validation/test_callback_validation.c:19:
+build/callback_validation/callback_validation_validate.h:39:6: note: declared here
+   39 | bool pb_validate_CallbackTestMessage(const CallbackTestMessage *msg, pb_violations_t *violations, CallbackTestMessage_callback_ctx_t *callback_ctx);
+      |      ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+build/callback_validation/test_callback_validation.c:403:22: error: too few arguments to function ‘pb_validate_CallbackTestMessage’
+  403 |         bool valid = pb_validate_CallbackTestMessage(&msg, &violations);
+      |                      ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+build/callback_validation/callback_validation_validate.h:39:6: note: declared here
+   39 | bool pb_validate_CallbackTestMessage(const CallbackTestMessage *msg, pb_violations_t *violations, CallbackTestMessage_callback_ctx_t *callback_ctx);
+      |      ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+scons: *** [build/callback_validation/test_callback_validation.o] Error 1
+scons: building terminated because of errors.
