@@ -214,6 +214,32 @@ def _escape_c_string(s: Any) -> str:
 # =============================================================================
 
 @dataclass(frozen=True)
+class CTypeInfo:
+    """
+    Encapsulates C type metadata for numeric field validation.
+    
+    This dataclass centralizes the C type information needed for code generation,
+    making the relationship between protobuf types and C types explicit.
+    
+    Attributes:
+        c_type: The C type name (e.g., 'int32_t', 'float')
+        validator_func: The C validator function name (e.g., 'pb_validate_int32')
+        proto_type: The original protobuf type name (e.g., 'int32', 'sint32')
+    """
+    c_type: str
+    validator_func: str
+    proto_type: str
+    
+    @classmethod
+    def from_proto_type(cls, proto_type: str) -> Optional['CTypeInfo']:
+        """Create CTypeInfo from a protobuf type name, or None if not a known type."""
+        c_type, validator_func = _get_numeric_validator_info(proto_type)
+        if c_type and validator_func:
+            return cls(c_type=c_type, validator_func=validator_func, proto_type=proto_type)
+        return None
+
+
+@dataclass(frozen=True)
 class ValidationRule:
     """
     Represents a single validation constraint on a field.
@@ -306,7 +332,399 @@ class FieldContext:
             is_anonymous=anonymous
         )
 
-class FieldValidator:
+
+@dataclass
+class RuleIR:
+    """
+    Complete intermediate representation for a single validation rule.
+    
+    RuleIR contains all information needed to emit C code for a validation rule,
+    without needing to look up any additional context. This is the "ready to emit"
+    representation that decouples parsing from code generation.
+    
+    The separation between ValidationRule (parsed data) and RuleIR (emission-ready)
+    allows us to:
+    - Validate rule consistency before emission
+    - Add C-specific metadata (types, macros) in one place
+    - Test parsing and emission independently
+    
+    Attributes:
+        rule: The original ValidationRule with constraint info
+        context: FieldContext with field access information
+        c_type_info: C type metadata for numeric rules (None for non-numeric)
+        c_macro: The C macro name to use for this rule
+        params_formatted: Pre-formatted parameters for C code (e.g., quoted strings)
+    """
+    rule: ValidationRule
+    context: FieldContext
+    c_type_info: Optional[CTypeInfo] = None
+    c_macro: str = ''
+    params_formatted: Dict[str, str] = field(default_factory=dict)
+    
+    @property
+    def rule_type(self) -> str:
+        """Shortcut to get the rule type."""
+        return self.rule.rule_type
+    
+    @property
+    def constraint_id(self) -> str:
+        """Shortcut to get the constraint ID."""
+        return self.rule.constraint_id
+    
+    @property
+    def field_name(self) -> str:
+        """Shortcut to get the field name."""
+        return self.context.field_name
+    
+    @property
+    def field_access(self) -> str:
+        """Shortcut to get the field access expression."""
+        return self.context.field_access
+
+
+@dataclass
+class FieldRuleSet:
+    """
+    Aggregates all validation rules for a single field.
+    
+    FieldRuleSet is the IR for a complete field validation, containing:
+    - The field context (regular or oneof)
+    - All RuleIR objects for this field
+    - Whether recursive submessage validation is needed
+    
+    Attributes:
+        context: FieldContext with field information
+        rules: List of RuleIR objects for this field
+        needs_submsg_validation: True if this is a message field that needs recursive validation
+        submsg_func_name: Name of the validation function for the submessage (if applicable)
+    """
+    context: FieldContext
+    rules: List[RuleIR] = field(default_factory=list)
+    needs_submsg_validation: bool = False
+    submsg_func_name: str = ''
+    
+    @property
+    def field_name(self) -> str:
+        """Shortcut to get the field name."""
+        return self.context.field_name
+    
+    def has_rules(self) -> bool:
+        """Return True if this field has any validation rules."""
+        return bool(self.rules)
+
+
+@dataclass
+class OneofRuleSet:
+    """
+    Aggregates all validation rules for a oneof group.
+    
+    Attributes:
+        oneof_name: Name of the oneof group
+        oneof_obj: The oneof descriptor object
+        member_rule_sets: List of FieldRuleSet for each oneof member with rules
+        is_anonymous: True if this is an anonymous oneof (C11 anonymous union)
+    """
+    oneof_name: str
+    oneof_obj: Any
+    member_rule_sets: List[FieldRuleSet] = field(default_factory=list)
+    is_anonymous: bool = False
+
+
+@dataclass
+class MessageRuleSet:
+    """
+    Complete validation IR for an entire message.
+    
+    MessageRuleSet is the top-level IR that contains everything needed to generate
+    validation code for a message. It represents the full validation model built
+    from parsing, ready for emission.
+    
+    The pipeline is:
+        MessageValidator (parsed rules) → IRBuilder → MessageRuleSet (IR) → CodeEmitter → C code
+    
+    Attributes:
+        message: The message descriptor
+        struct_name: The C struct name for this message
+        func_name: The validation function name
+        field_rule_sets: Rules for regular fields
+        oneof_rule_sets: Rules for oneof groups
+        message_rules: Message-level validation rules
+        has_callback_fields: Whether the message has any callback fields
+    """
+    message: Any
+    struct_name: str
+    func_name: str
+    field_rule_sets: List[FieldRuleSet] = field(default_factory=list)
+    oneof_rule_sets: List[OneofRuleSet] = field(default_factory=list)
+    message_rules: List[RuleIR] = field(default_factory=list)
+    has_callback_fields: bool = False
+
+
+# =============================================================================
+# IR BUILDER
+# =============================================================================
+# The IRBuilder transforms parsed validation rules into the IR representation.
+# This separation allows us to validate and preprocess rules before emission.
+
+class IRBuilder:
+    """
+    Builds RuleIR objects from parsed ValidationRules.
+    
+    IRBuilder is responsible for transforming the parsed validation rules into
+    the emission-ready IR. It:
+    - Determines the appropriate C macro for each rule type
+    - Resolves C type information for numeric rules
+    - Pre-formats parameters for C code generation
+    - Creates the complete FieldRuleSet and MessageRuleSet structures
+    
+    Dependencies:
+        - Uses Globals.naming_style for C name formatting
+        - Uses CTypeInfo for numeric type resolution
+    """
+    
+    # Mapping from rule type to C macro name for regular fields
+    RULE_TO_MACRO = {
+        RULE_REQUIRED: 'PB_VALIDATE_REQUIRED',
+        RULE_MIN_LEN: 'PB_VALIDATE_STR_MIN_LEN',
+        RULE_MAX_LEN: 'PB_VALIDATE_STR_MAX_LEN',
+        RULE_PREFIX: 'PB_VALIDATE_STR_PREFIX',
+        RULE_SUFFIX: 'PB_VALIDATE_STR_SUFFIX',
+        RULE_CONTAINS: 'PB_VALIDATE_STR_CONTAINS',
+        RULE_ASCII: 'PB_VALIDATE_STR_ASCII',
+        RULE_EMAIL: 'PB_VALIDATE_STR_EMAIL',
+        RULE_HOSTNAME: 'PB_VALIDATE_STR_HOSTNAME',
+        RULE_IP: 'PB_VALIDATE_STR_IP',
+        RULE_IPV4: 'PB_VALIDATE_STR_IPV4',
+        RULE_IPV6: 'PB_VALIDATE_STR_IPV6',
+        RULE_MIN_ITEMS: 'PB_VALIDATE_MIN_ITEMS',
+        RULE_MAX_ITEMS: 'PB_VALIDATE_MAX_ITEMS',
+        RULE_UNIQUE: 'PB_VALIDATE_REPEATED_UNIQUE_SCALAR',
+        RULE_ENUM_DEFINED: 'PB_VALIDATE_ENUM_DEFINED_ONLY',
+        RULE_ANY_IN: 'PB_VALIDATE_ANY_IN',
+        RULE_ANY_NOT_IN: 'PB_VALIDATE_ANY_NOT_IN',
+        RULE_TIMESTAMP_GT_NOW: 'PB_VALIDATE_TIMESTAMP_GT_NOW',
+        RULE_TIMESTAMP_LT_NOW: 'PB_VALIDATE_TIMESTAMP_LT_NOW',
+        RULE_TIMESTAMP_WITHIN: 'PB_VALIDATE_TIMESTAMP_WITHIN',
+    }
+    
+    # Numeric rule types that use PB_VALIDATE_NUMERIC_GENERIC
+    NUMERIC_COMPARISON_RULES = {RULE_GT, RULE_GTE, RULE_LT, RULE_LTE, RULE_EQ}
+    
+    # Rule type to C enum constant for numeric comparisons
+    NUMERIC_RULE_TO_C_ENUM = {
+        RULE_GT: 'PB_VALIDATE_RULE_GT',
+        RULE_GTE: 'PB_VALIDATE_RULE_GTE',
+        RULE_LT: 'PB_VALIDATE_RULE_LT',
+        RULE_LTE: 'PB_VALIDATE_RULE_LTE',
+        RULE_EQ: 'PB_VALIDATE_RULE_EQ',
+    }
+    
+    def __init__(self, proto_file: Any):
+        """
+        Initialize the IR builder.
+        
+        Args:
+            proto_file: The ProtoFile object (used for type lookups)
+        """
+        self.proto_file = proto_file
+    
+    def build_rule_ir(self, rule: ValidationRule, context: FieldContext) -> RuleIR:
+        """
+        Build a RuleIR from a ValidationRule and FieldContext.
+        
+        Args:
+            rule: The parsed ValidationRule
+            context: The FieldContext for the field
+            
+        Returns:
+            A complete RuleIR ready for code emission
+        """
+        # Determine C type info for numeric rules
+        c_type_info = None
+        if rule.rule_type in self.NUMERIC_COMPARISON_RULES:
+            proto_type = rule.constraint_id.split('.', 1)[0]
+            c_type_info = CTypeInfo.from_proto_type(proto_type)
+        
+        # Determine the C macro to use
+        c_macro = self._resolve_macro(rule, context)
+        
+        # Format parameters for C code
+        params_formatted = self._format_params(rule)
+        
+        return RuleIR(
+            rule=rule,
+            context=context,
+            c_type_info=c_type_info,
+            c_macro=c_macro,
+            params_formatted=params_formatted
+        )
+    
+    def _resolve_macro(self, rule: ValidationRule, context: FieldContext) -> str:
+        """Resolve the C macro name for a rule."""
+        # Numeric comparisons use NUMERIC_GENERIC
+        if rule.rule_type in self.NUMERIC_COMPARISON_RULES:
+            if context.is_oneof and not context.is_anonymous:
+                return 'PB_VALIDATE_ONEOF_NUMERIC'
+            return 'PB_VALIDATE_NUMERIC_GENERIC'
+        
+        # Lookup in the standard table
+        macro = self.RULE_TO_MACRO.get(rule.rule_type, '')
+        
+        # Adjust for oneof if needed
+        if context.is_oneof and not context.is_anonymous and macro:
+            # Many macros have ONEOF variants
+            oneof_macro = macro.replace('PB_VALIDATE_STR_', 'PB_VALIDATE_ONEOF_STR_')
+            if oneof_macro != macro:
+                return oneof_macro
+        
+        return macro
+    
+    def _format_params(self, rule: ValidationRule) -> Dict[str, str]:
+        """Format rule parameters for C code generation."""
+        formatted = {}
+        params = rule.params
+        
+        if 'value' in params:
+            val = params['value']
+            if isinstance(val, str):
+                formatted['value'] = '"%s"' % _escape_c_string(val)
+            else:
+                formatted['value'] = str(val)
+        
+        if 'values' in params:
+            values = params['values']
+            if all(isinstance(v, str) for v in values):
+                formatted['values_array'] = ', '.join('"%s"' % _escape_c_string(v) for v in values)
+            else:
+                formatted['values_array'] = ', '.join(str(v) for v in values)
+            formatted['values_count'] = str(len(values))
+        
+        if 'seconds' in params:
+            formatted['seconds'] = str(params['seconds'])
+        
+        if 'field' in params:
+            formatted['field'] = str(params['field'])
+        
+        if 'fields' in params:
+            formatted['fields'] = ', '.join(str(f) for f in params['fields'])
+        
+        if 'n' in params:
+            formatted['n'] = str(params['n'])
+        
+        return formatted
+    
+    def build_field_rule_set(self, field_validator: 'FieldValidator', 
+                             is_oneof: bool = False, 
+                             oneof_name: str = '', 
+                             is_anonymous: bool = False) -> FieldRuleSet:
+        """
+        Build a FieldRuleSet from a FieldValidator.
+        
+        Args:
+            field_validator: The parsed FieldValidator
+            is_oneof: Whether this field is in a oneof
+            oneof_name: Name of the oneof group (if applicable)
+            is_anonymous: Whether the oneof is anonymous
+            
+        Returns:
+            A FieldRuleSet with all RuleIRs for this field
+        """
+        field = field_validator.field
+        
+        if is_oneof:
+            context = FieldContext.for_oneof_member(field, oneof_name, is_anonymous)
+        else:
+            context = FieldContext.for_regular_field(field)
+        
+        rule_irs = [self.build_rule_ir(rule, context) for rule in field_validator.rules]
+        
+        # Check if submessage validation is needed
+        needs_submsg = False
+        submsg_func = ''
+        pbtype = getattr(field, 'pbtype', None)
+        if pbtype in ('MESSAGE', 'MSG_W_CB'):
+            submsg_ctype = getattr(field, 'ctype', None)
+            if submsg_ctype:
+                submsg_ctype_str = str(submsg_ctype).lower()
+                # Skip google.protobuf types
+                if not ('google' in submsg_ctype_str and 'protobuf' in submsg_ctype_str):
+                    needs_submsg = True
+                    submsg_func = 'pb_validate_' + str(submsg_ctype).replace('.', '_')
+        
+        return FieldRuleSet(
+            context=context,
+            rules=rule_irs,
+            needs_submsg_validation=needs_submsg,
+            submsg_func_name=submsg_func
+        )
+    
+    def build_message_rule_set(self, validator: 'MessageValidator') -> MessageRuleSet:
+        """
+        Build a complete MessageRuleSet from a MessageValidator.
+        
+        Args:
+            validator: The parsed MessageValidator
+            
+        Returns:
+            A MessageRuleSet with the complete IR for the message
+        """
+        message = validator.message
+        struct_name = str(message.name)
+        func_name = 'pb_validate_' + struct_name.replace('.', '_')
+        
+        # Build field rule sets
+        field_rule_sets = []
+        for field_name, field_validator in validator.field_validators.items():
+            frs = self.build_field_rule_set(field_validator)
+            field_rule_sets.append(frs)
+        
+        # Build oneof rule sets
+        oneof_rule_sets = []
+        for oneof_name, oneof_data in validator.oneof_validators.items():
+            oneof_obj = oneof_data['oneof']
+            is_anonymous = getattr(oneof_obj, 'anonymous', False)
+            
+            member_rule_sets = []
+            for member_field, member_fv in oneof_data['members']:
+                frs = self.build_field_rule_set(
+                    member_fv, 
+                    is_oneof=True, 
+                    oneof_name=oneof_name,
+                    is_anonymous=is_anonymous
+                )
+                member_rule_sets.append(frs)
+            
+            oneof_rule_sets.append(OneofRuleSet(
+                oneof_name=oneof_name,
+                oneof_obj=oneof_obj,
+                member_rule_sets=member_rule_sets,
+                is_anonymous=is_anonymous
+            ))
+        
+        # Build message rule IRs
+        message_rule_irs = []
+        for msg_rule in validator.message_rules:
+            # Message rules don't have a field context, use a dummy
+            dummy_context = FieldContext(field=None, field_name='')
+            ir = self.build_rule_ir(msg_rule, dummy_context)
+            message_rule_irs.append(ir)
+        
+        # Check for callback fields
+        has_callback = any(
+            getattr(f, 'allocation', None) == 'CALLBACK'
+            for f in getattr(message, 'fields', [])
+            if not isinstance(f, OneOf)
+        )
+        
+        return MessageRuleSet(
+            message=message,
+            struct_name=struct_name,
+            func_name=func_name,
+            field_rule_sets=field_rule_sets,
+            oneof_rule_sets=oneof_rule_sets,
+            message_rules=message_rule_irs,
+            has_callback_fields=has_callback
+        )
     """
     Handles validation rule parsing and storage for a single protobuf field.
     
@@ -804,6 +1222,325 @@ class MessageValidator:
                 self.message_rules.append(ValidationRule('AT_LEAST', 'message.at_least', 
                                                        {'n': rule.n, 'fields': list(rule.fields)}))
 
+
+# =============================================================================
+# RULE EMITTERS
+# =============================================================================
+# RuleEmitter classes handle the emission of C code for validation rules.
+# Each emitter handles a category of rules and produces the appropriate C code.
+
+from abc import ABC, abstractmethod
+
+class RuleEmitter(ABC):
+    """
+    Abstract base class for rule emitters.
+    
+    RuleEmitters convert RuleIR objects into C code strings. Each concrete
+    emitter handles a category of validation rules (e.g., numeric, string, repeated).
+    
+    The table-driven dispatch in RuleEmitterRegistry routes each rule to its
+    appropriate emitter based on rule type.
+    """
+    
+    @abstractmethod
+    def emit(self, rule_ir: RuleIR, proto_file: Any) -> str:
+        """
+        Emit C code for a validation rule.
+        
+        Args:
+            rule_ir: The RuleIR containing all emission context
+            proto_file: The ProtoFile (for enum lookups, etc.)
+            
+        Returns:
+            A string of C code implementing the validation
+        """
+        pass
+
+
+class NumericRuleEmitter(RuleEmitter):
+    """Emits C code for numeric comparison rules (GT, GTE, LT, LTE, EQ)."""
+    
+    RULE_TO_C_ENUM = {
+        RULE_GT: 'PB_VALIDATE_RULE_GT',
+        RULE_GTE: 'PB_VALIDATE_RULE_GTE',
+        RULE_LT: 'PB_VALIDATE_RULE_LT',
+        RULE_LTE: 'PB_VALIDATE_RULE_LTE',
+        RULE_EQ: 'PB_VALIDATE_RULE_EQ',
+    }
+    
+    def emit(self, rule_ir: RuleIR, proto_file: Any) -> str:
+        if not rule_ir.c_type_info:
+            return ''
+        
+        rule_enum = self.RULE_TO_C_ENUM.get(rule_ir.rule_type, '')
+        if not rule_enum:
+            return ''
+        
+        value = rule_ir.rule.params.get('value', 0)
+        ctype = rule_ir.c_type_info.c_type
+        validator_func = rule_ir.c_type_info.validator_func
+        
+        if rule_ir.context.is_oneof and not rule_ir.context.is_anonymous:
+            return (
+                '    PB_VALIDATE_ONEOF_NUMERIC(ctx, msg, %s, %s, %s, %s, %s, %s, "%s");\n'
+            ) % (rule_ir.context.oneof_name, rule_ir.field_name, ctype, 
+                 validator_func, rule_enum, value, rule_ir.constraint_id)
+        else:
+            return (
+                '        PB_VALIDATE_NUMERIC_GENERIC(ctx, msg, %s, %s, %s, %s, %s, "%s");\n'
+            ) % (rule_ir.field_name, ctype, validator_func, rule_enum, value, rule_ir.constraint_id)
+
+
+class StringLengthRuleEmitter(RuleEmitter):
+    """Emits C code for string length rules (MIN_LEN, MAX_LEN)."""
+    
+    def emit(self, rule_ir: RuleIR, proto_file: Any) -> str:
+        is_min = rule_ir.rule_type == RULE_MIN_LEN
+        length = rule_ir.rule.params.get('value', 0)
+        field_name = rule_ir.field_name
+        ctx = rule_ir.context
+        
+        is_string = 'string' in rule_ir.constraint_id
+        
+        if ctx.is_oneof and not ctx.is_anonymous:
+            if is_string:
+                macro = 'PB_VALIDATE_ONEOF_STR_MIN_LEN' if is_min else 'PB_VALIDATE_ONEOF_STR_MAX_LEN'
+                return '    %s(ctx, msg, %s, %s, %d, "%s");\n' % (
+                    macro, ctx.oneof_name, field_name, length, rule_ir.constraint_id)
+            else:  # bytes
+                macro = 'PB_VALIDATE_ONEOF_BYTES_MIN_LEN' if is_min else 'PB_VALIDATE_ONEOF_BYTES_MAX_LEN'
+                return '    %s(ctx, msg, %s, %s, %d, "%s");\n' % (
+                    macro, ctx.oneof_name, field_name, length, rule_ir.constraint_id)
+        else:
+            if is_string:
+                macro = 'PB_VALIDATE_STR_MIN_LEN' if is_min else 'PB_VALIDATE_STR_MAX_LEN'
+            else:
+                macro = 'PB_VALIDATE_BYTES_MIN_LEN' if is_min else 'PB_VALIDATE_BYTES_MAX_LEN'
+            return '        %s(ctx, msg, %s, %d, "%s");\n' % (
+                macro, field_name, length, rule_ir.constraint_id)
+
+
+class StringFormatRuleEmitter(RuleEmitter):
+    """Emits C code for string format rules (EMAIL, HOSTNAME, IP, etc.)."""
+    
+    NORMAL_MACROS = {
+        RULE_EMAIL: 'PB_VALIDATE_STR_EMAIL',
+        RULE_HOSTNAME: 'PB_VALIDATE_STR_HOSTNAME',
+        RULE_IP: 'PB_VALIDATE_STR_IP',
+        RULE_IPV4: 'PB_VALIDATE_STR_IPV4',
+        RULE_IPV6: 'PB_VALIDATE_STR_IPV6',
+        RULE_ASCII: 'PB_VALIDATE_STR_ASCII',
+    }
+    
+    RULE_TO_C_ENUM = {
+        RULE_EMAIL: 'PB_VALIDATE_RULE_EMAIL',
+        RULE_HOSTNAME: 'PB_VALIDATE_RULE_HOSTNAME',
+        RULE_IP: 'PB_VALIDATE_RULE_IP',
+        RULE_IPV4: 'PB_VALIDATE_RULE_IPV4',
+        RULE_IPV6: 'PB_VALIDATE_RULE_IPV6',
+        RULE_ASCII: 'PB_VALIDATE_RULE_ASCII',
+    }
+    
+    def emit(self, rule_ir: RuleIR, proto_file: Any) -> str:
+        ctx = rule_ir.context
+        field_name = rule_ir.field_name
+        
+        if ctx.is_oneof and not ctx.is_anonymous:
+            rule_enum = self.RULE_TO_C_ENUM.get(rule_ir.rule_type, '')
+            if not rule_enum:
+                return ''
+            return '    PB_VALIDATE_ONEOF_STR_FORMAT(ctx, msg, %s, %s, %s, "%s", "String format validation failed");\n' % (
+                ctx.oneof_name, field_name, rule_enum, rule_ir.constraint_id)
+        else:
+            macro = self.NORMAL_MACROS.get(rule_ir.rule_type, '')
+            if not macro:
+                return ''
+            return '        %s(ctx, msg, %s, "%s");\n' % (macro, field_name, rule_ir.constraint_id)
+
+
+class StringPatternRuleEmitter(RuleEmitter):
+    """Emits C code for string pattern rules (PREFIX, SUFFIX, CONTAINS)."""
+    
+    NORMAL_MACROS = {
+        RULE_PREFIX: 'PB_VALIDATE_STR_PREFIX',
+        RULE_SUFFIX: 'PB_VALIDATE_STR_SUFFIX',
+        RULE_CONTAINS: 'PB_VALIDATE_STR_CONTAINS',
+    }
+    
+    def emit(self, rule_ir: RuleIR, proto_file: Any) -> str:
+        ctx = rule_ir.context
+        field_name = rule_ir.field_name
+        pattern = _escape_c_string(rule_ir.rule.params.get('value', ''))
+        
+        if ctx.is_oneof and not ctx.is_anonymous:
+            oneof_macro = {
+                RULE_PREFIX: 'PB_VALIDATE_ONEOF_STR_PREFIX',
+                RULE_SUFFIX: 'PB_VALIDATE_ONEOF_STR_SUFFIX',
+                RULE_CONTAINS: 'PB_VALIDATE_ONEOF_STR_CONTAINS',
+            }.get(rule_ir.rule_type, '')
+            if oneof_macro:
+                return '    %s(ctx, msg, %s, %s, "%s", "%s");\n' % (
+                    oneof_macro, ctx.oneof_name, field_name, pattern, rule_ir.constraint_id)
+        else:
+            macro = self.NORMAL_MACROS.get(rule_ir.rule_type, '')
+            if macro:
+                return '        %s(ctx, msg, %s, "%s", "%s");\n' % (
+                    macro, field_name, pattern, rule_ir.constraint_id)
+        return ''
+
+
+class RepeatedRuleEmitter(RuleEmitter):
+    """Emits C code for repeated field rules (MIN_ITEMS, MAX_ITEMS, UNIQUE)."""
+    
+    def emit(self, rule_ir: RuleIR, proto_file: Any) -> str:
+        field_name = rule_ir.field_name
+        
+        if rule_ir.rule_type == RULE_MIN_ITEMS:
+            value = rule_ir.rule.params.get('value', 0)
+            return '        PB_VALIDATE_MIN_ITEMS(ctx, msg, %s, %d, "%s");\n' % (
+                field_name, value, rule_ir.constraint_id)
+        
+        elif rule_ir.rule_type == RULE_MAX_ITEMS:
+            value = rule_ir.rule.params.get('value', 0)
+            return '        PB_VALIDATE_MAX_ITEMS(ctx, msg, %s, %d, "%s");\n' % (
+                field_name, value, rule_ir.constraint_id)
+        
+        elif rule_ir.rule_type == RULE_UNIQUE:
+            pbtype = getattr(rule_ir.context.field, 'pbtype', None)
+            if pbtype in ('MESSAGE', 'MSG_W_CB'):
+                return '        /* NOTE: repeated.unique is not supported for message types */\n'
+            elif pbtype == 'STRING':
+                return '        PB_VALIDATE_REPEATED_UNIQUE_STRING(ctx, msg, %s, "%s");\n' % (
+                    field_name, rule_ir.constraint_id)
+            elif pbtype == 'BYTES':
+                return '        PB_VALIDATE_REPEATED_UNIQUE_BYTES(ctx, msg, %s, "%s");\n' % (
+                    field_name, rule_ir.constraint_id)
+            else:
+                return '        PB_VALIDATE_REPEATED_UNIQUE_SCALAR(ctx, msg, %s, "%s");\n' % (
+                    field_name, rule_ir.constraint_id)
+        
+        return ''
+
+
+class TimestampRuleEmitter(RuleEmitter):
+    """Emits C code for timestamp rules (GT_NOW, LT_NOW, WITHIN)."""
+    
+    def emit(self, rule_ir: RuleIR, proto_file: Any) -> str:
+        field_name = rule_ir.field_name
+        
+        if rule_ir.rule_type == RULE_TIMESTAMP_GT_NOW:
+            return '    PB_VALIDATE_TIMESTAMP_GT_NOW(ctx, msg, %s, "%s");\n' % (
+                field_name, rule_ir.constraint_id)
+        
+        elif rule_ir.rule_type == RULE_TIMESTAMP_LT_NOW:
+            return '    PB_VALIDATE_TIMESTAMP_LT_NOW(ctx, msg, %s, "%s");\n' % (
+                field_name, rule_ir.constraint_id)
+        
+        elif rule_ir.rule_type == RULE_TIMESTAMP_WITHIN:
+            seconds = rule_ir.rule.params.get('seconds', 0)
+            return '    PB_VALIDATE_TIMESTAMP_WITHIN(ctx, msg, %s, %d, "%s");\n' % (
+                field_name, seconds, rule_ir.constraint_id)
+        
+        return ''
+
+
+class AnyRuleEmitter(RuleEmitter):
+    """Emits C code for Any field rules (ANY_IN, ANY_NOT_IN)."""
+    
+    def emit(self, rule_ir: RuleIR, proto_file: Any) -> str:
+        field_name = rule_ir.field_name
+        values = rule_ir.rule.params.get('values', [])
+        
+        if not values:
+            return ''
+        
+        values_array = ', '.join('"%s"' % url for url in values)
+        
+        if rule_ir.rule_type == RULE_ANY_IN:
+            return ('    static const char *__pb_%s_urls_in[] = { %s };\n'
+                    '    PB_VALIDATE_ANY_IN(ctx, msg, %s, __pb_%s_urls_in, %d, "%s");\n') % (
+                field_name, values_array, field_name, field_name, len(values), rule_ir.constraint_id)
+        
+        elif rule_ir.rule_type == RULE_ANY_NOT_IN:
+            return ('    static const char *__pb_%s_urls_notin[] = { %s };\n'
+                    '    PB_VALIDATE_ANY_NOT_IN(ctx, msg, %s, __pb_%s_urls_notin, %d, "%s");\n') % (
+                field_name, values_array, field_name, field_name, len(values), rule_ir.constraint_id)
+        
+        return ''
+
+
+class RuleEmitterRegistry:
+    """
+    Registry for rule emitters with table-driven dispatch.
+    
+    This class provides a central dispatch mechanism for routing rules to their
+    appropriate emitters. Adding a new rule type requires:
+    1. Creating a RuleEmitter subclass
+    2. Registering it in this registry
+    
+    This is the single place where rule → emitter mapping is defined.
+    """
+    
+    def __init__(self):
+        """Initialize the registry with all known emitters."""
+        self._emitters: Dict[str, RuleEmitter] = {}
+        self._register_defaults()
+    
+    def _register_defaults(self):
+        """Register all default rule emitters."""
+        numeric_emitter = NumericRuleEmitter()
+        for rule_type in [RULE_GT, RULE_GTE, RULE_LT, RULE_LTE, RULE_EQ]:
+            self._emitters[rule_type] = numeric_emitter
+        
+        length_emitter = StringLengthRuleEmitter()
+        for rule_type in [RULE_MIN_LEN, RULE_MAX_LEN]:
+            self._emitters[rule_type] = length_emitter
+        
+        format_emitter = StringFormatRuleEmitter()
+        for rule_type in [RULE_EMAIL, RULE_HOSTNAME, RULE_IP, RULE_IPV4, RULE_IPV6, RULE_ASCII]:
+            self._emitters[rule_type] = format_emitter
+        
+        pattern_emitter = StringPatternRuleEmitter()
+        for rule_type in [RULE_PREFIX, RULE_SUFFIX, RULE_CONTAINS]:
+            self._emitters[rule_type] = pattern_emitter
+        
+        repeated_emitter = RepeatedRuleEmitter()
+        for rule_type in [RULE_MIN_ITEMS, RULE_MAX_ITEMS, RULE_UNIQUE]:
+            self._emitters[rule_type] = repeated_emitter
+        
+        timestamp_emitter = TimestampRuleEmitter()
+        for rule_type in [RULE_TIMESTAMP_GT_NOW, RULE_TIMESTAMP_LT_NOW, RULE_TIMESTAMP_WITHIN]:
+            self._emitters[rule_type] = timestamp_emitter
+        
+        any_emitter = AnyRuleEmitter()
+        for rule_type in [RULE_ANY_IN, RULE_ANY_NOT_IN]:
+            self._emitters[rule_type] = any_emitter
+    
+    def register(self, rule_type: str, emitter: RuleEmitter):
+        """Register an emitter for a rule type."""
+        self._emitters[rule_type] = emitter
+    
+    def emit(self, rule_ir: RuleIR, proto_file: Any) -> str:
+        """
+        Emit C code for a rule using the appropriate emitter.
+        
+        Args:
+            rule_ir: The RuleIR to emit
+            proto_file: The ProtoFile for context
+            
+        Returns:
+            C code string, or a TODO comment if no emitter is registered
+        """
+        emitter = self._emitters.get(rule_ir.rule_type)
+        if emitter:
+            return emitter.emit(rule_ir, proto_file)
+        return '        /* TODO: Implement rule type %s */\n' % rule_ir.rule_type
+
+
+# Global emitter registry instance
+_emitter_registry = RuleEmitterRegistry()
+
+
 class ValidatorGenerator:
     """
     Generates C validation code for protobuf messages.
@@ -877,6 +1614,10 @@ class ValidatorGenerator:
         self.proto_file = proto_file
         self.validators = OrderedDict()
         self.bypass = bypass
+        
+        # Pipeline components
+        self.ir_builder = IRBuilder(proto_file)
+        self.emitter_registry = _emitter_registry
         
         # Check if validation is enabled in file options
         self.validate_enabled = False
@@ -1159,6 +1900,75 @@ class ValidatorGenerator:
         yield '\n'
         yield '#endif /* %s */\n' % guard
     
+    # =========================================================================
+    # IR-Based Source Generation
+    # =========================================================================
+    # These methods use the new IR pipeline for cleaner code generation.
+    
+    def _emit_field_rules_from_ir(self, field_rule_set: FieldRuleSet) -> str:
+        """
+        Emit C code for all rules in a FieldRuleSet using the IR pipeline.
+        
+        Args:
+            field_rule_set: The FieldRuleSet containing all rules for a field
+            
+        Returns:
+            C code string for validating this field
+        """
+        code_parts = []
+        
+        for rule_ir in field_rule_set.rules:
+            code = self.emitter_registry.emit(rule_ir, self.proto_file)
+            if code:
+                code_parts.append(code)
+        
+        return ''.join(code_parts)
+    
+    def _emit_message_validation_from_ir(self, msg_rule_set: MessageRuleSet) -> str:
+        """
+        Emit the complete validation function body for a message using IR.
+        
+        This method demonstrates the pipeline-driven approach:
+        1. Iterate over FieldRuleSets and emit field validations
+        2. Iterate over OneofRuleSets and emit oneof validations
+        3. Emit message-level validations
+        
+        Args:
+            msg_rule_set: The complete MessageRuleSet for the message
+            
+        Returns:
+            C code string for the validation function body
+        """
+        lines = []
+        
+        # Emit field validations
+        for frs in msg_rule_set.field_rule_sets:
+            if frs.has_rules():
+                lines.append('    /* Validate field: %s */\n' % frs.field_name)
+                lines.append('    PB_VALIDATE_FIELD_BEGIN(ctx, "%s");\n' % frs.field_name)
+                lines.append(self._emit_field_rules_from_ir(frs))
+                lines.append('    PB_VALIDATE_FIELD_END(ctx);\n')
+                lines.append('\n')
+        
+        # Emit oneof validations
+        for ors in msg_rule_set.oneof_rule_sets:
+            lines.append('    /* Validate oneof: %s */\n' % ors.oneof_name)
+            lines.append('    PB_VALIDATE_ONEOF_BEGIN(ctx, msg, %s)\n' % ors.oneof_name)
+            
+            for member_frs in ors.member_rule_sets:
+                tag_name = '%s_%s_tag' % (msg_rule_set.struct_name, member_frs.field_name)
+                lines.append('    PB_VALIDATE_ONEOF_CASE(%s)\n' % tag_name)
+                lines.append('    PB_VALIDATE_FIELD_BEGIN(ctx, "%s");\n' % member_frs.field_name)
+                lines.append(self._emit_field_rules_from_ir(member_frs))
+                lines.append('    PB_VALIDATE_FIELD_END(ctx);\n')
+                lines.append('    PB_VALIDATE_ONEOF_CASE_END()\n')
+            
+            lines.append('    PB_VALIDATE_ONEOF_DEFAULT()\n')
+            lines.append('    PB_VALIDATE_ONEOF_END()\n')
+            lines.append('\n')
+        
+        return ''.join(lines)
+
     def generate_source(self):
         """Generate validation source file content."""
         if not self.validators:
