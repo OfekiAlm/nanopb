@@ -2631,11 +2631,14 @@ class ValidatorGenerator:
         
         Args:
             field_var_name: Variable name of the field in callback context  
-            rule: ValidationRule (MIN_LEN or MAX_LEN)
+            rule: ValidationRule for string/bytes validation
             
         Yields:
-            Lines of C code implementing the validation check on callback_ctx->field_length
+            Lines of C code implementing the validation check on callback_ctx fields.
+            For callback fields, validation uses callback_ctx->{field}_data (const char*)
+            and callback_ctx->{field}_length (pb_size_t).
         """
+        # Length rules - check callback_ctx->field_length
         if rule.rule_type == RULE_MIN_LEN:
             min_len = rule.params.get('value', 0)
             yield '        if (callback_ctx->%s_length < %d) {\n' % (field_var_name, min_len)
@@ -2648,6 +2651,139 @@ class ValidatorGenerator:
             yield '            pb_violations_add(violations, ctx.path_buffer, "%s", "String/bytes too long");\n' % rule.constraint_id
             yield '            if (ctx.early_exit) return false;\n'
             yield '        }\n'
+        
+        # Pattern rules - need callback_ctx->field_data (the actual string content)
+        elif rule.rule_type == RULE_PREFIX:
+            prefix = rule.params.get('value', '')
+            yield '        /* Check prefix on callback string */\n'
+            yield '        if (callback_ctx->%s_data != NULL) {\n' % field_var_name
+            yield '            const char *__pb_prefix = "%s";\n' % self._escape_c_string(prefix)
+            yield '            size_t __pb_prefix_len = strlen(__pb_prefix);\n'
+            yield '            if (callback_ctx->%s_length < __pb_prefix_len || \n' % field_var_name
+            yield '                strncmp(callback_ctx->%s_data, __pb_prefix, __pb_prefix_len) != 0) {\n' % field_var_name
+            yield '                pb_violations_add(violations, ctx.path_buffer, "%s", "String must start with specified prefix");\n' % rule.constraint_id
+            yield '                if (ctx.early_exit) return false;\n'
+            yield '            }\n'
+            yield '        }\n'
+        elif rule.rule_type == RULE_SUFFIX:
+            suffix = rule.params.get('value', '')
+            yield '        /* Check suffix on callback string */\n'
+            yield '        if (callback_ctx->%s_data != NULL) {\n' % field_var_name
+            yield '            const char *__pb_suffix = "%s";\n' % self._escape_c_string(suffix)
+            yield '            size_t __pb_suffix_len = strlen(__pb_suffix);\n'
+            yield '            if (callback_ctx->%s_length >= __pb_suffix_len) {\n' % field_var_name
+            yield '                const char *__pb_end = callback_ctx->%s_data + callback_ctx->%s_length - __pb_suffix_len;\n' % (field_var_name, field_var_name)
+            yield '                if (strncmp(__pb_end, __pb_suffix, __pb_suffix_len) != 0) {\n'
+            yield '                    pb_violations_add(violations, ctx.path_buffer, "%s", "String must end with specified suffix");\n' % rule.constraint_id
+            yield '                    if (ctx.early_exit) return false;\n'
+            yield '                }\n'
+            yield '            } else {\n'
+            yield '                pb_violations_add(violations, ctx.path_buffer, "%s", "String must end with specified suffix");\n' % rule.constraint_id
+            yield '                if (ctx.early_exit) return false;\n'
+            yield '            }\n'
+            yield '        }\n'
+        elif rule.rule_type == RULE_CONTAINS:
+            needle = rule.params.get('value', '')
+            yield '        /* Check contains on callback string */\n'
+            yield '        if (callback_ctx->%s_data != NULL) {\n' % field_var_name
+            yield '            const char *__pb_needle = "%s";\n' % self._escape_c_string(needle)
+            yield '            /* Use a simple substring search */\n'
+            yield '            bool __pb_found = false;\n'
+            yield '            size_t __pb_needle_len = strlen(__pb_needle);\n'
+            yield '            if (__pb_needle_len <= callback_ctx->%s_length) {\n' % field_var_name
+            yield '                for (size_t i = 0; i <= callback_ctx->%s_length - __pb_needle_len; i++) {\n' % field_var_name
+            yield '                    if (strncmp(callback_ctx->%s_data + i, __pb_needle, __pb_needle_len) == 0) {\n' % field_var_name
+            yield '                        __pb_found = true; break;\n'
+            yield '                    }\n'
+            yield '                }\n'
+            yield '            }\n'
+            yield '            if (!__pb_found) {\n'
+            yield '                pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain specified substring");\n' % rule.constraint_id
+            yield '                if (ctx.early_exit) return false;\n'
+            yield '            }\n'
+            yield '        }\n'
+        
+        # ASCII rule
+        elif rule.rule_type == RULE_ASCII:
+            yield '        /* Check ASCII-only characters on callback string */\n'
+            yield '        if (callback_ctx->%s_data != NULL) {\n' % field_var_name
+            yield '            bool __pb_is_ascii = true;\n'
+            yield '            for (pb_size_t i = 0; i < callback_ctx->%s_length; i++) {\n' % field_var_name
+            yield '                if ((unsigned char)callback_ctx->%s_data[i] > 127) {\n' % field_var_name
+            yield '                    __pb_is_ascii = false; break;\n'
+            yield '                }\n'
+            yield '            }\n'
+            yield '            if (!__pb_is_ascii) {\n'
+            yield '                pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain only ASCII characters");\n' % rule.constraint_id
+            yield '                if (ctx.early_exit) return false;\n'
+            yield '            }\n'
+            yield '        }\n'
+        
+        # Format rules (EMAIL, HOSTNAME, IP, etc.) - use pb_validate_string helper
+        elif rule.rule_type in (RULE_EMAIL, RULE_HOSTNAME, RULE_IP, RULE_IPV4, RULE_IPV6):
+            rule_enum = self.CALLBACK_STRING_FORMAT_MACROS.get(rule.rule_type)
+            if rule_enum:
+                # Need to build the C enum constant
+                c_enum = {
+                    RULE_EMAIL: 'PB_VALIDATE_RULE_EMAIL',
+                    RULE_HOSTNAME: 'PB_VALIDATE_RULE_HOSTNAME', 
+                    RULE_IP: 'PB_VALIDATE_RULE_IP',
+                    RULE_IPV4: 'PB_VALIDATE_RULE_IPV4',
+                    RULE_IPV6: 'PB_VALIDATE_RULE_IPV6',
+                }.get(rule.rule_type)
+                yield '        /* Check format on callback string */\n'
+                yield '        if (callback_ctx->%s_data != NULL) {\n' % field_var_name
+                yield '            if (!pb_validate_string(callback_ctx->%s_data, callback_ctx->%s_length, NULL, %s)) {\n' % (field_var_name, field_var_name, c_enum)
+                yield '                pb_violations_add(violations, ctx.path_buffer, "%s", "String format validation failed");\n' % rule.constraint_id
+                yield '                if (ctx.early_exit) return false;\n'
+                yield '            }\n'
+                yield '        }\n'
+        
+        # IN rule - check value is in allowed set
+        elif rule.rule_type == RULE_IN:
+            values = rule.params.get('values', [])
+            if values:
+                yield '        /* Check callback string is in allowed set */\n'
+                yield '        if (callback_ctx->%s_data != NULL) {\n' % field_var_name
+                yield '            bool __pb_match = false;\n'
+                values_array = ', '.join('"%s"' % self._escape_c_string(v) for v in values)
+                yield '            const char *__pb_allowed[] = { %s };\n' % values_array
+                yield '            for (size_t __pb_k = 0; __pb_k < sizeof(__pb_allowed)/sizeof(__pb_allowed[0]); __pb_k++) {\n'
+                yield '                if (callback_ctx->%s_length == strlen(__pb_allowed[__pb_k]) &&\n' % field_var_name
+                yield '                    strncmp(callback_ctx->%s_data, __pb_allowed[__pb_k], callback_ctx->%s_length) == 0) {\n' % (field_var_name, field_var_name)
+                yield '                    __pb_match = true; break;\n'
+                yield '                }\n'
+                yield '            }\n'
+                yield '            if (!__pb_match) {\n'
+                yield '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of allowed set");\n' % rule.constraint_id
+                yield '                if (ctx.early_exit) return false;\n'
+                yield '            }\n'
+                yield '        }\n'
+        
+        # NOT_IN rule - check value is not in blocked set
+        elif rule.rule_type == RULE_NOT_IN:
+            values = rule.params.get('values', [])
+            if values:
+                yield '        /* Check callback string is not in blocked set */\n'
+                yield '        if (callback_ctx->%s_data != NULL) {\n' % field_var_name
+                yield '            bool __pb_forbidden = false;\n'
+                values_array = ', '.join('"%s"' % self._escape_c_string(v) for v in values)
+                yield '            const char *__pb_blocked[] = { %s };\n' % values_array
+                yield '            for (size_t __pb_k = 0; __pb_k < sizeof(__pb_blocked)/sizeof(__pb_blocked[0]); __pb_k++) {\n'
+                yield '                if (callback_ctx->%s_length == strlen(__pb_blocked[__pb_k]) &&\n' % field_var_name
+                yield '                    strncmp(callback_ctx->%s_data, __pb_blocked[__pb_k], callback_ctx->%s_length) == 0) {\n' % (field_var_name, field_var_name)
+                yield '                    __pb_forbidden = true; break;\n'
+                yield '                }\n'
+                yield '            }\n'
+                yield '            if (__pb_forbidden) {\n'
+                yield '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value is in forbidden set");\n' % rule.constraint_id
+                yield '                if (ctx.early_exit) return false;\n'
+                yield '            }\n'
+                yield '        }\n'
+    
+    def _escape_c_string(self, s: str) -> str:
+        """Escape a string for use in C code."""
+        return s.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
     # =========================================================================
     # Message-Level Rule Code Generators
     # =========================================================================
