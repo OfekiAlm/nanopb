@@ -5,6 +5,53 @@
 
 #include "pb_common.h"
 
+/* Descriptor format bit layout constants.
+ * These define the bit positions and masks used to extract field metadata
+ * from the compact binary descriptor format. See format explanation below.
+ */
+
+/* Common to all formats */
+#define PB_FIELDINFO_FORMAT_MASK        0x00000003  /* Bits [1:0]: Format selector */
+#define PB_FIELDINFO_FORMAT_1WORD       0
+#define PB_FIELDINFO_FORMAT_2WORD       1
+#define PB_FIELDINFO_FORMAT_4WORD       2
+#define PB_FIELDINFO_FORMAT_8WORD       3
+
+#define PB_FIELDINFO_TYPE_SHIFT         8
+#define PB_FIELDINFO_TYPE_MASK          0xFF        /* Bits [15:8]: Field type */
+
+/* 1-word format (word0 only) */
+#define PB_FIELDINFO_1WORD_TAG_SHIFT    2
+#define PB_FIELDINFO_1WORD_TAG_MASK     0x3F        /* Bits [7:2]: Tag 0-63 */
+#define PB_FIELDINFO_1WORD_DATA_OFFSET_SHIFT  16
+#define PB_FIELDINFO_1WORD_DATA_OFFSET_MASK   0xFF  /* Bits [23:16]: Offset 0-255 */
+#define PB_FIELDINFO_1WORD_SIZE_OFFSET_SHIFT  24
+#define PB_FIELDINFO_1WORD_SIZE_OFFSET_MASK   0x0F  /* Bits [27:24]: Size offset 0-15 */
+#define PB_FIELDINFO_1WORD_DATA_SIZE_SHIFT    28
+#define PB_FIELDINFO_1WORD_DATA_SIZE_MASK     0x0F  /* Bits [31:28]: Size 0-15 */
+
+/* 2-word format */
+#define PB_FIELDINFO_2WORD_TAG_SHIFT_WORD0    2
+#define PB_FIELDINFO_2WORD_TAG_MASK_WORD0     0x3F        /* Bits [7:2]: Tag low 6 bits */
+#define PB_FIELDINFO_2WORD_ARRAY_SIZE_SHIFT   16
+#define PB_FIELDINFO_2WORD_ARRAY_SIZE_MASK    0x0FFF      /* Bits [27:16]: Array 0-4095 */
+#define PB_FIELDINFO_2WORD_SIZE_OFFSET_SHIFT  28
+#define PB_FIELDINFO_2WORD_SIZE_OFFSET_MASK   0x0F        /* Bits [31:28]: Size offset */
+#define PB_FIELDINFO_2WORD_DATA_OFFSET_MASK   0xFFFF      /* word1[15:0]: Data offset */
+#define PB_FIELDINFO_2WORD_DATA_SIZE_SHIFT    16
+#define PB_FIELDINFO_2WORD_DATA_SIZE_MASK     0x0FFF      /* word1[27:16]: Data size */
+#define PB_FIELDINFO_2WORD_TAG_SHIFT_WORD1    28
+#define PB_FIELDINFO_2WORD_TAG_BITS_WORD1     4           /* word1[31:28]: Tag high 4 bits */
+
+/* 4-word and 8-word formats (share most layout) */
+#define PB_FIELDINFO_MULTIWORD_TAG_SHIFT_WORD0    2
+#define PB_FIELDINFO_MULTIWORD_TAG_MASK_WORD0     0x3F    /* Bits [7:2]: Tag low 6 bits */
+#define PB_FIELDINFO_4WORD_ARRAY_SIZE_SHIFT       16      /* word0[31:16]: Array size */
+#define PB_FIELDINFO_MULTIWORD_SIZE_OFFSET_MASK   0xFF    /* word1[7:0]: Size offset */
+#define PB_FIELDINFO_MULTIWORD_TAG_SHIFT_WORD1    8
+#define PB_FIELDINFO_MULTIWORD_TAG_BITS_WORD1     24      /* word1[31:8]: Tag high 24 bits */
+/* word2 = full 32-bit data_offset, word3 = full 32-bit data_size, word4 = full 32-bit array_size (8-word only) */
+
 /* Field descriptor format explanation:
  * 
  * Nanopb uses a compact binary format to encode field descriptors. The format
@@ -38,11 +85,11 @@ static bool load_descriptor_values(pb_field_iter_t *iter)
         return false;
 
     word0 = PB_PROGMEM_READU32(iter->descriptor->field_info[iter->field_info_index]);
-    iter->type = (pb_type_t)((word0 >> 8) & 0xFF);
+    iter->type = (pb_type_t)((word0 >> PB_FIELDINFO_TYPE_SHIFT) & PB_FIELDINFO_TYPE_MASK);
 
-    switch(word0 & 3)
+    switch(word0 & PB_FIELDINFO_FORMAT_MASK)
     {
-        case 0: {
+        case PB_FIELDINFO_FORMAT_1WORD: {
             /* 1-word format: For simple fields with small tags and offsets.
              * 
              * Bit layout of word0:
@@ -56,14 +103,14 @@ static bool load_descriptor_values(pb_field_iter_t *iter)
              * Array size is always 1 (non-array field).
              */
             iter->array_size = 1;
-            iter->tag = (pb_size_t)((word0 >> 2) & 0x3F);
-            size_offset = (int_least8_t)((word0 >> 24) & 0x0F);
-            data_offset = (word0 >> 16) & 0xFF;
-            iter->data_size = (pb_size_t)((word0 >> 28) & 0x0F);
+            iter->tag = (pb_size_t)((word0 >> PB_FIELDINFO_1WORD_TAG_SHIFT) & PB_FIELDINFO_1WORD_TAG_MASK);
+            size_offset = (int_least8_t)((word0 >> PB_FIELDINFO_1WORD_SIZE_OFFSET_SHIFT) & PB_FIELDINFO_1WORD_SIZE_OFFSET_MASK);
+            data_offset = (word0 >> PB_FIELDINFO_1WORD_DATA_OFFSET_SHIFT) & PB_FIELDINFO_1WORD_DATA_OFFSET_MASK;
+            iter->data_size = (pb_size_t)((word0 >> PB_FIELDINFO_1WORD_DATA_SIZE_SHIFT) & PB_FIELDINFO_1WORD_DATA_SIZE_MASK);
             break;
         }
 
-        case 1: {
+        case PB_FIELDINFO_FORMAT_2WORD: {
             /* 2-word format: For fields with medium-sized tags and arrays.
              * 
              * Bit layout:
@@ -81,15 +128,16 @@ static bool load_descriptor_values(pb_field_iter_t *iter)
              */
             uint32_t word1 = PB_PROGMEM_READU32(iter->descriptor->field_info[iter->field_info_index + 1]);
 
-            iter->array_size = (pb_size_t)((word0 >> 16) & 0x0FFF);
-            iter->tag = (pb_size_t)(((word0 >> 2) & 0x3F) | ((word1 >> 28) << 6));
-            size_offset = (int_least8_t)((word0 >> 28) & 0x0F);
-            data_offset = word1 & 0xFFFF;
-            iter->data_size = (pb_size_t)((word1 >> 16) & 0x0FFF);
+            iter->array_size = (pb_size_t)((word0 >> PB_FIELDINFO_2WORD_ARRAY_SIZE_SHIFT) & PB_FIELDINFO_2WORD_ARRAY_SIZE_MASK);
+            iter->tag = (pb_size_t)(((word0 >> PB_FIELDINFO_2WORD_TAG_SHIFT_WORD0) & PB_FIELDINFO_2WORD_TAG_MASK_WORD0) | 
+                                    ((word1 >> PB_FIELDINFO_2WORD_TAG_SHIFT_WORD1) << PB_FIELDINFO_2WORD_TAG_BITS_WORD1));
+            size_offset = (int_least8_t)((word0 >> PB_FIELDINFO_2WORD_SIZE_OFFSET_SHIFT) & PB_FIELDINFO_2WORD_SIZE_OFFSET_MASK);
+            data_offset = word1 & PB_FIELDINFO_2WORD_DATA_OFFSET_MASK;
+            iter->data_size = (pb_size_t)((word1 >> PB_FIELDINFO_2WORD_DATA_SIZE_SHIFT) & PB_FIELDINFO_2WORD_DATA_SIZE_MASK);
             break;
         }
 
-        case 2: {
+        case PB_FIELDINFO_FORMAT_4WORD: {
             /* 4-word format: For fields with large tags or offsets, no large arrays.
              * 
              * Bit layout:
@@ -113,9 +161,10 @@ static bool load_descriptor_values(pb_field_iter_t *iter)
             uint32_t word2 = PB_PROGMEM_READU32(iter->descriptor->field_info[iter->field_info_index + 2]);
             uint32_t word3 = PB_PROGMEM_READU32(iter->descriptor->field_info[iter->field_info_index + 3]);
 
-            iter->array_size = (pb_size_t)(word0 >> 16);
-            iter->tag = (pb_size_t)(((word0 >> 2) & 0x3F) | ((word1 >> 8) << 6));
-            size_offset = (int_least8_t)(word1 & 0xFF);
+            iter->array_size = (pb_size_t)(word0 >> PB_FIELDINFO_4WORD_ARRAY_SIZE_SHIFT);
+            iter->tag = (pb_size_t)(((word0 >> PB_FIELDINFO_MULTIWORD_TAG_SHIFT_WORD0) & PB_FIELDINFO_MULTIWORD_TAG_MASK_WORD0) | 
+                                    ((word1 >> PB_FIELDINFO_MULTIWORD_TAG_SHIFT_WORD1) << PB_FIELDINFO_MULTIWORD_TAG_BITS_WORD1));
+            size_offset = (int_least8_t)(word1 & PB_FIELDINFO_MULTIWORD_SIZE_OFFSET_MASK);
             data_offset = word2;
             iter->data_size = (pb_size_t)word3;
             break;
@@ -152,8 +201,9 @@ static bool load_descriptor_values(pb_field_iter_t *iter)
             uint32_t word4 = PB_PROGMEM_READU32(iter->descriptor->field_info[iter->field_info_index + 4]);
 
             iter->array_size = (pb_size_t)word4;
-            iter->tag = (pb_size_t)(((word0 >> 2) & 0x3F) | ((word1 >> 8) << 6));
-            size_offset = (int_least8_t)(word1 & 0xFF);
+            iter->tag = (pb_size_t)(((word0 >> PB_FIELDINFO_MULTIWORD_TAG_SHIFT_WORD0) & PB_FIELDINFO_MULTIWORD_TAG_MASK_WORD0) | 
+                                    ((word1 >> PB_FIELDINFO_MULTIWORD_TAG_SHIFT_WORD1) << PB_FIELDINFO_MULTIWORD_TAG_BITS_WORD1));
+            size_offset = (int_least8_t)(word1 & PB_FIELDINFO_MULTIWORD_SIZE_OFFSET_MASK);
             data_offset = word2;
             iter->data_size = (pb_size_t)word3;
             break;
@@ -229,8 +279,8 @@ static void advance_iterator(pb_field_iter_t *iter)
          * - bits 8..15 give the field type.
          */
         uint32_t prev_descriptor = PB_PROGMEM_READU32(iter->descriptor->field_info[iter->field_info_index]);
-        pb_type_t prev_type = (prev_descriptor >> 8) & 0xFF;
-        pb_size_t descriptor_len = (pb_size_t)(1 << (prev_descriptor & 3));
+        pb_type_t prev_type = (prev_descriptor >> PB_FIELDINFO_TYPE_SHIFT) & PB_FIELDINFO_TYPE_MASK;
+        pb_size_t descriptor_len = (pb_size_t)(1 << (prev_descriptor & PB_FIELDINFO_FORMAT_MASK));
 
         /* Add to fields.
          * The cast to pb_size_t is needed to avoid -Wconversion warning.
@@ -330,10 +380,13 @@ bool pb_field_iter_find(pb_field_iter_t *iter, uint32_t tag)
             /* Advance iterator but don't load values yet */
             advance_iterator(iter);
 
-            /* Do fast check for tag number match */
+            /* Do fast check for tag number match.
+             * All descriptor formats store the low 6 bits of the tag in bits [7:2] of word0.
+             * This allows us to quickly filter out non-matching fields before doing a full load.
+             */
             fieldinfo = PB_PROGMEM_READU32(iter->descriptor->field_info[iter->field_info_index]);
 
-            if (((fieldinfo >> 2) & 0x3F) == (tag & 0x3F))
+            if (((fieldinfo >> PB_FIELDINFO_1WORD_TAG_SHIFT) & PB_FIELDINFO_1WORD_TAG_MASK) == (tag & PB_FIELDINFO_1WORD_TAG_MASK))
             {
                 /* Good candidate, check further */
                 (void)load_descriptor_values(iter);
