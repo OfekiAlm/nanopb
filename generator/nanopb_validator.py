@@ -59,14 +59,28 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-# Import Globals and OneOf from nanopb_generator for naming and type checks
+# =============================================================================
+# EXTERNAL DEPENDENCIES (from nanopb_generator.py)
+# =============================================================================
+# This module depends on exactly two items from nanopb_generator:
+#
+# 1. Globals.naming_style - Used for C identifier formatting:
+#    - type_name(name) - Format a message name as C type (e.g., "Foo_Bar")
+#    - var_name(name) - Format a field name as C variable (e.g., "field_name")
+#
+# 2. OneOf - The OneOf class type, used only for isinstance() checks
+#
+# These dependencies are isolated here and have fallback stubs for standalone use.
+# If additional dependencies are needed, they MUST be added to this block.
+
 try:
     from . import nanopb_generator
     Globals = nanopb_generator.Globals
     OneOf = nanopb_generator.OneOf
 except (ImportError, AttributeError):
-    # Fallback for when used as standalone - define minimal stubs
+    # Fallback stubs for when used as standalone module
     class Globals:
+        """Stub for Globals when nanopb_generator is not available."""
         class naming_style:
             @staticmethod
             def type_name(name):
@@ -75,6 +89,7 @@ except (ImportError, AttributeError):
             def var_name(name):
                 return str(name)
     class OneOf:
+        """Stub for OneOf class when nanopb_generator is not available."""
         pass
 
 # =============================================================================
@@ -1469,6 +1484,118 @@ class AnyRuleEmitter(RuleEmitter):
         return ''
 
 
+class RequiredRuleEmitter(RuleEmitter):
+    """Emits C code for required field rule."""
+    
+    def emit(self, rule_ir: RuleIR, proto_file: Any) -> str:
+        field = rule_ir.context.field
+        if getattr(field, 'rules', None) == 'OPTIONAL':
+            return ('        if (!msg->has_%s) {\n'
+                    '            pb_violations_add(violations, ctx.path_buffer, "%s", "Field is required");\n'
+                    '            if (ctx.early_exit) return false;\n'
+                    '        }\n') % (rule_ir.field_name, rule_ir.constraint_id)
+        return ''
+
+
+class InNotInRuleEmitter(RuleEmitter):
+    """Emits C code for IN and NOT_IN rules."""
+    
+    def emit(self, rule_ir: RuleIR, proto_file: Any) -> str:
+        values = rule_ir.rule.params.get('values', [])
+        field_name = rule_ir.field_name
+        ctx = rule_ir.context
+        is_in = rule_ir.rule_type == RULE_IN
+        
+        is_string = 'string' in rule_ir.constraint_id
+        
+        if is_string:
+            values_array = ', '.join('"%s"' % _escape_c_string(v) for v in values)
+            
+            if ctx.is_oneof and not ctx.is_anonymous:
+                field_access = '%s.%s' % (ctx.oneof_name, field_name)
+                if is_in:
+                    conditions = ['strcmp(msg->%s, "%s") == 0' % (field_access, _escape_c_string(v)) for v in values]
+                    condition_str = ' || '.join(conditions)
+                    return ('    if (!(%s)) { pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of allowed set"); if (ctx.early_exit) return false; }\n'
+                           ) % (condition_str, rule_ir.constraint_id)
+                else:
+                    conditions = ['strcmp(msg->%s, "%s") != 0' % (field_access, _escape_c_string(v)) for v in values]
+                    condition_str = ' && '.join(conditions)
+                    return ('    if (!(%s)) { pb_violations_add(violations, ctx.path_buffer, "%s", "Value in forbidden set"); if (ctx.early_exit) return false; }\n'
+                           ) % (condition_str, rule_ir.constraint_id)
+            else:
+                if is_in:
+                    return ('    static const char *__pb_%s_in[] = { %s };\n'
+                            '    PB_VALIDATE_STR_IN(ctx, msg, %s, __pb_%s_in, %d, "%s");\n') % (
+                        field_name, values_array, field_name, field_name, len(values), rule_ir.constraint_id)
+                else:
+                    return ('    static const char *__pb_%s_notin[] = { %s };\n'
+                            '    PB_VALIDATE_STR_NOT_IN(ctx, msg, %s, __pb_%s_notin, %d, "%s");\n') % (
+                        field_name, values_array, field_name, field_name, len(values), rule_ir.constraint_id)
+        else:
+            # Numeric IN/NOT_IN
+            field_access = field_name if not (ctx.is_oneof and not ctx.is_anonymous) else '%s.%s' % (ctx.oneof_name, field_name)
+            
+            if is_in:
+                conditions = ['msg->%s == %s' % (field_access, v) for v in values]
+                condition_str = ' || '.join(conditions)
+                values_str = ', '.join(str(v) for v in values)
+                return ('        if (!(%s)) {\n'
+                        '            pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of: %s");\n'
+                        '            if (ctx.early_exit) return false;\n'
+                        '        }\n') % (condition_str, rule_ir.constraint_id, values_str)
+            else:
+                conditions = ['msg->%s != %s' % (field_access, v) for v in values]
+                condition_str = ' && '.join(conditions)
+                values_str = ', '.join(str(v) for v in values)
+                return ('        if (!(%s)) {\n'
+                        '            pb_violations_add(violations, ctx.path_buffer, "%s", "Value must not be one of: %s");\n'
+                        '            if (ctx.early_exit) return false;\n'
+                        '        }\n') % (condition_str, rule_ir.constraint_id, values_str)
+
+
+class EnumDefinedRuleEmitter(RuleEmitter):
+    """Emits C code for enum defined_only rule."""
+    
+    def emit(self, rule_ir: RuleIR, proto_file: Any) -> str:
+        if not rule_ir.rule.params.get('value', True):
+            return ''
+        
+        try:
+            enum_vals = []
+            field = rule_ir.context.field
+            ctype = getattr(field, 'ctype', None)
+            
+            for e in getattr(proto_file, 'enums', []) or []:
+                try:
+                    if e.names == ctype or str(e.names) == str(ctype):
+                        enum_vals = [int(v) for (_, v) in getattr(e, 'values', [])]
+                        break
+                except Exception:
+                    continue
+            
+            if enum_vals:
+                arr_values = ', '.join(str(v) for v in enum_vals)
+                field_name = rule_ir.field_name
+                ctx = rule_ir.context
+                
+                if ctx.is_oneof and not ctx.is_anonymous:
+                    field_access = '%s.%s' % (ctx.oneof_name, field_name)
+                    return ('    static const int __pb_%s_vals[] = { %s };\n'
+                            '    if (!pb_validate_enum_defined_only((int)msg->%s, __pb_%s_vals, (pb_size_t)(sizeof(__pb_%s_vals)/sizeof(__pb_%s_vals[0])))) {\n'
+                            '        pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be a defined enum value");\n'
+                            '        if (ctx.early_exit) return false;\n'
+                            '    }\n') % (field_name, arr_values, field_access, field_name, field_name, field_name, rule_ir.constraint_id)
+                else:
+                    return ('    static const int __pb_%s_vals[] = { %s };\n'
+                            '    PB_VALIDATE_ENUM_DEFINED_ONLY(ctx, msg, %s, __pb_%s_vals, "%s");\n'
+                           ) % (field_name, arr_values, field_name, field_name, rule_ir.constraint_id)
+        except Exception:
+            pass
+        
+        return ''
+
+
 class RuleEmitterRegistry:
     """
     Registry for rule emitters with table-driven dispatch.
@@ -1515,6 +1642,15 @@ class RuleEmitterRegistry:
         any_emitter = AnyRuleEmitter()
         for rule_type in [RULE_ANY_IN, RULE_ANY_NOT_IN]:
             self._emitters[rule_type] = any_emitter
+        
+        # Additional emitters
+        self._emitters[RULE_REQUIRED] = RequiredRuleEmitter()
+        
+        in_not_in_emitter = InNotInRuleEmitter()
+        for rule_type in [RULE_IN, RULE_NOT_IN]:
+            self._emitters[rule_type] = in_not_in_emitter
+        
+        self._emitters[RULE_ENUM_DEFINED] = EnumDefinedRuleEmitter()
     
     def register(self, rule_type: str, emitter: RuleEmitter):
         """Register an emitter for a rule type."""
