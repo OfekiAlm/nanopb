@@ -46,6 +46,14 @@ static bool checkreturn pb_enc_fixed_length_bytes(pb_ostream_t *stream, const pb
 #define pb_uint64_t uint64_t
 #endif
 
+/* Varint encoding constants.
+ * Base-128 varint encoding uses 7 bits per byte for data,
+ * with the high bit indicating continuation.
+ */
+#define PB_VARINT_DATA_MASK         0x7F  /* Bits 0-6: data */
+#define PB_VARINT_CONTINUATION_BIT  0x80  /* Bit 7: more bytes follow */
+#define PB_VARINT_MAX_SINGLE_BYTE   0x7F  /* Largest value in 1 byte */
+
 /*******************************
  * pb_ostream_t implementation *
  *******************************/
@@ -574,14 +582,14 @@ static bool checkreturn pb_encode_varint_32(pb_ostream_t *stream, uint32_t low, 
 {
     size_t i = 0;
     pb_byte_t buffer[10];
-    pb_byte_t byte = (pb_byte_t)(low & 0x7F);
+    pb_byte_t byte = (pb_byte_t)(low & PB_VARINT_DATA_MASK);
     low >>= 7;
 
     while (i < 4 && (low != 0 || high != 0))
     {
-        byte |= 0x80;
+        byte |= PB_VARINT_CONTINUATION_BIT;
         buffer[i++] = byte;
-        byte = (pb_byte_t)(low & 0x7F);
+        byte = (pb_byte_t)(low & PB_VARINT_DATA_MASK);
         low >>= 7;
     }
 
@@ -592,9 +600,9 @@ static bool checkreturn pb_encode_varint_32(pb_ostream_t *stream, uint32_t low, 
 
         while (high)
         {
-            byte |= 0x80;
+            byte |= PB_VARINT_CONTINUATION_BIT;
             buffer[i++] = byte;
-            byte = (pb_byte_t)(high & 0x7F);
+            byte = (pb_byte_t)(high & PB_VARINT_DATA_MASK);
             high >>= 7;
         }
     }
@@ -606,7 +614,7 @@ static bool checkreturn pb_encode_varint_32(pb_ostream_t *stream, uint32_t low, 
 
 bool checkreturn pb_encode_varint(pb_ostream_t *stream, pb_uint64_t value)
 {
-    if (value <= 0x7F)
+    if (value <= PB_VARINT_MAX_SINGLE_BYTE)
     {
         /* Fast path: single byte */
         pb_byte_t byte = (pb_byte_t)value;

@@ -57,6 +57,13 @@ static void pb_release_single_field(pb_field_iter_t *field);
 #define pb_uint64_t uint64_t
 #endif
 
+/* Varint decoding constants.
+ * Base-128 varint encoding uses 7 bits per byte for data,
+ * with the high bit indicating continuation.
+ */
+#define PB_VARINT_DATA_MASK         0x7F  /* Bits 0-6: data */
+#define PB_VARINT_CONTINUATION_BIT  0x80  /* Bit 7: more bytes follow */
+
 typedef struct {
     uint32_t bitfield[(PB_MAX_REQUIRED_FIELDS + 31) / 32];
 } pb_fields_seen_t;
@@ -178,7 +185,7 @@ bool checkreturn pb_decode_varint32(pb_istream_t *stream, uint32_t *dest)
         return false;
     }
     
-    if ((byte & 0x80) == 0)
+    if ((byte & PB_VARINT_CONTINUATION_BIT) == 0)
     {
         /* Quick case, 1 byte value */
         result = byte;
@@ -187,7 +194,7 @@ bool checkreturn pb_decode_varint32(pb_istream_t *stream, uint32_t *dest)
     {
         /* Multibyte case */
         uint_fast8_t bitpos = 7;
-        result = byte & 0x7F;
+        result = byte & PB_VARINT_DATA_MASK;
         
         do
         {
@@ -198,7 +205,7 @@ bool checkreturn pb_decode_varint32(pb_istream_t *stream, uint32_t *dest)
             {
                 /* Note: The varint could have trailing 0x80 bytes, or 0xFF for negative. */
                 pb_byte_t sign_extension = (bitpos < 63) ? 0xFF : 0x01;
-                bool valid_extension = ((byte & 0x7F) == 0x00 ||
+                bool valid_extension = ((byte & PB_VARINT_DATA_MASK) == 0x00 ||
                          ((result >> 31) != 0 && byte == sign_extension));
 
                 if (bitpos >= 64 || !valid_extension)
@@ -216,10 +223,10 @@ bool checkreturn pb_decode_varint32(pb_istream_t *stream, uint32_t *dest)
             }
             else
             {
-                result |= (uint32_t)(byte & 0x7F) << bitpos;
+                result |= (uint32_t)(byte & PB_VARINT_DATA_MASK) << bitpos;
             }
             bitpos = (uint_fast8_t)(bitpos + 7);
-        } while (byte & 0x80);
+        } while (byte & PB_VARINT_CONTINUATION_BIT);
    }
    
    *dest = result;
@@ -241,9 +248,9 @@ bool checkreturn pb_decode_varint(pb_istream_t *stream, uint64_t *dest)
         if (bitpos >= 63 && (byte & 0xFE) != 0)
             PB_RETURN_ERROR(stream, "varint overflow");
 
-        result |= (uint64_t)(byte & 0x7F) << bitpos;
+        result |= (uint64_t)(byte & PB_VARINT_DATA_MASK) << bitpos;
         bitpos = (uint_fast8_t)(bitpos + 7);
-    } while (byte & 0x80);
+    } while (byte & PB_VARINT_CONTINUATION_BIT);
     
     *dest = result;
     return true;
@@ -257,7 +264,7 @@ bool checkreturn pb_skip_varint(pb_istream_t *stream)
     {
         if (!pb_read(stream, &byte, 1))
             return false;
-    } while (byte & 0x80);
+    } while (byte & PB_VARINT_CONTINUATION_BIT);
     return true;
 }
 
@@ -350,7 +357,7 @@ static bool checkreturn read_raw_value(pb_istream_t *stream, pb_wire_type_t wire
 
                 if (!pb_read(stream, buf, 1))
                     return false;
-            } while (*buf++ & 0x80);
+            } while (*buf++ & PB_VARINT_CONTINUATION_BIT);
             return true;
             
         case PB_WT_64BIT:
