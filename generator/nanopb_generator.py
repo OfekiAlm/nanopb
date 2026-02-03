@@ -1431,6 +1431,33 @@ class ExtensionField(Field):
 # ---------------------------------------------------------------------------
 
 class OneOf(Field):
+    """
+    Represents a protobuf oneof group, which becomes a C union.
+    
+    A oneof is a set of mutually exclusive fields - only one can be set at a time.
+    In nanopb, this is implemented as a C union with a tag field indicating
+    which member is active.
+    
+    The OneOf class extends Field because oneofs participate in the field
+    list of a message and need to be processed similarly (sorting, encoding, etc.).
+    
+    Attributes:
+        fields (list): List of Field objects that are members of this oneof
+        anonymous (bool): If True, generate anonymous union (C11 feature)
+        has_msg_cb (bool): True if any member uses message callback
+    
+    C Output Example:
+        pb_size_t which_my_oneof;
+        union {
+            int32_t option_a;
+            char option_b[32];
+            SubMessage option_c;
+        } my_oneof;
+    
+    Note:
+        The 'which_' field uses the first field's tag value as the enum,
+        allowing switch() statements on the oneof selection.
+    """
     def __init__(self, struct_name, oneof_desc, oneof_options):
         self.struct_name = struct_name
         self.name = oneof_desc.name
@@ -1551,7 +1578,45 @@ class OneOf(Field):
 
 
 class Message(ProtoElement):
+    """
+    Represents a protobuf message, which becomes a C struct.
+    
+    The Message class is the central element in code generation. It manages:
+    - Collection of fields (including nested oneofs)
+    - Message-level options (packed struct, descriptor size, etc.)
+    - Code generation for struct definition, field tables, and initializers
+    
+    A Message produces several C artifacts:
+    1. **Struct typedef**: The C struct containing all field members
+    2. **Field descriptor table**: pb_field_t array describing field encoding
+    3. **Initializer macro**: Default value initializer for the struct
+    4. **Size macros**: Encoded size calculations for buffer allocation
+    
+    Attributes:
+        name (Names): Fully qualified message name
+        fields (list): Field objects (including OneOf groups as single entries)
+        oneofs (dict): Mapping from oneof index to OneOf objects
+        desc: Original DescriptorProto (or None for synthesized messages)
+        packed (bool): If True, use __attribute__((packed)) on struct
+        descriptorsize (int): Size of descriptor (DS_AUTO, DS_1, DS_2, DS_4)
+        message_validate_rules: Optional message-level validation rules
+        callback_function (str): Name of custom callback function if needed
+    
+    Note:
+        Messages can be nested, but the generator flattens them - each message
+        gets its own top-level struct definition with a mangled name.
+    """
     def __init__(self, names, desc, message_options, element_path, comments):
+        """
+        Initialize a Message from a DescriptorProto.
+        
+        Args:
+            names: Names object for this message
+            desc: DescriptorProto from protobuf descriptor (or None)
+            message_options: NanoPBOptions for this message
+            element_path: Tuple path for source comment lookup
+            comments: Dict mapping paths to SourceCodeInfo.Location
+        """
         super(Message, self).__init__(element_path, comments)
         self.name = names
         self.fields = []
@@ -2227,8 +2292,45 @@ class MangleNames:
         return self.reverse_name_mapping.get(str(names), names)
 
 class ProtoFile:
+    """
+    Top-level representation of a .proto file for code generation.
+    
+    ProtoFile is the main orchestrator for code generation. It parses a
+    FileDescriptorProto and builds the complete intermediate representation
+    (messages, enums, extensions), then provides methods to generate the
+    final C header and source files.
+    
+    The class handles:
+    - Parsing and organizing all proto elements
+    - Tracking dependencies between files
+    - Managing name mangling and package handling
+    - Generating the complete .pb.h and .pb.c file contents
+    - Generating validation files when requested
+    
+    Attributes:
+        fdesc: The FileDescriptorProto being processed
+        file_options: NanoPBOptions for the file
+        enums (list): All Enum objects in the file
+        messages (list): All Message objects in the file
+        extensions (list): All ExtensionField objects in the file
+        dependencies (dict): Maps file names to ProtoFile objects
+        manglenames (MangleNames): Handles name mangling configuration
+        validate_enabled (bool): Whether validation code should be generated
+    
+    Key Methods:
+        generate_header(): Yields lines for the .pb.h file
+        generate_source(): Yields lines for the .pb.c file
+        generate_validate_header(): Yields lines for the _validate.h file
+        generate_validate_source(): Yields lines for the _validate.c file
+    """
     def __init__(self, fdesc, file_options):
-        '''Takes a FileDescriptorProto and parses it.'''
+        """
+        Parse a FileDescriptorProto and build the internal representation.
+        
+        Args:
+            fdesc: FileDescriptorProto from protobuf descriptor
+            file_options: NanoPBOptions for this file
+        """
         self.fdesc = fdesc
         self.file_options = file_options
         self.dependencies = {}
@@ -3801,9 +3903,33 @@ class ProtoFile:
 from fnmatch import fnmatchcase
 
 def read_options_file(infile):
-    '''Parse a separate options file to list:
-        [(namemask, options), ...]
-    '''
+    """
+    Parse a .options file into a list of (namemask, options) tuples.
+    
+    The .options file format allows specifying nanopb options for fields
+    using glob-style name patterns. Each non-empty line should contain:
+        <field_pattern> <options_in_text_format>
+    
+    Example .options file:
+        MyMessage.field_name  max_size:100
+        MyMessage.*           type:FT_POINTER
+        *.password            max_size:64
+    
+    Comments are supported:
+        - C-style: /* comment */
+        - C++-style: // comment
+        - Shell-style: # comment
+    
+    Args:
+        infile: File object with .name attribute, opened for reading
+    
+    Returns:
+        List of (namemask, NanoPBOptions) tuples where namemask is a
+        glob pattern string and NanoPBOptions is the parsed options.
+    
+    Raises:
+        SystemExit: On parse errors (malformed lines or invalid options)
+    """
     results = []
     data = infile.read()
     data = re.sub(r'/\*.*?\*/', '', data, flags = re.MULTILINE)
@@ -3836,7 +3962,29 @@ def read_options_file(infile):
     return results
 
 def get_nanopb_suboptions(subdesc, options, name):
-    '''Get copy of options, and merge information from subdesc.'''
+    """
+    Get options for a proto element, merging parent options with element-specific ones.
+    
+    This function builds the effective options for a field, message, or enum by:
+    1. Starting with a copy of the parent options
+    2. Checking proto3 syntax and setting the flag
+    3. Applying matching patterns from .options files (Globals.separate_options)
+    4. Merging options specified directly in the .proto file via extensions
+    
+    The precedence order (later overrides earlier):
+        parent_options < .options_file_patterns < inline_proto_options
+    
+    Args:
+        subdesc: The protobuf descriptor (FieldDescriptor, MessageDescriptor, etc.)
+        options: Parent NanoPBOptions to inherit from
+        name: Names object for pattern matching in .options files
+    
+    Returns:
+        NanoPBOptions with all applicable options merged
+    
+    Raises:
+        Exception: If subdesc.options is an unknown descriptor type
+    """
     new_options = nanopb_pb2.NanoPBOptions()
     new_options.CopyFrom(options)
 
@@ -3963,8 +4111,30 @@ optparser.add_option("--custom-style", dest="custom_style", type=str, metavar="M
 
 
 def process_cmdline(args, is_plugin):
-    '''Process command line options. Returns list of options, filenames.'''
-
+    """
+    Parse and validate command line arguments.
+    
+    This function processes the command line arguments, sets up global state
+    (Globals class), and returns parsed options and input filenames.
+    
+    Handles both standalone CLI mode and protoc plugin mode, with slight
+    differences in error handling and help output destination.
+    
+    Args:
+        args: List of command line arguments (excluding argv[0])
+        is_plugin: True if running as protoc plugin, affects output behavior
+    
+    Returns:
+        Tuple of (options, filenames) where options is the parsed options
+        namespace and filenames is a list of input files
+    
+    Side Effects:
+        - Sets Globals.verbose_options
+        - Sets Globals.protoc_insertion_points
+        - Sets Globals.naming_style
+        - Loads and parses .options files into Globals.separate_options
+        - May call sys.exit() for --version or on errors
+    """
     options, filenames = optparser.parse_args(args)
 
     if options.version:
