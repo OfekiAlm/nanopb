@@ -224,6 +224,31 @@ reserved_keywords = [
 ]
 
 class NamingStyle:
+    """
+    Base class for C identifier naming conventions.
+    
+    NamingStyle provides methods to transform protobuf names into C identifiers
+    for different contexts (types, variables, enums, etc.). The base class
+    provides identity transformations with minimal prefixing.
+    
+    Subclass this to implement different naming conventions. Methods can be
+    overridden individually to customize specific identifier types.
+    
+    Methods:
+        enum_name: Format for enum type tags (e.g., "enum _MyEnum")
+        struct_name: Format for struct tags (e.g., "struct _MyMessage")
+        union_name: Format for union tags
+        type_name: Format for typedef names (e.g., "MyMessage")
+        define_name: Format for #define macro names
+        var_name: Format for variable names (handles reserved keywords)
+        enum_entry: Format for enum value names
+        func_name: Format for function names
+        bytes_type: Format for bytes field typedefs
+    
+    The base implementation prefixes enum/struct/union tags with underscore
+    and leaves other names unchanged (except adding underscore suffix for
+    reserved keywords in var_name).
+    """
     def enum_name(self, name):
         return "_%s" % (name)
 
@@ -255,6 +280,23 @@ class NamingStyle:
         return "%s_%s_t" % (struct_name, name)
 
 class NamingStyleC(NamingStyle):
+    """
+    C-style naming convention using snake_case identifiers.
+    
+    This style converts CamelCase names to snake_case and follows
+    traditional C naming conventions:
+    - Type names end with _t suffix (e.g., my_message_t)
+    - Constants and enum entries are UPPER_SNAKE_CASE
+    - Variables and functions are lower_snake_case
+    
+    Enable with -C or --c-style command line option.
+    
+    Example transformations:
+        MyMessage -> my_message_t (type_name)
+        MyMessage -> MY_MESSAGE (define_name)
+        fieldName -> field_name (var_name)
+        MyEnum.VALUE_ONE -> MY_ENUM_VALUE_ONE (enum_entry)
+    """
     def enum_name(self, name):
         return self.underscore(name)
 
@@ -577,13 +619,40 @@ class ProtoElement(object):
 
 
 class Enum(ProtoElement):
+    """
+    Represents a protobuf enum type for C code generation.
+    
+    Generates a C typedef enum with the appropriate naming convention
+    and optional helper functions (enum_to_string, enum_validate).
+    
+    Attributes:
+        names (Names): Fully qualified enum name
+        values (list): List of (Names, int) tuples for enum values
+        value_longnames (list): Full names for each value (for long_names mode)
+        options: NanoPBOptions for this enum
+        packed (bool): If True, use pb_packed attribute
+    
+    Generated C Code Example:
+        typedef enum _MyEnum {
+            MyEnum_VALUE_A = 0,
+            MyEnum_VALUE_B = 1
+        } MyEnum;
+        
+        #define _MyEnum_MIN MyEnum_VALUE_A
+        #define _MyEnum_MAX MyEnum_VALUE_B
+        #define _MyEnum_ARRAYSIZE ((MyEnum)(MyEnum_VALUE_B+1))
+    """
     def __init__(self, names, desc, enum_options, element_path, comments):
-        '''
-        desc is EnumDescriptorProto
-        index is the index of this enum element inside the file
-        comments is a dictionary mapping between element path & SourceCodeInfo.Location
-            (contains information about source comments)
-        '''
+        """
+        Initialize an Enum from an EnumDescriptorProto.
+        
+        Args:
+            names: Names object for this enum
+            desc: EnumDescriptorProto from protobuf descriptor
+            enum_options: NanoPBOptions for this enum
+            element_path: Tuple path for source comment lookup
+            comments: Dict mapping paths to SourceCodeInfo.Location
+        """
         super(Enum, self).__init__(element_path, comments)
 
         self.options = enum_options
@@ -2187,12 +2256,36 @@ def make_identifier(headername):
     return result
 
 class MangleNames:
-    '''Handles conversion of type names according to mangle_names option:
-    M_NONE = 0; // Default, no typename mangling
-    M_STRIP_PACKAGE = 1; // Strip current package name
-    M_FLATTEN = 2; // Only use last path component
-    M_PACKAGE_INITIALS = 3; // Replace the package name by the initials
-    '''
+    """
+    Manages type name transformations based on the mangle_names option.
+    
+    Protobuf uses fully qualified names with package prefixes, which can
+    result in long C identifiers. MangleNames provides several strategies
+    to shorten or transform these names:
+    
+    - M_NONE (0): No mangling, use full package.Message_Field names
+    - M_STRIP_PACKAGE (1): Remove the package prefix entirely
+    - M_FLATTEN (2): Use only the final name component (loses hierarchy)
+    - M_PACKAGE_INITIALS (3): Replace package with initials (com.example -> ce)
+    
+    The class also supports the `package` file option to specify a custom
+    replacement for the package prefix.
+    
+    Attributes:
+        mangle_names (int): The mangling mode (M_NONE, M_STRIP_PACKAGE, etc.)
+        flatten (bool): True if using M_FLATTEN mode
+        strip_prefix (str): Package prefix to remove (e.g., ".com.example")
+        replacement_prefix (str): Prefix to add after stripping
+        name_mapping (dict): Maps original names to mangled names
+        reverse_name_mapping (dict): Maps mangled names back to original
+        base_name (Names): Base name for constructing new names
+    
+    Example:
+        With package "com.example" and M_STRIP_PACKAGE:
+            com.example.MyMessage -> MyMessage
+        With M_PACKAGE_INITIALS:
+            com.example.MyMessage -> ce_MyMessage
+    """
     def __init__(self, fdesc, file_options):
         self.file_options = file_options
         self.mangle_names = file_options.mangle_names
