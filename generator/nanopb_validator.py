@@ -2721,16 +2721,16 @@ class ValidatorGenerator:
         
         # Format rules (EMAIL, HOSTNAME, IP, etc.) - use pb_validate_string helper
         elif rule.rule_type in (RULE_EMAIL, RULE_HOSTNAME, RULE_IP, RULE_IPV4, RULE_IPV6):
-            rule_enum = self.CALLBACK_STRING_FORMAT_MACROS.get(rule.rule_type)
-            if rule_enum:
-                # Need to build the C enum constant
-                c_enum = {
-                    RULE_EMAIL: 'PB_VALIDATE_RULE_EMAIL',
-                    RULE_HOSTNAME: 'PB_VALIDATE_RULE_HOSTNAME', 
-                    RULE_IP: 'PB_VALIDATE_RULE_IP',
-                    RULE_IPV4: 'PB_VALIDATE_RULE_IPV4',
-                    RULE_IPV6: 'PB_VALIDATE_RULE_IPV6',
-                }.get(rule.rule_type)
+            # Map rule types to C enum constants
+            format_rule_to_c_enum = {
+                RULE_EMAIL: 'PB_VALIDATE_RULE_EMAIL',
+                RULE_HOSTNAME: 'PB_VALIDATE_RULE_HOSTNAME', 
+                RULE_IP: 'PB_VALIDATE_RULE_IP',
+                RULE_IPV4: 'PB_VALIDATE_RULE_IPV4',
+                RULE_IPV6: 'PB_VALIDATE_RULE_IPV6',
+            }
+            c_enum = format_rule_to_c_enum.get(rule.rule_type)
+            if c_enum:
                 yield '        /* Check format on callback string */\n'
                 yield '        if (callback_ctx->%s_data != NULL) {\n' % field_var_name
                 yield '            if (!pb_validate_string(callback_ctx->%s_data, callback_ctx->%s_length, NULL, %s)) {\n' % (field_var_name, field_var_name, c_enum)
@@ -2782,8 +2782,23 @@ class ValidatorGenerator:
                 yield '        }\n'
     
     def _escape_c_string(self, s: str) -> str:
-        """Escape a string for use in C code."""
-        return s.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+        """
+        Escape a string for use in C code.
+        
+        Handles all standard C escape sequences to ensure safe embedding
+        of arbitrary string values in generated C code.
+        """
+        result = s.replace('\\', '\\\\')  # Must be first to avoid double-escaping
+        result = result.replace('"', '\\"')
+        result = result.replace('\n', '\\n')
+        result = result.replace('\r', '\\r')
+        result = result.replace('\t', '\\t')
+        result = result.replace('\0', '\\0')
+        result = result.replace('\v', '\\v')
+        result = result.replace('\f', '\\f')
+        result = result.replace('\b', '\\b')
+        result = result.replace('\a', '\\a')
+        return result
     # =========================================================================
     # Message-Level Rule Code Generators
     # =========================================================================
