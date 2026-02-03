@@ -1,9 +1,65 @@
 #!/usr/bin/env python3
 # kate: replace-tabs on; indent-width 4;
 
+"""
+nanopb_generator.py - Generate C header and source files from Protocol Buffers
+================================================================================
+
+This module implements the nanopb code generator, which converts Protocol Buffer
+definitions (.proto files or compiled .pb descriptors) into C header (.pb.h) and
+source (.pb.c) files suitable for embedded systems with limited resources.
+
+Architecture Overview
+---------------------
+The generator follows a multi-phase approach:
+
+1. **Parsing Phase**: Read FileDescriptorProto from .pb binary or compile .proto
+   files using protoc. Extract messages, enums, fields, and their options.
+
+2. **IR Building Phase**: Construct an intermediate representation using:
+   - `ProtoFile`: Top-level file representation
+   - `Message`: Message structure with fields and nested types
+   - `Field`: Individual field with type, encoding, and options
+   - `Enum`: Enumeration types
+   - `OneOf`: Oneof groups
+
+3. **Code Generation Phase**: Render C code using the IR:
+   - Generate struct definitions for messages
+   - Generate field descriptor tables (pb_field_t arrays)
+   - Generate initializer macros and size definitions
+
+Key Classes
+-----------
+- `Names`: Manages hierarchical C identifier construction
+- `EncodedSize`: Tracks field/message encoded sizes (symbolic + numeric)
+- `ProtoElement`: Base class providing comment handling for all proto elements
+- `Field`: Handles all field type variations and encoding rules
+- `Message`: Manages message structure and nested content
+- `ProtoFile`: Orchestrates the complete file generation process
+- `Globals`: Configuration state (naming style, options, etc.)
+
+CLI Usage
+---------
+As standalone tool:
+    python nanopb_generator.py [options] file.pb ...
+
+As protoc plugin:
+    protoc --plugin=protoc-gen-nanopb=nanopb_generator.py --nanopb_out=. file.proto
+
+Module Constants
+----------------
+- `nanopb_version`: Version string for generated file headers
+- `datatypes`: Mapping from protobuf types to C types and encoding info
+- `reserved_keywords`: C/C++ keywords that need underscore suffix
+
+See Also
+--------
+- nanopb_validator.py: Validation code generation module
+- pb.h: Core nanopb runtime header
+"""
+
 from __future__ import unicode_literals
 
-'''Generate header file for nanopb from a ProtoBuf FileDescriptorSet.'''
 nanopb_version = "nanopb-1.0.0-dev"
 
 import sys
@@ -237,7 +293,29 @@ class NamingStyleC(NamingStyle):
         return word.lower()
 
 class Globals:
-    '''Ugly global variables, should find a good way to pass these.'''
+    """
+    Global configuration state for the code generator.
+    
+    This class holds generator-wide settings that need to be accessible from
+    multiple parts of the codebase. While global state is generally discouraged,
+    these values are essentially read-only configuration after CLI parsing.
+    
+    Attributes:
+        verbose_options (bool): If True, print detailed option information
+            during generation. Useful for debugging .options file matching.
+        separate_options (list): List of (namemask, NanoPBOptions) tuples
+            from .options files. Used to apply options to matching fields.
+        matched_namemasks (set): Tracks which namemasks from separate_options
+            were actually matched. Used to warn about unused patterns.
+        protoc_insertion_points (bool): If True, emit protoc insertion point
+            comments in output for use by custom protoc plugins.
+        naming_style (NamingStyle): The active naming convention for generated
+            identifiers. Default is identity; NamingStyleC provides snake_case.
+    
+    Note:
+        These are initialized by process_cmdline() and should be treated as
+        read-only after that point.
+    """
     verbose_options = False
     separate_options = []
     matched_namemasks = set()
@@ -245,7 +323,30 @@ class Globals:
     naming_style = NamingStyle()
 
 class Names:
-    '''Keeps a set of nested names and formats them to C identifier.'''
+    """
+    Represents a hierarchical identifier name that can be formatted for C.
+    
+    Protocol Buffer names are hierarchical (e.g., "package.OuterMessage.InnerMessage.field").
+    This class maintains the hierarchy as a tuple of parts and provides operations
+    for combining names and formatting them as C identifiers using underscore
+    separation (e.g., "package_OuterMessage_InnerMessage_field").
+    
+    Attributes:
+        parts (tuple): The individual name components as strings.
+    
+    Examples:
+        >>> n = Names(('MyPackage', 'MyMessage'))
+        >>> str(n)
+        'MyPackage_MyMessage'
+        >>> n + 'field_name'
+        Names('MyPackage','MyMessage','field_name')
+        >>> Names('SinglePart')
+        Names('SinglePart')
+    
+    Note:
+        The actual formatting (e.g., adding '_t' suffix, converting to snake_case)
+        is handled by the NamingStyle classes, not by Names itself.
+    """
     def __init__(self, parts = ()):
         if isinstance(parts, Names):
             parts = parts.parts
@@ -301,8 +402,29 @@ assert varint_max_size(127) == 1
 assert varint_max_size(128) == 2
 
 class EncodedSize:
-    '''Class used to represent the encoded size of a field or a message.
-    Consists of a combination of symbolic sizes and integer sizes.'''
+    """
+    Represents the encoded size of a protobuf field or message.
+    
+    Encoded sizes can be a combination of:
+    - A fixed numeric value (known at generation time)
+    - Symbolic expressions (e.g., references to max_size options)
+    
+    This allows the generator to produce compile-time size expressions like:
+        (12 + MyMessage_data_size + 5*MAX_ITEM_COUNT)
+    
+    Attributes:
+        value (int): The fixed numeric portion of the size.
+        symbols (list): List of symbolic size expressions (strings).
+        declarations (list): C declarations needed for this size (e.g., union types).
+        required_defines (list): Preprocessor defines required for this size.
+    
+    Examples:
+        >>> EncodedSize(10)  # Fixed size of 10 bytes
+        >>> EncodedSize('MAX_SIZE')  # Symbolic size
+        >>> EncodedSize(5) + EncodedSize('DYNAMIC_PART')  # Combined size
+    
+    The string representation produces valid C expressions for use in macros.
+    """
     def __init__(self, value = 0, symbols = [], declarations = [], required_defines = []):
         if isinstance(value, EncodedSize):
             self.value = value.value
@@ -367,6 +489,34 @@ class EncodedSize:
             return 2**32 - 1
 
 class ProtoElement(object):
+    """
+    Base class for all protobuf elements that can have source code comments.
+    
+    This class provides shared functionality for handling source code comments
+    from .proto files. Protobuf's SourceCodeInfo tracks leading and trailing
+    comments for each element using a path-based addressing scheme.
+    
+    The path system uses integers defined in descriptor.proto to identify
+    element types within the FileDescriptor hierarchy:
+    - FIELD (2): Field within a message
+    - MESSAGE (4): Top-level message in file  
+    - ENUM (5): Top-level enum in file
+    - NESTED_TYPE (3): Nested message within a message
+    - NESTED_ENUM (4): Nested enum within a message
+    
+    Attributes:
+        element_path (tuple): Path to this element in the FileDescriptor.
+        comments (dict): Mapping from paths to SourceCodeInfo.Location objects.
+    
+    Subclasses:
+        - Enum: Enumeration type
+        - Field: Message field
+        - Message: Message type
+        - OneOf: Oneof group (also extends Field)
+    
+    References:
+        https://github.com/google/protobuf/blob/master/src/google/protobuf/descriptor.proto
+    """
     # Constants regarding path of proto elements in file descriptor.
     # They are used to connect proto elements with source code information (comments)
     # These values come from:
@@ -604,6 +754,18 @@ class Enum(ProtoElement):
 
 
 class FieldMaxSize:
+    """
+    Tracks the maximum encoded size for a field, used for buffer allocation.
+    
+    This class helps determine the worst-case buffer size needed to encode
+    a message by tracking both the size value and which field contributes
+    to it (useful for debugging/optimization).
+    
+    Attributes:
+        worst (int): The maximum size value found so far.
+        worst_field (str): Name of the field contributing the worst-case size.
+        checks (list): List of size checks to perform at compile time.
+    """
     def __init__(self, worst = 0, checks = [], field_name = 'undefined'):
         if isinstance(worst, list):
             self.worst = max(i for i in worst if i is not None)
@@ -622,11 +784,51 @@ class FieldMaxSize:
         self.checks.extend(extend.checks)
 
 class Field(ProtoElement):
+    """
+    Represents a single field within a protobuf message.
+    
+    This class handles all the complexity of protobuf field types, including:
+    - Scalar types (int32, string, bytes, etc.)
+    - Nested messages and enums
+    - Repeated fields (with and without fixed counts)
+    - Optional vs required vs proto3 semantics
+    - Pointer, static, and callback allocation modes
+    
+    The Field class is responsible for:
+    1. Parsing field options from NanoPBOptions
+    2. Determining C type and encoding information
+    3. Generating struct member declarations
+    4. Generating field descriptor macro invocations (PB_FIELD, etc.)
+    5. Computing encoded sizes for buffer allocation
+    
+    Attributes:
+        tag (int): Protobuf field number
+        name (str): Field name from .proto
+        struct_name (Names): Parent message name
+        rules (str): REQUIRED, OPTIONAL, REPEATED, FIXARRAY, or SINGULAR
+        allocation (str): STATIC, POINTER, or CALLBACK
+        ctype (str): C type for the field value
+        pbtype (str): Protobuf type identifier (INT32, STRING, MESSAGE, etc.)
+        validate_rules: Optional validation rules from validate.proto
+    
+    Class Attributes:
+        macro_x_param (str): Parameter name for X-macro expansion ('X')
+        macro_a_param (str): Parameter name for additional macro args ('a')
+    """
     macro_x_param = 'X'
     macro_a_param = 'a'
 
     def __init__(self, struct_name, desc, field_options, element_path = (), comments = None):
-        '''desc is FieldDescriptorProto'''
+        """
+        Initialize a Field from a FieldDescriptorProto.
+        
+        Args:
+            struct_name: Names object for the parent message
+            desc: FieldDescriptorProto from protobuf descriptor
+            field_options: NanoPBOptions for this field
+            element_path: Tuple path for source comment lookup
+            comments: Dict mapping paths to SourceCodeInfo.Location
+        """
         ProtoElement.__init__(self, element_path, comments)
         self.tag = desc.number
         self.struct_name = struct_name
