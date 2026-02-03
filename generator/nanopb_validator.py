@@ -346,6 +346,23 @@ class FieldContext:
             oneof_name=oneof_name,
             is_anonymous=anonymous
         )
+    
+    @classmethod
+    def for_message_rule(cls) -> 'FieldContext':
+        """
+        Create a context for message-level rules.
+        
+        Message-level rules (REQUIRES, MUTEX, AT_LEAST) don't apply to a specific
+        field, so this returns a context with no field information. This makes
+        the intent explicit rather than using a raw FieldContext with None values.
+        """
+        return cls(
+            field=None,
+            field_name='',
+            is_oneof=False,
+            oneof_name=None,
+            is_anonymous=False
+        )
 
 
 @dataclass
@@ -719,9 +736,9 @@ class IRBuilder:
         # Build message rule IRs
         message_rule_irs = []
         for msg_rule in validator.message_rules:
-            # Message rules don't have a field context, use a dummy
-            dummy_context = FieldContext(field=None, field_name='')
-            ir = self.build_rule_ir(msg_rule, dummy_context)
+            # Message rules don't have a field context, use dedicated factory
+            msg_context = FieldContext.for_message_rule()
+            ir = self.build_rule_ir(msg_rule, msg_context)
             message_rule_irs.append(ir)
         
         # Check for callback fields
@@ -740,6 +757,9 @@ class IRBuilder:
             message_rules=message_rule_irs,
             has_callback_fields=has_callback
         )
+
+
+class FieldValidator:
     """
     Handles validation rule parsing and storage for a single protobuf field.
     
