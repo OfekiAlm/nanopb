@@ -1,0 +1,205 @@
+/*
+ * Comprehensive string validation test proto
+ * 
+ * Tests all string validation rules across different allocation modes:
+ * - Regular string with (nanopb).max_size
+ * - Repeated string with (nanopb).max_count
+ * - Callback string with (nanopb).type = FT_CALLBACK
+ * - Repeated callback string
+ * 
+ * Covers all string validation rules:
+ * - Pattern: PREFIX, SUFFIX, CONTAINS, ASCII
+ * - Format: EMAIL, HOSTNAME, IP, IPV4, IPV6
+ * - Set membership: IN, NOT_IN
+ */
+
+syntax = "proto3";
+
+import "validate.proto";
+import "nanopb.proto";
+
+option (validate.validate) = true;
+
+/* ===========================================================================
+ * REGULAR STRING TESTS (static allocation with max_size)
+ * ===========================================================================*/
+
+/* Test PREFIX rule on regular string */
+message RegularStringPrefix {
+    string value = 1 [(nanopb).max_size = 64, (validate.rules).string.prefix = "PREFIX_"];
+}
+
+/* Test SUFFIX rule on regular string */
+message RegularStringSuffix {
+    string value = 1 [(nanopb).max_size = 64, (validate.rules).string.suffix = "_SUFFIX"];
+}
+
+/* Test CONTAINS rule on regular string */
+message RegularStringContains {
+    string value = 1 [(nanopb).max_size = 64, (validate.rules).string.contains = "@"];
+}
+
+/* Test ASCII rule on regular string */
+message RegularStringAscii {
+    string value = 1 [(nanopb).max_size = 64, (validate.rules).string.ascii = true];
+}
+
+/* Test EMAIL rule on regular string */
+message RegularStringEmail {
+    string value = 1 [(nanopb).max_size = 128, (validate.rules).string.email = true];
+}
+
+/* Test HOSTNAME rule on regular string */
+message RegularStringHostname {
+    string value = 1 [(nanopb).max_size = 128, (validate.rules).string.hostname = true];
+}
+
+/* Test IP rule on regular string */
+message RegularStringIp {
+    string value = 1 [(nanopb).max_size = 46, (validate.rules).string.ip = true];
+}
+
+/* Test IPV4 rule on regular string */
+message RegularStringIpv4 {
+    string value = 1 [(nanopb).max_size = 16, (validate.rules).string.ipv4 = true];
+}
+
+/* Test IPV6 rule on regular string */
+message RegularStringIpv6 {
+    string value = 1 [(nanopb).max_size = 46, (validate.rules).string.ipv6 = true];
+}
+
+/* Test IN rule on regular string */
+message RegularStringIn {
+    string value = 1 [
+        (nanopb).max_size = 32, 
+        (validate.rules).string.in = "red",
+        (validate.rules).string.in = "green", 
+        (validate.rules).string.in = "blue"
+    ];
+}
+
+/* Test NOT_IN rule on regular string */
+message RegularStringNotIn {
+    string value = 1 [
+        (nanopb).max_size = 32, 
+        (validate.rules).string.not_in = "FORBIDDEN",
+        (validate.rules).string.not_in = "BLOCKED", 
+        (validate.rules).string.not_in = "BANNED"
+    ];
+}
+
+/* ===========================================================================
+ * REPEATED STRING TESTS (static allocation with max_count)
+ * ===========================================================================*/
+
+/* Test PREFIX rule on repeated string */
+message RepeatedStringPrefix {
+    repeated string values = 1 [(nanopb).max_size = 64, (nanopb).max_count = 5, (validate.rules).repeated.items.string.prefix = "PREFIX_"];
+}
+
+/* Test SUFFIX rule on repeated string */
+message RepeatedStringSuffix {
+    repeated string values = 1 [(nanopb).max_size = 64, (nanopb).max_count = 5, (validate.rules).repeated.items.string.suffix = "_SUFFIX"];
+}
+
+/* Test CONTAINS rule on repeated string */
+message RepeatedStringContains {
+    repeated string values = 1 [(nanopb).max_size = 64, (nanopb).max_count = 5, (validate.rules).repeated.items.string.contains = "@"];
+}
+
+/* Test ASCII rule on repeated string */
+message RepeatedStringAscii {
+    repeated string values = 1 [(nanopb).max_size = 64, (nanopb).max_count = 5, (validate.rules).repeated.items.string.ascii = true];
+}
+
+/* ===========================================================================
+ * CALLBACK STRING TESTS (dynamic allocation with FT_CALLBACK)
+ * ===========================================================================*/
+
+/* Test PREFIX rule on callback string */
+message CallbackStringPrefix {
+    string value = 1 [(nanopb).type = FT_CALLBACK, (validate.rules).string.prefix = "PREFIX_"];
+}
+
+/* Test SUFFIX rule on callback string */
+message CallbackStringSuffix {
+    string value = 1 [(nanopb).type = FT_CALLBACK, (validate.rules).string.suffix = "_SUFFIX"];
+}
+
+/* Test CONTAINS rule on callback string */
+message CallbackStringContains {
+    string value = 1 [(nanopb).type = FT_CALLBACK, (validate.rules).string.contains = "@"];
+}
+
+/* Test ASCII rule on callback string */
+message CallbackStringAscii {
+    string value = 1 [(nanopb).type = FT_CALLBACK, (validate.rules).string.ascii = true];
+}
+
+/* Test EMAIL rule on callback string */
+message CallbackStringEmail {
+    string value = 1 [(nanopb).type = FT_CALLBACK, (validate.rules).string.email = true];
+}
+
+/* Test HOSTNAME rule on callback string */
+message CallbackStringHostname {
+    string value = 1 [(nanopb).type = FT_CALLBACK, (validate.rules).string.hostname = true];
+}
+
+/* Test IP rule on callback string */
+message CallbackStringIp {
+    string value = 1 [(nanopb).type = FT_CALLBACK, (validate.rules).string.ip = true];
+}
+
+/* Test IPV4 rule on callback string */
+message CallbackStringIpv4 {
+    string value = 1 [(nanopb).type = FT_CALLBACK, (validate.rules).string.ipv4 = true];
+}
+
+/* Test IPV6 rule on callback string */
+message CallbackStringIpv6 {
+    string value = 1 [(nanopb).type = FT_CALLBACK, (validate.rules).string.ipv6 = true];
+}
+
+/* Test IN rule on callback string */
+message CallbackStringIn {
+    string value = 1 [(nanopb).type = FT_CALLBACK, (validate.rules).string.in = "red", (validate.rules).string.in = "green", (validate.rules).string.in = "blue"];
+}
+
+/* Test NOT_IN rule on callback string */
+message CallbackStringNotIn {
+    string value = 1 [(nanopb).type = FT_CALLBACK, (validate.rules).string.not_in = "FORBIDDEN", (validate.rules).string.not_in = "BLOCKED", (validate.rules).string.not_in = "BANNED"];
+}
+
+/* ===========================================================================
+ * ENVELOPE MESSAGE (root message for filter_udp)
+ * 
+ * Contains all test cases for end-to-end validation with filter_udp
+ * ===========================================================================*/
+
+message StringValidationEnvelope {
+    /* Regular strings */
+    string regular_prefix = 1 [(nanopb).max_size = 64, (validate.rules).string.prefix = "PREFIX_"];
+    string regular_suffix = 2 [(nanopb).max_size = 64, (validate.rules).string.suffix = "_SUFFIX"];
+    string regular_contains = 3 [(nanopb).max_size = 64, (validate.rules).string.contains = "@"];
+    string regular_ascii = 4 [(nanopb).max_size = 64, (validate.rules).string.ascii = true];
+    string regular_email = 5 [(nanopb).max_size = 128, (validate.rules).string.email = true];
+    string regular_hostname = 6 [(nanopb).max_size = 128, (validate.rules).string.hostname = true];
+    string regular_ip = 7 [(nanopb).max_size = 46, (validate.rules).string.ip = true];
+    string regular_in = 8 [(nanopb).max_size = 32, (validate.rules).string.in = "red", (validate.rules).string.in = "green", (validate.rules).string.in = "blue"];
+    string regular_not_in = 9 [(nanopb).max_size = 32, (validate.rules).string.not_in = "FORBIDDEN", (validate.rules).string.not_in = "BLOCKED"];
+    
+    /* Repeated strings */
+    repeated string repeated_prefix = 10 [(nanopb).max_size = 64, (nanopb).max_count = 5, (validate.rules).repeated.items.string.prefix = "PREFIX_"];
+    repeated string repeated_contains = 11 [(nanopb).max_size = 64, (nanopb).max_count = 5, (validate.rules).repeated.items.string.contains = "@"];
+    
+    /* Callback strings */
+    string callback_prefix = 20 [(nanopb).type = FT_CALLBACK, (validate.rules).string.prefix = "PREFIX_"];
+    string callback_suffix = 21 [(nanopb).type = FT_CALLBACK, (validate.rules).string.suffix = "_SUFFIX"];
+    string callback_contains = 22 [(nanopb).type = FT_CALLBACK, (validate.rules).string.contains = "@"];
+    string callback_ascii = 23 [(nanopb).type = FT_CALLBACK, (validate.rules).string.ascii = true];
+    string callback_email = 24 [(nanopb).type = FT_CALLBACK, (validate.rules).string.email = true];
+    string callback_in = 25 [(nanopb).type = FT_CALLBACK, (validate.rules).string.in = "red", (validate.rules).string.in = "green", (validate.rules).string.in = "blue"];
+    string callback_not_in = 26 [(nanopb).type = FT_CALLBACK, (validate.rules).string.not_in = "FORBIDDEN", (validate.rules).string.not_in = "BLOCKED"];
+}
