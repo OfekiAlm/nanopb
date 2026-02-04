@@ -352,23 +352,159 @@ static void test_repeated_string_rules(void)
 }
 
 /*======================================================================
- * CALLBACK STRING LENGTH TESTS (FT_CALLBACK fields via filter_udp)
+ * CALLBACK STRING TESTS (FT_CALLBACK fields via filter_udp)
  * 
- * NOTE: The callback context structure only stores field_length and
- * field_decoded. Content-based rules (PREFIX, SUFFIX, etc.) require
- * the callback context to also store field_data, which would require
- * changes to nanopb_generator.py.
+ * Tests content-based validation rules on callback strings in the
+ * StringValidationEnvelope message. The envelope has callback fields
+ * for PREFIX, SUFFIX, CONTAINS, ASCII, EMAIL, IN, and NOT_IN rules.
  * 
- * Currently supported callback string rules: MIN_LEN, MAX_LEN
+ * Test pipeline: encode → filter_udp (decode callback + validation)
  * 
- * These tests exercise the full pipeline for length validation:
- *   encode → decode via callback → validation → filter_udp
+ * The callback context stores actual string content (up to 256 bytes),
+ * enabling full content-based validation (PREFIX, SUFFIX, CONTAINS, etc.)
  *======================================================================*/
 
-/* Callback string length tests are exercised in callback_validation test
- * which tests MIN_LEN and MAX_LEN on callback strings.
- * Content-based rules cannot be tested until nanopb_generator.py
- * is extended to store callback string data in the context. */
+/* Encode callback that writes a string from arg */
+static bool encode_callback_string(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
+{
+    const char *str = (const char *)*arg;
+    if (!pb_encode_tag_for_field(stream, field))
+        return false;
+    return pb_encode_string(stream, (const uint8_t *)str, strlen(str));
+}
+
+/* Helper to test callback string field via filter_udp */
+static void test_callback_via_envelope(const char *test_name, 
+                                       int field_num,  /* Which callback field */
+                                       const char *test_str,
+                                       bool expect_valid)
+{
+    uint8_t buffer[2048];
+    size_t msg_len;
+    pb_ostream_t ostream;
+    int result;
+    
+    TEST(test_name);
+    
+    /* Initialize envelope with all valid values */
+    StringValidationEnvelope msg = StringValidationEnvelope_init_zero;
+    
+    /* Set valid values for all regular fields */
+    strcpy(msg.regular_prefix, "PREFIX_test");
+    strcpy(msg.regular_suffix, "test_SUFFIX");
+    strcpy(msg.regular_contains, "test@example.com");
+    strcpy(msg.regular_ascii, "Hello World");
+    strcpy(msg.regular_email, "user@example.com");
+    strcpy(msg.regular_hostname, "www.example.com");
+    strcpy(msg.regular_ip, "192.168.1.1");
+    strcpy(msg.regular_in, "red");
+    strcpy(msg.regular_not_in, "allowed");
+    
+    /* Set repeated fields to valid values */
+    strcpy(msg.repeated_prefix[0], "PREFIX_one");
+    msg.repeated_prefix_count = 1;
+    strcpy(msg.repeated_contains[0], "user@test.com");
+    msg.repeated_contains_count = 1;
+    
+    /* Set all callback fields to valid defaults */
+    const char *valid_prefix = "PREFIX_valid";
+    const char *valid_suffix = "valid_SUFFIX";
+    const char *valid_contains = "has@sign";
+    const char *valid_ascii = "ascii only";
+    const char *valid_email = "test@test.com";
+    const char *valid_in = "red";
+    const char *valid_not_in = "allowed";
+    
+    msg.callback_prefix.funcs.encode = &encode_callback_string;
+    msg.callback_prefix.arg = (void *)valid_prefix;
+    msg.callback_suffix.funcs.encode = &encode_callback_string;
+    msg.callback_suffix.arg = (void *)valid_suffix;
+    msg.callback_contains.funcs.encode = &encode_callback_string;
+    msg.callback_contains.arg = (void *)valid_contains;
+    msg.callback_ascii.funcs.encode = &encode_callback_string;
+    msg.callback_ascii.arg = (void *)valid_ascii;
+    msg.callback_email.funcs.encode = &encode_callback_string;
+    msg.callback_email.arg = (void *)valid_email;
+    msg.callback_in.funcs.encode = &encode_callback_string;
+    msg.callback_in.arg = (void *)valid_in;
+    msg.callback_not_in.funcs.encode = &encode_callback_string;
+    msg.callback_not_in.arg = (void *)valid_not_in;
+    
+    /* Override the field under test with test_str */
+    switch (field_num) {
+        case 12: msg.callback_prefix.arg = (void *)test_str; break;
+        case 13: msg.callback_suffix.arg = (void *)test_str; break;
+        case 14: msg.callback_contains.arg = (void *)test_str; break;
+        case 15: msg.callback_ascii.arg = (void *)test_str; break;
+        case 16: msg.callback_email.arg = (void *)test_str; break;
+        case 17: msg.callback_in.arg = (void *)test_str; break;
+        case 18: msg.callback_not_in.arg = (void *)test_str; break;
+    }
+    
+    /* Encode */
+    ostream = pb_ostream_from_buffer(buffer, sizeof(buffer));
+    if (!pb_encode(&ostream, &StringValidationEnvelope_msg, &msg)) {
+        tests_failed++;
+        printf("    [FAIL] Encode failed\n");
+        return;
+    }
+    msg_len = ostream.bytes_written;
+    
+    /* Test via filter_udp */
+    result = filter_udp(NULL, buffer, msg_len);
+    
+    if (expect_valid) {
+        if (result == 0) {
+            tests_passed++;
+            printf("    [PASS] Valid callback string accepted\n");
+        } else {
+            tests_failed++;
+            printf("    [FAIL] Expected valid, got %d\n", result);
+        }
+    } else {
+        if (result != 0) {
+            tests_passed++;
+            printf("    [PASS] Invalid callback string rejected\n");
+        } else {
+            tests_failed++;
+            printf("    [FAIL] Expected invalid\n");
+        }
+    }
+}
+
+/* Test callback string rules */
+static void test_callback_string_rules(void)
+{
+    printf("\n=== Callback String Rules Tests (End-to-End via filter_udp) ===\n");
+    
+    /* callback_prefix (field 12) */
+    test_callback_via_envelope("callback_prefix - valid", 12, "PREFIX_test", true);
+    test_callback_via_envelope("callback_prefix - invalid", 12, "WRONG_test", false);
+    
+    /* callback_suffix (field 13) */
+    test_callback_via_envelope("callback_suffix - valid", 13, "test_SUFFIX", true);
+    test_callback_via_envelope("callback_suffix - invalid", 13, "test_WRONG", false);
+    
+    /* callback_contains (field 14) */
+    test_callback_via_envelope("callback_contains - valid", 14, "has@sign", true);
+    test_callback_via_envelope("callback_contains - invalid", 14, "no_at_sign", false);
+    
+    /* callback_ascii (field 15) */
+    test_callback_via_envelope("callback_ascii - valid", 15, "Hello World", true);
+    test_callback_via_envelope("callback_ascii - invalid", 15, "Caf\xc3\xa9", false);  /* UTF-8 'é' */
+    
+    /* callback_email (field 16) */
+    test_callback_via_envelope("callback_email - valid", 16, "user@example.com", true);
+    test_callback_via_envelope("callback_email - invalid", 16, "not_an_email", false);
+    
+    /* callback_in (field 17) */
+    test_callback_via_envelope("callback_in - valid", 17, "red", true);  /* In: red, green, blue */
+    test_callback_via_envelope("callback_in - invalid", 17, "purple", false);
+    
+    /* callback_not_in (field 18) */
+    test_callback_via_envelope("callback_not_in - valid", 18, "allowed", true);
+    test_callback_via_envelope("callback_not_in - invalid", 18, "FORBIDDEN", false);  /* Forbidden set */
+}
 
 /*======================================================================
  * FILTER_UDP ENVELOPE TEST
@@ -528,14 +664,14 @@ static void test_filter_udp_envelope(void)
 int main(void)
 {
     printf("=== String Validation Test Suite ===\n");
-    printf("Tests string validation rules for regular and repeated strings\n");
+    printf("Tests string validation rules for regular, repeated, and callback strings\n");
     printf("using filter_udp for end-to-end validation.\n");
-    printf("Note: Callback string content-based validation requires nanopb_generator.py changes.\n");
-    printf("See callback_validation test for MIN_LEN/MAX_LEN callback string validation.\n");
+    printf("Callback strings now fully support content-based validation (PREFIX, SUFFIX, etc.)\n");
     
     /* Run tests */
     test_regular_string_rules();
     test_repeated_string_rules();
+    test_callback_string_rules();
     test_filter_udp_envelope();
     
     /* Summary */
