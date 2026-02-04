@@ -3376,15 +3376,26 @@ class ProtoFile:
     def generate_string_bytes_decode_callback(self, msg, field, options):
         '''Generate decode callback for a string or bytes field  
         Stores decoded field data AND length in context for validation by pb_validate_Msg().
-        Does NOT validate - validation happens in pb_validate_Msg() function.
+        
+        For REPEATED fields: Also validates EACH item during decode, because the
+        callback overwrites the buffer on each invocation (only the last item would
+        be validated otherwise).
+        
+        For singular fields: Validation happens later in pb_validate_Msg().
         '''
         msg_type_name = Globals.naming_style.type_name(msg.name)
         field_var_name = Globals.naming_style.var_name(field.name)
         callback_func_name = 'pb_decode_callback_%s_%s' % (msg_type_name, field_var_name)
         max_callback_string_size = 256  # Must match the buffer size in context struct
         
+        # Check if field is repeated
+        is_repeated = hasattr(field, 'rules') and field.rules == 'REPEATED'
+        
         yield '/* Decode callback for %s.%s */\n' % (msg_type_name, field_var_name)
-        yield '/* Stores field data and length in context - validation happens in pb_validate_%s() */\n' % msg_type_name
+        if is_repeated:
+            yield '/* REPEATED field: validates EACH item during decode (buffer is overwritten per item) */\n'
+        else:
+            yield '/* Stores field data and length in context - validation happens in pb_validate_%s() */\n' % msg_type_name
         yield 'static bool %s(pb_istream_t *stream, const pb_field_iter_t *field, void **arg) {\n' % callback_func_name
         yield '    %s_callback_ctx_t *ctx = (%s_callback_ctx_t *)*arg;\n' % (msg_type_name, msg_type_name)
         yield '    (void)field; /* Unused parameter */\n'
@@ -3407,12 +3418,192 @@ class ProtoFile:
         yield '        }\n'
         yield '    }\n'
         yield '\n'
-        yield '    /* Store length and mark as decoded for validation by pb_validate_%s() */\n' % msg_type_name
+        yield '    /* Store length and mark as decoded */\n'
         yield '    ctx->%s_length = len;  /* Original length before truncation */\n' % field_var_name
         yield '    ctx->%s_decoded = true;\n' % field_var_name
         yield '\n'
+        
+        # For repeated fields, generate inline validation for EACH item during decode
+        if is_repeated and hasattr(field, 'validate_rules') and field.validate_rules:
+            yield '    /* REPEATED FIELD: Validate THIS item now (before next item overwrites) */\n'
+            for line in self._generate_inline_string_validation(field, field_var_name, msg_type_name):
+                yield line
+            yield '\n'
+        
         yield '    return true;\n'
         yield '}\n\n'
+    
+    def _generate_inline_string_validation(self, field, field_var_name, msg_type_name):
+        '''Generate inline validation code for a string field during decode callback.
+        This is used for REPEATED callback strings to validate each item as it's decoded.
+        
+        For repeated string fields, rules are at rules.repeated.items.string
+        For singular string fields, rules are at rules.string
+        '''
+        rules = field.validate_rules
+        if not rules:
+            return
+        
+        # Get string rules - handle both direct string and repeated.items.string
+        string_rules = None
+        
+        # Check for direct string rules first
+        if rules.HasField('string'):
+            string_rules = rules.string
+        # For repeated fields, check repeated.items.string
+        elif rules.HasField('repeated') and rules.repeated.HasField('items') and rules.repeated.items.HasField('string'):
+            string_rules = rules.repeated.items.string
+        
+        if not string_rules:
+            return
+        
+        # MIN_LEN
+        if string_rules.HasField('min_len'):
+            min_len = string_rules.min_len
+            yield '    if (ctx->%s_length < %d) {\n' % (field_var_name, min_len)
+            yield '        if (ctx->violations) {\n'
+            yield '            pb_violations_add(ctx->violations, ctx->field_path, "%s.string.min_len", "String too short");\n' % field_var_name
+            yield '        }\n'
+            yield '    }\n'
+        
+        # MAX_LEN
+        if string_rules.HasField('max_len'):
+            max_len = string_rules.max_len
+            yield '    if (ctx->%s_length > %d) {\n' % (field_var_name, max_len)
+            yield '        if (ctx->violations) {\n'
+            yield '            pb_violations_add(ctx->violations, ctx->field_path, "%s.string.max_len", "String too long");\n' % field_var_name
+            yield '        }\n'
+            yield '    }\n'
+        
+        # PREFIX
+        if string_rules.HasField('prefix'):
+            prefix = string_rules.prefix
+            # Escape for C string
+            prefix_escaped = prefix.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r')
+            yield '    {\n'
+            yield '        const char *__pb_prefix = "%s";\n' % prefix_escaped
+            yield '        size_t __pb_prefix_len = %d;\n' % len(prefix)
+            yield '        if (ctx->%s_length < __pb_prefix_len || strncmp(ctx->%s_data, __pb_prefix, __pb_prefix_len) != 0) {\n' % (field_var_name, field_var_name)
+            yield '            if (ctx->violations) {\n'
+            yield '                pb_violations_add(ctx->violations, ctx->field_path, "%s.string.prefix", "String must start with prefix");\n' % field_var_name
+            yield '            }\n'
+            yield '        }\n'
+            yield '    }\n'
+        
+        # SUFFIX
+        if string_rules.HasField('suffix'):
+            suffix = string_rules.suffix
+            suffix_escaped = suffix.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r')
+            yield '    {\n'
+            yield '        const char *__pb_suffix = "%s";\n' % suffix_escaped
+            yield '        size_t __pb_suffix_len = %d;\n' % len(suffix)
+            yield '        if (ctx->%s_length >= __pb_suffix_len) {\n' % field_var_name
+            yield '            const char *__pb_end = ctx->%s_data + ctx->%s_length - __pb_suffix_len;\n' % (field_var_name, field_var_name)
+            yield '            if (strncmp(__pb_end, __pb_suffix, __pb_suffix_len) != 0) {\n'
+            yield '                if (ctx->violations) {\n'
+            yield '                    pb_violations_add(ctx->violations, ctx->field_path, "%s.string.suffix", "String must end with suffix");\n' % field_var_name
+            yield '                }\n'
+            yield '            }\n'
+            yield '        } else {\n'
+            yield '            if (ctx->violations) {\n'
+            yield '                pb_violations_add(ctx->violations, ctx->field_path, "%s.string.suffix", "String must end with suffix");\n' % field_var_name
+            yield '            }\n'
+            yield '        }\n'
+            yield '    }\n'
+        
+        # CONTAINS
+        if string_rules.HasField('contains'):
+            needle = string_rules.contains
+            needle_escaped = needle.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r')
+            yield '    {\n'
+            yield '        const char *__pb_needle = "%s";\n' % needle_escaped
+            yield '        bool __pb_found = (strstr(ctx->%s_data, __pb_needle) != NULL);\n' % field_var_name
+            yield '        if (!__pb_found) {\n'
+            yield '            if (ctx->violations) {\n'
+            yield '                pb_violations_add(ctx->violations, ctx->field_path, "%s.string.contains", "String must contain substring");\n' % field_var_name
+            yield '            }\n'
+            yield '        }\n'
+            yield '    }\n'
+        
+        # ASCII
+        if string_rules.HasField('ascii') and string_rules.ascii:
+            yield '    {\n'
+            yield '        bool __pb_is_ascii = true;\n'
+            yield '        for (size_t __pb_i = 0; __pb_i < ctx->%s_length; __pb_i++) {\n' % field_var_name
+            yield '            if ((unsigned char)ctx->%s_data[__pb_i] > 127) {\n' % field_var_name
+            yield '                __pb_is_ascii = false; break;\n'
+            yield '            }\n'
+            yield '        }\n'
+            yield '        if (!__pb_is_ascii) {\n'
+            yield '            if (ctx->violations) {\n'
+            yield '                pb_violations_add(ctx->violations, ctx->field_path, "%s.string.ascii", "String must be ASCII only");\n' % field_var_name
+            yield '            }\n'
+            yield '        }\n'
+            yield '    }\n'
+        
+        # EMAIL
+        if string_rules.HasField('email') and string_rules.email:
+            yield '    if (!pb_validate_string(ctx->%s_data, ctx->%s_length, NULL, PB_VALIDATE_RULE_EMAIL)) {\n' % (field_var_name, field_var_name)
+            yield '        if (ctx->violations) {\n'
+            yield '            pb_violations_add(ctx->violations, ctx->field_path, "%s.string.email", "Invalid email format");\n' % field_var_name
+            yield '        }\n'
+            yield '    }\n'
+        
+        # HOSTNAME
+        if string_rules.HasField('hostname') and string_rules.hostname:
+            yield '    if (!pb_validate_string(ctx->%s_data, ctx->%s_length, NULL, PB_VALIDATE_RULE_HOSTNAME)) {\n' % (field_var_name, field_var_name)
+            yield '        if (ctx->violations) {\n'
+            yield '            pb_violations_add(ctx->violations, ctx->field_path, "%s.string.hostname", "Invalid hostname format");\n' % field_var_name
+            yield '        }\n'
+            yield '    }\n'
+        
+        # IP (general IP check)
+        if string_rules.HasField('ip') and string_rules.ip:
+            yield '    if (!pb_validate_string(ctx->%s_data, ctx->%s_length, NULL, PB_VALIDATE_RULE_IP)) {\n' % (field_var_name, field_var_name)
+            yield '        if (ctx->violations) {\n'
+            yield '            pb_violations_add(ctx->violations, ctx->field_path, "%s.string.ip", "Invalid IP address format");\n' % field_var_name
+            yield '        }\n'
+            yield '    }\n'
+        
+        # IN (set membership)
+        if hasattr(string_rules, 'in') and getattr(string_rules, 'in'):
+            values = list(getattr(string_rules, 'in'))
+            if values:
+                values_escaped = ', '.join('"%s"' % v.replace('\\', '\\\\').replace('"', '\\"') for v in values)
+                yield '    {\n'
+                yield '        bool __pb_in_set = false;\n'
+                yield '        const char *__pb_allowed[] = { %s };\n' % values_escaped
+                yield '        for (size_t __pb_k = 0; __pb_k < sizeof(__pb_allowed)/sizeof(__pb_allowed[0]); __pb_k++) {\n'
+                yield '            if (strcmp(ctx->%s_data, __pb_allowed[__pb_k]) == 0) {\n' % field_var_name
+                yield '                __pb_in_set = true; break;\n'
+                yield '            }\n'
+                yield '        }\n'
+                yield '        if (!__pb_in_set) {\n'
+                yield '            if (ctx->violations) {\n'
+                yield '                pb_violations_add(ctx->violations, ctx->field_path, "%s.string.in", "Value not in allowed set");\n' % field_var_name
+                yield '            }\n'
+                yield '        }\n'
+                yield '    }\n'
+        
+        # NOT_IN (set exclusion)
+        if string_rules.not_in:
+            values = list(string_rules.not_in)
+            if values:
+                values_escaped = ', '.join('"%s"' % v.replace('\\', '\\\\').replace('"', '\\"') for v in values)
+                yield '    {\n'
+                yield '        bool __pb_forbidden = false;\n'
+                yield '        const char *__pb_blocked[] = { %s };\n' % values_escaped
+                yield '        for (size_t __pb_k = 0; __pb_k < sizeof(__pb_blocked)/sizeof(__pb_blocked[0]); __pb_k++) {\n'
+                yield '            if (strcmp(ctx->%s_data, __pb_blocked[__pb_k]) == 0) {\n' % field_var_name
+                yield '                __pb_forbidden = true; break;\n'
+                yield '            }\n'
+                yield '        }\n'
+                yield '        if (__pb_forbidden) {\n'
+                yield '            if (ctx->violations) {\n'
+                yield '                pb_violations_add(ctx->violations, ctx->field_path, "%s.string.not_in", "Value in forbidden set");\n' % field_var_name
+                yield '            }\n'
+                yield '        }\n'
+                yield '    }\n'
     
     def generate_service_filter_implementations(self, options):
         '''Generate implementation of packet filter functions (service- or envelope-driven)'''
