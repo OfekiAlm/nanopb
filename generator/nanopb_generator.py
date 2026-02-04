@@ -3306,11 +3306,26 @@ class ProtoFile:
         '''Generate decode callback for a submessage field
         Decodes and validates submessage, sets flag in context.
         Validation happens here because we can't store entire submessage (too large).
+        If the submessage has callback fields, we create a local callback_ctx for it.
+        
+        Note: For callback fields, pb_decode already creates a substream before calling
+        the callback, so the stream passed here is already positioned at the submessage
+        contents with the correct length.
         '''
         msg_type_name = Globals.naming_style.type_name(msg.name)
         field_var_name = Globals.naming_style.var_name(field.name)
         submsg_type_name = Globals.naming_style.type_name(field.ctype)
         callback_func_name = 'pb_decode_callback_%s_%s' % (msg_type_name, field_var_name)
+        
+        # Check if submessage type has callback fields
+        submsg_has_callbacks = False
+        for submsg in self.messages:
+            if str(submsg.name) == str(field.ctype):
+                for subfield in submsg.fields:
+                    if not isinstance(subfield, OneOf) and subfield.allocation == 'CALLBACK':
+                        submsg_has_callbacks = True
+                        break
+                break
         
         yield '/* Decode callback for %s.%s */\n' % (msg_type_name, field_var_name)
         yield '/* Validates submessage and sets flag - validation logic in pb_validate_%s() */\n' % submsg_type_name
@@ -3321,17 +3336,36 @@ class ProtoFile:
         yield '    /* Allocate temporary message on stack */\n'
         yield '    %s tmp = %s;\n' % (submsg_type_name, Globals.naming_style.define_name(str(field.ctype) + '_init_zero'))
         yield '\n'
-        yield '    /* Decode the submessage */\n'
-        yield '    if (!pb_decode(stream, &%s_msg, &tmp)) {\n' % submsg_type_name
-        yield '        return false;\n'
-        yield '    }\n'
-        yield '\n'
-        yield '    /* Validate by calling validator function */\n'
-        yield '    /* Validation logic is in pb_validate_%s() - called from decode callback */\n' % submsg_type_name
-        yield '    /* because submessage is too large to store in context */\n'
-        yield '    if (!pb_validate_%s(&tmp, ctx->violations)) {\n' % submsg_type_name
-        yield '        return false;\n'
-        yield '    }\n'
+        
+        if submsg_has_callbacks:
+            # Submessage has callback fields - need callback context
+            yield '    /* Submessage has callback fields - create local callback context */\n'
+            yield '    %s_callback_ctx_t submsg_ctx = {0};\n' % submsg_type_name
+            yield '    submsg_ctx.violations = ctx->violations;\n'
+            yield '    submsg_ctx.field_path = "%s.%s";\n' % (msg_type_name, field_var_name)
+            yield '    pb_wire_callbacks_%s(&tmp, &submsg_ctx);\n' % submsg_type_name
+            yield '\n'
+            yield '    /* Decode the submessage (stream is already a substream for callbacks) */\n'
+            yield '    if (!pb_decode(stream, &%s_msg, &tmp)) {\n' % submsg_type_name
+            yield '        return false;\n'
+            yield '    }\n'
+            yield '\n'
+            yield '    /* Validate by calling validator function with callback context */\n'
+            yield '    if (!pb_validate_%s(&tmp, ctx->violations, &submsg_ctx)) {\n' % submsg_type_name
+            yield '        return false;\n'
+            yield '    }\n'
+        else:
+            # Submessage has no callback fields - simple decode and validate
+            yield '    /* Decode the submessage (stream is already a substream for callbacks) */\n'
+            yield '    if (!pb_decode(stream, &%s_msg, &tmp)) {\n' % submsg_type_name
+            yield '        return false;\n'
+            yield '    }\n'
+            yield '\n'
+            yield '    /* Validate by calling validator function */\n'
+            yield '    if (!pb_validate_%s(&tmp, ctx->violations)) {\n' % submsg_type_name
+            yield '        return false;\n'
+            yield '    }\n'
+        
         yield '\n'
         yield '    /* Set flag that this field was validated */\n'
         yield '    ctx->%s_validated = true;\n' % field_var_name

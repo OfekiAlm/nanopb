@@ -165,6 +165,64 @@ message CallbackStringNotIn {
 }
 
 /* ===========================================================================
+ * REPEATED CALLBACK STRING TESTS
+ * 
+ * Test repeated strings with FT_CALLBACK allocation.
+ * ===========================================================================*/
+
+/* Inner message for callback submessage tests */
+message CallbackInnerMessage {
+    string inner_str = 1 [(nanopb).type = FT_CALLBACK, (validate.rules).string.prefix = "INNER_"];
+    int32 inner_num = 2 [(validate.rules).int32.gt = 0];
+}
+
+/* Test repeated callback strings with validation */
+message RepeatedCallbackStrings {
+    repeated string values = 1 [
+        (nanopb).type = FT_CALLBACK,
+        (nanopb).max_count = 4,
+        (validate.rules).repeated.items.string.prefix = "PREFIX_"
+    ];
+}
+
+/* Test repeated callback strings with ASCII validation */
+message RepeatedCallbackStringsAscii {
+    repeated string values = 1 [
+        (nanopb).type = FT_CALLBACK,
+        (nanopb).max_count = 4,
+        (validate.rules).repeated.items.string.ascii = true
+    ];
+}
+
+/* Test repeated callback strings with EMAIL validation */
+message RepeatedCallbackStringsEmail {
+    repeated string values = 1 [
+        (nanopb).type = FT_CALLBACK,
+        (nanopb).max_count = 4,
+        (validate.rules).repeated.items.string.email = true
+    ];
+}
+
+/* ===========================================================================
+ * CALLBACK SUBMESSAGE TESTS
+ * 
+ * Test nested messages with FT_CALLBACK allocation.
+ * ===========================================================================*/
+
+/* Test callback submessage (single nested callback message) */
+message CallbackSubmessage {
+    CallbackInnerMessage inner = 1 [(nanopb).type = FT_CALLBACK];
+}
+
+/* Test repeated callback submessages */
+message RepeatedCallbackSubmessages {
+    repeated CallbackInnerMessage items = 1 [
+        (nanopb).type = FT_CALLBACK,
+        (nanopb).max_count = 4
+    ];
+}
+
+/* ===========================================================================
  * ENVELOPE MESSAGE (root message for filter_udp)
  * 
  * Contains all test cases for regular, repeated, and callback strings.
@@ -194,4 +252,20 @@ message StringValidationEnvelope {
     string callback_email = 16 [(nanopb).type = FT_CALLBACK, (validate.rules).string.email = true];
     string callback_in = 17 [(nanopb).type = FT_CALLBACK, (validate.rules).string.in = "red", (validate.rules).string.in = "green", (validate.rules).string.in = "blue"];
     string callback_not_in = 18 [(nanopb).type = FT_CALLBACK, (validate.rules).string.not_in = "FORBIDDEN", (validate.rules).string.not_in = "BLOCKED"];
+    
+    /* Repeated callback strings */
+    repeated string repeated_callback_prefix = 19 [
+        (nanopb).type = FT_CALLBACK,
+        (nanopb).max_count = 4,
+        (validate.rules).repeated.items.string.prefix = "PREFIX_"
+    ];
+    
+    /* Callback submessage */
+    CallbackInnerMessage callback_submsg = 20 [(nanopb).type = FT_CALLBACK];
+    
+    /* Repeated callback submessages */
+    repeated CallbackInnerMessage repeated_callback_submsg = 21 [
+        (nanopb).type = FT_CALLBACK,
+        (nanopb).max_count = 4
+    ];
 }

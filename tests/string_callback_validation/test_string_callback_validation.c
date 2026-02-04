@@ -658,6 +658,560 @@ static void test_filter_udp_envelope(void)
 }
 
 /*======================================================================
+ * REPEATED CALLBACK STRINGS, CALLBACK SUBMESSAGES, 
+ * AND REPEATED CALLBACK SUBMESSAGES TESTS
+ *======================================================================*/
+
+/* Encode callback for repeated strings - encodes array of strings */
+typedef struct {
+    const char **strings;
+    int count;
+} repeated_string_ctx_t;
+
+static bool encode_repeated_callback_string(pb_ostream_t *stream, const pb_field_iter_t *field, void * const *arg)
+{
+    repeated_string_ctx_t *ctx = (repeated_string_ctx_t *)*arg;
+    int i;
+    
+    for (i = 0; i < ctx->count; i++) {
+        if (!pb_encode_tag_for_field(stream, field))
+            return false;
+        if (!pb_encode_string(stream, (const uint8_t *)ctx->strings[i], strlen(ctx->strings[i])))
+            return false;
+    }
+    
+    return true;
+}
+
+/* Encode callback for CallbackInnerMessage submessage */
+typedef struct {
+    const char *inner_str;
+    int32_t inner_num;
+} inner_msg_ctx_t;
+
+static bool encode_inner_string(pb_ostream_t *stream, const pb_field_iter_t *field, void * const *arg)
+{
+    const char *str = (const char *)*arg;
+    (void)field;
+    return pb_encode_string(stream, (const uint8_t *)str, strlen(str));
+}
+
+static bool encode_callback_submsg(pb_ostream_t *stream, const pb_field_iter_t *field, void * const *arg)
+{
+    inner_msg_ctx_t *ctx = (inner_msg_ctx_t *)*arg;
+    CallbackInnerMessage inner = CallbackInnerMessage_init_zero;
+    
+    inner.inner_str.funcs.encode = &encode_inner_string;
+    inner.inner_str.arg = (void *)ctx->inner_str;
+    inner.inner_num = ctx->inner_num;
+    
+    if (!pb_encode_tag_for_field(stream, field))
+        return false;
+    
+    return pb_encode_submessage(stream, &CallbackInnerMessage_msg, &inner);
+}
+
+/* Encode callback for repeated CallbackInnerMessage submessages */
+typedef struct {
+    inner_msg_ctx_t *items;
+    int count;
+} repeated_inner_ctx_t;
+
+static bool encode_repeated_callback_submsg(pb_ostream_t *stream, const pb_field_iter_t *field, void * const *arg)
+{
+    repeated_inner_ctx_t *ctx = (repeated_inner_ctx_t *)*arg;
+    int i;
+    
+    for (i = 0; i < ctx->count; i++) {
+        CallbackInnerMessage inner = CallbackInnerMessage_init_zero;
+        inner.inner_str.funcs.encode = &encode_inner_string;
+        inner.inner_str.arg = (void *)ctx->items[i].inner_str;
+        inner.inner_num = ctx->items[i].inner_num;
+        
+        if (!pb_encode_tag_for_field(stream, field))
+            return false;
+        if (!pb_encode_submessage(stream, &CallbackInnerMessage_msg, &inner))
+            return false;
+    }
+    
+    return true;
+}
+
+/* Test repeated callback strings */
+static void test_repeated_callback_strings(void)
+{
+    uint8_t buffer[2048];
+    size_t msg_len;
+    pb_ostream_t ostream;
+    int result;
+    
+    printf("\n=== Repeated Callback Strings Tests (End-to-End via filter_udp) ===\n");
+    
+    /* Test valid repeated callback strings */
+    TEST("repeated_callback_prefix - all valid");
+    {
+        StringValidationEnvelope msg = StringValidationEnvelope_init_zero;
+        
+        /* Set required regular fields to valid values */
+        strcpy(msg.regular_prefix, "PREFIX_test");
+        strcpy(msg.regular_suffix, "test_SUFFIX");
+        strcpy(msg.regular_contains, "test@example.com");
+        strcpy(msg.regular_ascii, "Hello World");
+        strcpy(msg.regular_email, "user@example.com");
+        strcpy(msg.regular_hostname, "www.example.com");
+        strcpy(msg.regular_ip, "192.168.1.1");
+        strcpy(msg.regular_in, "red");
+        strcpy(msg.regular_not_in, "allowed");
+        
+        /* Set callback strings to valid */
+        const char *cb_valid_prefix = "PREFIX_valid";
+        const char *cb_valid_suffix = "valid_SUFFIX";
+        const char *cb_valid_contains = "has@sign";
+        const char *cb_valid_ascii = "ascii only";
+        const char *cb_valid_email = "test@test.com";
+        const char *cb_valid_in = "red";
+        const char *cb_valid_not_in = "allowed";
+        
+        msg.callback_prefix.funcs.encode = &encode_callback_string;
+        msg.callback_prefix.arg = (void *)cb_valid_prefix;
+        msg.callback_suffix.funcs.encode = &encode_callback_string;
+        msg.callback_suffix.arg = (void *)cb_valid_suffix;
+        msg.callback_contains.funcs.encode = &encode_callback_string;
+        msg.callback_contains.arg = (void *)cb_valid_contains;
+        msg.callback_ascii.funcs.encode = &encode_callback_string;
+        msg.callback_ascii.arg = (void *)cb_valid_ascii;
+        msg.callback_email.funcs.encode = &encode_callback_string;
+        msg.callback_email.arg = (void *)cb_valid_email;
+        msg.callback_in.funcs.encode = &encode_callback_string;
+        msg.callback_in.arg = (void *)cb_valid_in;
+        msg.callback_not_in.funcs.encode = &encode_callback_string;
+        msg.callback_not_in.arg = (void *)cb_valid_not_in;
+        
+        /* Set repeated callback strings to valid */
+        const char *rep_strs[] = {"PREFIX_one", "PREFIX_two"};
+        repeated_string_ctx_t rep_ctx = {rep_strs, 2};
+        msg.repeated_callback_prefix.funcs.encode = &encode_repeated_callback_string;
+        msg.repeated_callback_prefix.arg = &rep_ctx;
+        
+        /* Encode and test */
+        ostream = pb_ostream_from_buffer(buffer, sizeof(buffer));
+        assert(pb_encode(&ostream, &StringValidationEnvelope_msg, &msg));
+        msg_len = ostream.bytes_written;
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_VALID(result, "all repeated callback strings valid");
+    }
+    
+    /* Test invalid repeated callback string (one invalid) */
+    TEST("repeated_callback_prefix - one invalid");
+    {
+        StringValidationEnvelope msg = StringValidationEnvelope_init_zero;
+        
+        /* Set required regular fields to valid values */
+        strcpy(msg.regular_prefix, "PREFIX_test");
+        strcpy(msg.regular_suffix, "test_SUFFIX");
+        strcpy(msg.regular_contains, "test@example.com");
+        strcpy(msg.regular_ascii, "Hello World");
+        strcpy(msg.regular_email, "user@example.com");
+        strcpy(msg.regular_hostname, "www.example.com");
+        strcpy(msg.regular_ip, "192.168.1.1");
+        strcpy(msg.regular_in, "red");
+        strcpy(msg.regular_not_in, "allowed");
+        
+        /* Set callback strings to valid */
+        const char *cb_valid_prefix = "PREFIX_valid";
+        const char *cb_valid_suffix = "valid_SUFFIX";
+        const char *cb_valid_contains = "has@sign";
+        const char *cb_valid_ascii = "ascii only";
+        const char *cb_valid_email = "test@test.com";
+        const char *cb_valid_in = "red";
+        const char *cb_valid_not_in = "allowed";
+        
+        msg.callback_prefix.funcs.encode = &encode_callback_string;
+        msg.callback_prefix.arg = (void *)cb_valid_prefix;
+        msg.callback_suffix.funcs.encode = &encode_callback_string;
+        msg.callback_suffix.arg = (void *)cb_valid_suffix;
+        msg.callback_contains.funcs.encode = &encode_callback_string;
+        msg.callback_contains.arg = (void *)cb_valid_contains;
+        msg.callback_ascii.funcs.encode = &encode_callback_string;
+        msg.callback_ascii.arg = (void *)cb_valid_ascii;
+        msg.callback_email.funcs.encode = &encode_callback_string;
+        msg.callback_email.arg = (void *)cb_valid_email;
+        msg.callback_in.funcs.encode = &encode_callback_string;
+        msg.callback_in.arg = (void *)cb_valid_in;
+        msg.callback_not_in.funcs.encode = &encode_callback_string;
+        msg.callback_not_in.arg = (void *)cb_valid_not_in;
+        
+        /* One invalid string - missing prefix */
+        const char *rep_strs[] = {"PREFIX_one", "WRONG_two"};  /* Second one invalid */
+        repeated_string_ctx_t rep_ctx = {rep_strs, 2};
+        msg.repeated_callback_prefix.funcs.encode = &encode_repeated_callback_string;
+        msg.repeated_callback_prefix.arg = &rep_ctx;
+        
+        /* Encode and test */
+        ostream = pb_ostream_from_buffer(buffer, sizeof(buffer));
+        assert(pb_encode(&ostream, &StringValidationEnvelope_msg, &msg));
+        msg_len = ostream.bytes_written;
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_INVALID(result, "one repeated callback string invalid");
+    }
+}
+
+/* Test callback submessages (nested message with callback fields) */
+static void test_callback_submessages(void)
+{
+    uint8_t buffer[2048];
+    size_t msg_len;
+    pb_ostream_t ostream;
+    int result;
+    
+    printf("\n=== Callback Submessage Tests (End-to-End via filter_udp) ===\n");
+    
+    /* Test valid callback submessage */
+    TEST("callback_submsg - valid inner_str and inner_num");
+    {
+        StringValidationEnvelope msg = StringValidationEnvelope_init_zero;
+        
+        /* Set required regular fields to valid values */
+        strcpy(msg.regular_prefix, "PREFIX_test");
+        strcpy(msg.regular_suffix, "test_SUFFIX");
+        strcpy(msg.regular_contains, "test@example.com");
+        strcpy(msg.regular_ascii, "Hello World");
+        strcpy(msg.regular_email, "user@example.com");
+        strcpy(msg.regular_hostname, "www.example.com");
+        strcpy(msg.regular_ip, "192.168.1.1");
+        strcpy(msg.regular_in, "red");
+        strcpy(msg.regular_not_in, "allowed");
+        
+        /* Set callback strings to valid */
+        const char *cb_valid_prefix = "PREFIX_valid";
+        const char *cb_valid_suffix = "valid_SUFFIX";
+        const char *cb_valid_contains = "has@sign";
+        const char *cb_valid_ascii = "ascii only";
+        const char *cb_valid_email = "test@test.com";
+        const char *cb_valid_in = "red";
+        const char *cb_valid_not_in = "allowed";
+        
+        msg.callback_prefix.funcs.encode = &encode_callback_string;
+        msg.callback_prefix.arg = (void *)cb_valid_prefix;
+        msg.callback_suffix.funcs.encode = &encode_callback_string;
+        msg.callback_suffix.arg = (void *)cb_valid_suffix;
+        msg.callback_contains.funcs.encode = &encode_callback_string;
+        msg.callback_contains.arg = (void *)cb_valid_contains;
+        msg.callback_ascii.funcs.encode = &encode_callback_string;
+        msg.callback_ascii.arg = (void *)cb_valid_ascii;
+        msg.callback_email.funcs.encode = &encode_callback_string;
+        msg.callback_email.arg = (void *)cb_valid_email;
+        msg.callback_in.funcs.encode = &encode_callback_string;
+        msg.callback_in.arg = (void *)cb_valid_in;
+        msg.callback_not_in.funcs.encode = &encode_callback_string;
+        msg.callback_not_in.arg = (void *)cb_valid_not_in;
+        
+        /* Set callback submessage - inner_str must start with INNER_, inner_num > 0 */
+        inner_msg_ctx_t inner_ctx = {"INNER_test", 42};
+        msg.callback_submsg.funcs.encode = &encode_callback_submsg;
+        msg.callback_submsg.arg = &inner_ctx;
+        
+        /* Encode and test */
+        ostream = pb_ostream_from_buffer(buffer, sizeof(buffer));
+        assert(pb_encode(&ostream, &StringValidationEnvelope_msg, &msg));
+        msg_len = ostream.bytes_written;
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_VALID(result, "callback submessage valid");
+    }
+    
+    /* Test invalid callback submessage - inner_str wrong prefix */
+    TEST("callback_submsg - invalid inner_str prefix");
+    {
+        StringValidationEnvelope msg = StringValidationEnvelope_init_zero;
+        
+        /* Set required regular fields to valid values */
+        strcpy(msg.regular_prefix, "PREFIX_test");
+        strcpy(msg.regular_suffix, "test_SUFFIX");
+        strcpy(msg.regular_contains, "test@example.com");
+        strcpy(msg.regular_ascii, "Hello World");
+        strcpy(msg.regular_email, "user@example.com");
+        strcpy(msg.regular_hostname, "www.example.com");
+        strcpy(msg.regular_ip, "192.168.1.1");
+        strcpy(msg.regular_in, "red");
+        strcpy(msg.regular_not_in, "allowed");
+        
+        /* Set callback strings to valid */
+        const char *cb_valid_prefix = "PREFIX_valid";
+        const char *cb_valid_suffix = "valid_SUFFIX";
+        const char *cb_valid_contains = "has@sign";
+        const char *cb_valid_ascii = "ascii only";
+        const char *cb_valid_email = "test@test.com";
+        const char *cb_valid_in = "red";
+        const char *cb_valid_not_in = "allowed";
+        
+        msg.callback_prefix.funcs.encode = &encode_callback_string;
+        msg.callback_prefix.arg = (void *)cb_valid_prefix;
+        msg.callback_suffix.funcs.encode = &encode_callback_string;
+        msg.callback_suffix.arg = (void *)cb_valid_suffix;
+        msg.callback_contains.funcs.encode = &encode_callback_string;
+        msg.callback_contains.arg = (void *)cb_valid_contains;
+        msg.callback_ascii.funcs.encode = &encode_callback_string;
+        msg.callback_ascii.arg = (void *)cb_valid_ascii;
+        msg.callback_email.funcs.encode = &encode_callback_string;
+        msg.callback_email.arg = (void *)cb_valid_email;
+        msg.callback_in.funcs.encode = &encode_callback_string;
+        msg.callback_in.arg = (void *)cb_valid_in;
+        msg.callback_not_in.funcs.encode = &encode_callback_string;
+        msg.callback_not_in.arg = (void *)cb_valid_not_in;
+        
+        /* Set callback submessage with invalid inner_str (wrong prefix) */
+        inner_msg_ctx_t inner_ctx = {"WRONG_prefix", 42};  /* Should be INNER_ */
+        msg.callback_submsg.funcs.encode = &encode_callback_submsg;
+        msg.callback_submsg.arg = &inner_ctx;
+        
+        /* Encode and test */
+        ostream = pb_ostream_from_buffer(buffer, sizeof(buffer));
+        assert(pb_encode(&ostream, &StringValidationEnvelope_msg, &msg));
+        msg_len = ostream.bytes_written;
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_INVALID(result, "callback submessage inner_str invalid prefix");
+    }
+    
+    /* Test invalid callback submessage - inner_num invalid */
+    TEST("callback_submsg - invalid inner_num (not > 0)");
+    {
+        StringValidationEnvelope msg = StringValidationEnvelope_init_zero;
+        
+        /* Set required regular fields to valid values */
+        strcpy(msg.regular_prefix, "PREFIX_test");
+        strcpy(msg.regular_suffix, "test_SUFFIX");
+        strcpy(msg.regular_contains, "test@example.com");
+        strcpy(msg.regular_ascii, "Hello World");
+        strcpy(msg.regular_email, "user@example.com");
+        strcpy(msg.regular_hostname, "www.example.com");
+        strcpy(msg.regular_ip, "192.168.1.1");
+        strcpy(msg.regular_in, "red");
+        strcpy(msg.regular_not_in, "allowed");
+        
+        /* Set callback strings to valid */
+        const char *cb_valid_prefix = "PREFIX_valid";
+        const char *cb_valid_suffix = "valid_SUFFIX";
+        const char *cb_valid_contains = "has@sign";
+        const char *cb_valid_ascii = "ascii only";
+        const char *cb_valid_email = "test@test.com";
+        const char *cb_valid_in = "red";
+        const char *cb_valid_not_in = "allowed";
+        
+        msg.callback_prefix.funcs.encode = &encode_callback_string;
+        msg.callback_prefix.arg = (void *)cb_valid_prefix;
+        msg.callback_suffix.funcs.encode = &encode_callback_string;
+        msg.callback_suffix.arg = (void *)cb_valid_suffix;
+        msg.callback_contains.funcs.encode = &encode_callback_string;
+        msg.callback_contains.arg = (void *)cb_valid_contains;
+        msg.callback_ascii.funcs.encode = &encode_callback_string;
+        msg.callback_ascii.arg = (void *)cb_valid_ascii;
+        msg.callback_email.funcs.encode = &encode_callback_string;
+        msg.callback_email.arg = (void *)cb_valid_email;
+        msg.callback_in.funcs.encode = &encode_callback_string;
+        msg.callback_in.arg = (void *)cb_valid_in;
+        msg.callback_not_in.funcs.encode = &encode_callback_string;
+        msg.callback_not_in.arg = (void *)cb_valid_not_in;
+        
+        /* Set callback submessage with invalid inner_num (must be > 0) */
+        inner_msg_ctx_t inner_ctx = {"INNER_test", 0};  /* 0 is not > 0 */
+        msg.callback_submsg.funcs.encode = &encode_callback_submsg;
+        msg.callback_submsg.arg = &inner_ctx;
+        
+        /* Encode and test */
+        ostream = pb_ostream_from_buffer(buffer, sizeof(buffer));
+        assert(pb_encode(&ostream, &StringValidationEnvelope_msg, &msg));
+        msg_len = ostream.bytes_written;
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_INVALID(result, "callback submessage inner_num invalid (not > 0)");
+    }
+}
+
+/* Test repeated callback submessages */
+static void test_repeated_callback_submessages(void)
+{
+    uint8_t buffer[2048];
+    size_t msg_len;
+    pb_ostream_t ostream;
+    int result;
+    
+    printf("\n=== Repeated Callback Submessages Tests (End-to-End via filter_udp) ===\n");
+    
+    /* Test valid repeated callback submessages */
+    TEST("repeated_callback_submsg - all valid");
+    {
+        StringValidationEnvelope msg = StringValidationEnvelope_init_zero;
+        
+        /* Set required regular fields to valid values */
+        strcpy(msg.regular_prefix, "PREFIX_test");
+        strcpy(msg.regular_suffix, "test_SUFFIX");
+        strcpy(msg.regular_contains, "test@example.com");
+        strcpy(msg.regular_ascii, "Hello World");
+        strcpy(msg.regular_email, "user@example.com");
+        strcpy(msg.regular_hostname, "www.example.com");
+        strcpy(msg.regular_ip, "192.168.1.1");
+        strcpy(msg.regular_in, "red");
+        strcpy(msg.regular_not_in, "allowed");
+        
+        /* Set callback strings to valid */
+        const char *cb_valid_prefix = "PREFIX_valid";
+        const char *cb_valid_suffix = "valid_SUFFIX";
+        const char *cb_valid_contains = "has@sign";
+        const char *cb_valid_ascii = "ascii only";
+        const char *cb_valid_email = "test@test.com";
+        const char *cb_valid_in = "red";
+        const char *cb_valid_not_in = "allowed";
+        
+        msg.callback_prefix.funcs.encode = &encode_callback_string;
+        msg.callback_prefix.arg = (void *)cb_valid_prefix;
+        msg.callback_suffix.funcs.encode = &encode_callback_string;
+        msg.callback_suffix.arg = (void *)cb_valid_suffix;
+        msg.callback_contains.funcs.encode = &encode_callback_string;
+        msg.callback_contains.arg = (void *)cb_valid_contains;
+        msg.callback_ascii.funcs.encode = &encode_callback_string;
+        msg.callback_ascii.arg = (void *)cb_valid_ascii;
+        msg.callback_email.funcs.encode = &encode_callback_string;
+        msg.callback_email.arg = (void *)cb_valid_email;
+        msg.callback_in.funcs.encode = &encode_callback_string;
+        msg.callback_in.arg = (void *)cb_valid_in;
+        msg.callback_not_in.funcs.encode = &encode_callback_string;
+        msg.callback_not_in.arg = (void *)cb_valid_not_in;
+        
+        /* Set repeated callback submessages - all valid */
+        inner_msg_ctx_t items[] = {
+            {"INNER_one", 10},
+            {"INNER_two", 20},
+            {"INNER_three", 30}
+        };
+        repeated_inner_ctx_t rep_ctx = {items, 3};
+        msg.repeated_callback_submsg.funcs.encode = &encode_repeated_callback_submsg;
+        msg.repeated_callback_submsg.arg = &rep_ctx;
+        
+        /* Encode and test */
+        ostream = pb_ostream_from_buffer(buffer, sizeof(buffer));
+        assert(pb_encode(&ostream, &StringValidationEnvelope_msg, &msg));
+        msg_len = ostream.bytes_written;
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_VALID(result, "all repeated callback submessages valid");
+    }
+    
+    /* Test invalid repeated callback submessages - second item invalid */
+    TEST("repeated_callback_submsg - second item invalid inner_str");
+    {
+        StringValidationEnvelope msg = StringValidationEnvelope_init_zero;
+        
+        /* Set required regular fields to valid values */
+        strcpy(msg.regular_prefix, "PREFIX_test");
+        strcpy(msg.regular_suffix, "test_SUFFIX");
+        strcpy(msg.regular_contains, "test@example.com");
+        strcpy(msg.regular_ascii, "Hello World");
+        strcpy(msg.regular_email, "user@example.com");
+        strcpy(msg.regular_hostname, "www.example.com");
+        strcpy(msg.regular_ip, "192.168.1.1");
+        strcpy(msg.regular_in, "red");
+        strcpy(msg.regular_not_in, "allowed");
+        
+        /* Set callback strings to valid */
+        const char *cb_valid_prefix = "PREFIX_valid";
+        const char *cb_valid_suffix = "valid_SUFFIX";
+        const char *cb_valid_contains = "has@sign";
+        const char *cb_valid_ascii = "ascii only";
+        const char *cb_valid_email = "test@test.com";
+        const char *cb_valid_in = "red";
+        const char *cb_valid_not_in = "allowed";
+        
+        msg.callback_prefix.funcs.encode = &encode_callback_string;
+        msg.callback_prefix.arg = (void *)cb_valid_prefix;
+        msg.callback_suffix.funcs.encode = &encode_callback_string;
+        msg.callback_suffix.arg = (void *)cb_valid_suffix;
+        msg.callback_contains.funcs.encode = &encode_callback_string;
+        msg.callback_contains.arg = (void *)cb_valid_contains;
+        msg.callback_ascii.funcs.encode = &encode_callback_string;
+        msg.callback_ascii.arg = (void *)cb_valid_ascii;
+        msg.callback_email.funcs.encode = &encode_callback_string;
+        msg.callback_email.arg = (void *)cb_valid_email;
+        msg.callback_in.funcs.encode = &encode_callback_string;
+        msg.callback_in.arg = (void *)cb_valid_in;
+        msg.callback_not_in.funcs.encode = &encode_callback_string;
+        msg.callback_not_in.arg = (void *)cb_valid_not_in;
+        
+        /* Set repeated callback submessages - second item has wrong prefix */
+        inner_msg_ctx_t items[] = {
+            {"INNER_one", 10},
+            {"WRONG_two", 20},   /* Wrong prefix */
+            {"INNER_three", 30}
+        };
+        repeated_inner_ctx_t rep_ctx = {items, 3};
+        msg.repeated_callback_submsg.funcs.encode = &encode_repeated_callback_submsg;
+        msg.repeated_callback_submsg.arg = &rep_ctx;
+        
+        /* Encode and test */
+        ostream = pb_ostream_from_buffer(buffer, sizeof(buffer));
+        assert(pb_encode(&ostream, &StringValidationEnvelope_msg, &msg));
+        msg_len = ostream.bytes_written;
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_INVALID(result, "second repeated callback submessage invalid");
+    }
+    
+    /* Test invalid repeated callback submessages - third item inner_num invalid */
+    TEST("repeated_callback_submsg - third item invalid inner_num");
+    {
+        StringValidationEnvelope msg = StringValidationEnvelope_init_zero;
+        
+        /* Set required regular fields to valid values */
+        strcpy(msg.regular_prefix, "PREFIX_test");
+        strcpy(msg.regular_suffix, "test_SUFFIX");
+        strcpy(msg.regular_contains, "test@example.com");
+        strcpy(msg.regular_ascii, "Hello World");
+        strcpy(msg.regular_email, "user@example.com");
+        strcpy(msg.regular_hostname, "www.example.com");
+        strcpy(msg.regular_ip, "192.168.1.1");
+        strcpy(msg.regular_in, "red");
+        strcpy(msg.regular_not_in, "allowed");
+        
+        /* Set callback strings to valid */
+        const char *cb_valid_prefix = "PREFIX_valid";
+        const char *cb_valid_suffix = "valid_SUFFIX";
+        const char *cb_valid_contains = "has@sign";
+        const char *cb_valid_ascii = "ascii only";
+        const char *cb_valid_email = "test@test.com";
+        const char *cb_valid_in = "red";
+        const char *cb_valid_not_in = "allowed";
+        
+        msg.callback_prefix.funcs.encode = &encode_callback_string;
+        msg.callback_prefix.arg = (void *)cb_valid_prefix;
+        msg.callback_suffix.funcs.encode = &encode_callback_string;
+        msg.callback_suffix.arg = (void *)cb_valid_suffix;
+        msg.callback_contains.funcs.encode = &encode_callback_string;
+        msg.callback_contains.arg = (void *)cb_valid_contains;
+        msg.callback_ascii.funcs.encode = &encode_callback_string;
+        msg.callback_ascii.arg = (void *)cb_valid_ascii;
+        msg.callback_email.funcs.encode = &encode_callback_string;
+        msg.callback_email.arg = (void *)cb_valid_email;
+        msg.callback_in.funcs.encode = &encode_callback_string;
+        msg.callback_in.arg = (void *)cb_valid_in;
+        msg.callback_not_in.funcs.encode = &encode_callback_string;
+        msg.callback_not_in.arg = (void *)cb_valid_not_in;
+        
+        /* Set repeated callback submessages - third item has invalid inner_num */
+        inner_msg_ctx_t items[] = {
+            {"INNER_one", 10},
+            {"INNER_two", 20},
+            {"INNER_three", -5}  /* Invalid: not > 0 */
+        };
+        repeated_inner_ctx_t rep_ctx = {items, 3};
+        msg.repeated_callback_submsg.funcs.encode = &encode_repeated_callback_submsg;
+        msg.repeated_callback_submsg.arg = &rep_ctx;
+        
+        /* Encode and test */
+        ostream = pb_ostream_from_buffer(buffer, sizeof(buffer));
+        assert(pb_encode(&ostream, &StringValidationEnvelope_msg, &msg));
+        msg_len = ostream.bytes_written;
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_INVALID(result, "third repeated callback submessage invalid inner_num");
+    }
+}
+
+/*======================================================================
  * MAIN
  *======================================================================*/
 
@@ -673,6 +1227,9 @@ int main(void)
     test_repeated_string_rules();
     test_callback_string_rules();
     test_filter_udp_envelope();
+    test_repeated_callback_strings();
+    test_callback_submessages();
+    test_repeated_callback_submessages();
     
     /* Summary */
     printf("\n===========================================\n");
