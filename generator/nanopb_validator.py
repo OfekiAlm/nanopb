@@ -130,6 +130,12 @@ RULE_TIMESTAMP_GT_NOW = 'TIMESTAMP_GT_NOW'
 RULE_TIMESTAMP_LT_NOW = 'TIMESTAMP_LT_NOW'
 RULE_TIMESTAMP_WITHIN = 'TIMESTAMP_WITHIN'
 
+# Rules that can be validated for callback string/bytes fields
+# Note: The callback context only stores field_length and field_decoded,
+# NOT the actual string data. Therefore only length-based rules can be validated.
+# Content-based rules require nanopb_generator.py to also store field_data pointer.
+_SUPPORTED_CALLBACK_STRING_RULES = frozenset({RULE_MIN_LEN, RULE_MAX_LEN})
+
 
 # =============================================================================
 # HELPER FUNCTIONS
@@ -2489,9 +2495,8 @@ class ValidatorGenerator:
                             # (MIN_LEN, MAX_LEN) can be validated. Content-based rules (PREFIX,
                             # SUFFIX, CONTAINS, format rules, etc.) require the callback context
                             # structure in nanopb_generator.py to also store field_data pointer.
-                            supported_callback_rules = {RULE_MIN_LEN, RULE_MAX_LEN}
                             for rule in field_validator.rules:
-                                if rule.rule_type in supported_callback_rules:
+                                if rule.rule_type in _SUPPORTED_CALLBACK_STRING_RULES:
                                     yield from self._generate_callback_string_bytes_rule_check(field_var_name, rule)
                             
                             yield '    }\n'
