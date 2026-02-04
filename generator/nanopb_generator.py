@@ -2813,8 +2813,11 @@ class ProtoFile:
                         if field.allocation == 'CALLBACK':
                             field_var_name = Globals.naming_style.var_name(field.name)
                             if field.pbtype in ['STRING', 'BYTES']:
-                                # Store length for string/bytes validation
+                                # Store data + length for string/bytes content-based validation
+                                # Maximum buffer size for callback string storage
+                                max_callback_string_size = 256  # Reasonable limit for validation
                                 yield '    /* Decoded data for callback field: %s */\n' % field.name
+                                yield '    char %s_data[%d];\n' % (field_var_name, max_callback_string_size)
                                 yield '    size_t %s_length;\n' % field_var_name
                                 yield '    bool %s_decoded;\n' % field_var_name
                             elif field.pbtype == 'MESSAGE':
@@ -3251,8 +3254,11 @@ class ProtoFile:
                 if field.allocation == 'CALLBACK':
                     field_var_name = Globals.naming_style.var_name(field.name)
                     if field.pbtype in ['STRING', 'BYTES']:
-                        # Store length for string/bytes validation
+                        # Store data + length for string/bytes content-based validation
+                        # Maximum buffer size for callback string storage
+                        max_callback_string_size = 256  # Reasonable limit for validation
                         yield '    /* Decoded data for callback field: %s */\n' % field.name
+                        yield '    char %s_data[%d];\n' % (field_var_name, max_callback_string_size)
                         yield '    size_t %s_length;\n' % field_var_name
                         yield '    bool %s_decoded;\n' % field_var_name
                     elif field.pbtype == 'MESSAGE':
@@ -3335,33 +3341,41 @@ class ProtoFile:
     
     def generate_string_bytes_decode_callback(self, msg, field, options):
         '''Generate decode callback for a string or bytes field  
-        Stores decoded field length in context for validation by pb_validate_Msg().
+        Stores decoded field data AND length in context for validation by pb_validate_Msg().
         Does NOT validate - validation happens in pb_validate_Msg() function.
         '''
         msg_type_name = Globals.naming_style.type_name(msg.name)
         field_var_name = Globals.naming_style.var_name(field.name)
         callback_func_name = 'pb_decode_callback_%s_%s' % (msg_type_name, field_var_name)
+        max_callback_string_size = 256  # Must match the buffer size in context struct
         
         yield '/* Decode callback for %s.%s */\n' % (msg_type_name, field_var_name)
-        yield '/* Stores field length in context - validation happens in pb_validate_%s() */\n' % msg_type_name
+        yield '/* Stores field data and length in context - validation happens in pb_validate_%s() */\n' % msg_type_name
         yield 'static bool %s(pb_istream_t *stream, const pb_field_iter_t *field, void **arg) {\n' % callback_func_name
         yield '    %s_callback_ctx_t *ctx = (%s_callback_ctx_t *)*arg;\n' % (msg_type_name, msg_type_name)
         yield '    (void)field; /* Unused parameter */\n'
         yield '\n'
         yield '    /* Get field length from stream */\n'
         yield '    size_t len = stream->bytes_left;\n'
+        yield '    size_t copy_len = (len < %d - 1) ? len : %d - 1;  /* Leave room for null terminator */\n' % (max_callback_string_size, max_callback_string_size)
         yield '\n'
-        yield '    /* Store length in context for validation by pb_validate_%s() */\n' % msg_type_name
-        yield '    ctx->%s_length = len;\n' % field_var_name
-        yield '    ctx->%s_decoded = true;\n' % field_var_name
+        yield '    /* Read and store the string content for content-based validation */\n'
+        yield '    if (!pb_read(stream, (uint8_t *)ctx->%s_data, copy_len)) {\n' % field_var_name
+        yield '        return false;\n'
+        yield '    }\n'
+        yield '    ctx->%s_data[copy_len] = \'\\0\';  /* Null-terminate */\n' % field_var_name
         yield '\n'
-        yield '    /* Consume all bytes from the stream (no validation here) */\n'
+        yield '    /* Skip any remaining bytes if string was truncated */\n'
         yield '    while (stream->bytes_left > 0) {\n'
         yield '        uint8_t byte;\n'
         yield '        if (!pb_read(stream, &byte, 1)) {\n'
         yield '            return false;\n'
         yield '        }\n'
         yield '    }\n'
+        yield '\n'
+        yield '    /* Store length and mark as decoded for validation by pb_validate_%s() */\n' % msg_type_name
+        yield '    ctx->%s_length = len;  /* Original length before truncation */\n' % field_var_name
+        yield '    ctx->%s_decoded = true;\n' % field_var_name
         yield '\n'
         yield '    return true;\n'
         yield '}\n\n'

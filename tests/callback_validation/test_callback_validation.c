@@ -409,6 +409,323 @@ static void test_string_bytes_callback(void) {
 }
 
 /*
+ * Test CONTENT-BASED callback string validation rules
+ * These test PREFIX, SUFFIX, CONTAINS, ASCII, EMAIL, IN, NOT_IN
+ * All go through the FULL END-TO-END pipeline:
+ *   encode → decode via callback → validation → filter_udp
+ */
+static void test_callback_string_content_validation(void) {
+    printf("\n=== Testing Callback String CONTENT-BASED Validation (End-to-End) ===\n");
+    uint8_t buffer[1024];
+    size_t msg_len;
+    int result;
+    
+    /* Helper to encode callback strings */
+    typedef struct {
+        const char *str;
+    } string_encode_ctx;
+    
+    bool encode_callback_string(pb_ostream_t *stream, const pb_field_iter_t *field, void * const *arg) {
+        string_encode_ctx *ctx = (string_encode_ctx *)*arg;
+        if (!pb_encode_tag_for_field(stream, field)) {
+            return false;
+        }
+        return pb_encode_string(stream, (const pb_byte_t *)ctx->str, strlen(ctx->str));
+    }
+    
+    /* ============================================================
+     * PREFIX RULE TESTS (callback_prefix field)
+     * Must start with "PREFIX_"
+     * ============================================================ */
+    
+    TEST("callback_prefix - VALID (starts with PREFIX_)");
+    {
+        RootMessage msg = RootMessage_init_zero;
+        msg.root_id = 1;
+        strcpy(msg.name, "Test");
+        
+        string_encode_ctx str_ctx = {"PREFIX_hello_world"};
+        msg.callback_prefix.funcs.encode = encode_callback_string;
+        msg.callback_prefix.arg = &str_ctx;
+        
+        assert(encode_message(&RootMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_VALID(result == 0, "callback string starts with PREFIX_");
+    }
+    
+    TEST("callback_prefix - INVALID (wrong prefix)");
+    {
+        RootMessage msg = RootMessage_init_zero;
+        msg.root_id = 1;
+        strcpy(msg.name, "Test");
+        
+        string_encode_ctx str_ctx = {"WRONG_hello_world"};  /* Does not start with PREFIX_ */
+        msg.callback_prefix.funcs.encode = encode_callback_string;
+        msg.callback_prefix.arg = &str_ctx;
+        
+        assert(encode_message(&RootMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_INVALID(result == 0, "callback string doesn't start with PREFIX_");
+    }
+    
+    /* ============================================================
+     * SUFFIX RULE TESTS (callback_suffix field)
+     * Must end with "_SUFFIX"
+     * ============================================================ */
+    
+    TEST("callback_suffix - VALID (ends with _SUFFIX)");
+    {
+        RootMessage msg = RootMessage_init_zero;
+        msg.root_id = 1;
+        strcpy(msg.name, "Test");
+        
+        string_encode_ctx str_ctx = {"hello_world_SUFFIX"};
+        msg.callback_suffix.funcs.encode = encode_callback_string;
+        msg.callback_suffix.arg = &str_ctx;
+        
+        assert(encode_message(&RootMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_VALID(result == 0, "callback string ends with _SUFFIX");
+    }
+    
+    TEST("callback_suffix - INVALID (wrong suffix)");
+    {
+        RootMessage msg = RootMessage_init_zero;
+        msg.root_id = 1;
+        strcpy(msg.name, "Test");
+        
+        string_encode_ctx str_ctx = {"hello_world_WRONG"};  /* Does not end with _SUFFIX */
+        msg.callback_suffix.funcs.encode = encode_callback_string;
+        msg.callback_suffix.arg = &str_ctx;
+        
+        assert(encode_message(&RootMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_INVALID(result == 0, "callback string doesn't end with _SUFFIX");
+    }
+    
+    /* ============================================================
+     * CONTAINS RULE TESTS (callback_contains field)
+     * Must contain "@"
+     * ============================================================ */
+    
+    TEST("callback_contains - VALID (contains @)");
+    {
+        RootMessage msg = RootMessage_init_zero;
+        msg.root_id = 1;
+        strcpy(msg.name, "Test");
+        
+        string_encode_ctx str_ctx = {"user@example.com"};
+        msg.callback_contains.funcs.encode = encode_callback_string;
+        msg.callback_contains.arg = &str_ctx;
+        
+        assert(encode_message(&RootMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_VALID(result == 0, "callback string contains @");
+    }
+    
+    TEST("callback_contains - INVALID (missing @)");
+    {
+        RootMessage msg = RootMessage_init_zero;
+        msg.root_id = 1;
+        strcpy(msg.name, "Test");
+        
+        string_encode_ctx str_ctx = {"no_at_sign_here"};  /* Does not contain @ */
+        msg.callback_contains.funcs.encode = encode_callback_string;
+        msg.callback_contains.arg = &str_ctx;
+        
+        assert(encode_message(&RootMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_INVALID(result == 0, "callback string doesn't contain @");
+    }
+    
+    /* ============================================================
+     * ASCII RULE TESTS (callback_ascii field)
+     * Must be ASCII only (no high bytes)
+     * ============================================================ */
+    
+    TEST("callback_ascii - VALID (ASCII only)");
+    {
+        RootMessage msg = RootMessage_init_zero;
+        msg.root_id = 1;
+        strcpy(msg.name, "Test");
+        
+        string_encode_ctx str_ctx = {"Hello World 123!@#"};
+        msg.callback_ascii.funcs.encode = encode_callback_string;
+        msg.callback_ascii.arg = &str_ctx;
+        
+        assert(encode_message(&RootMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_VALID(result == 0, "callback string is ASCII only");
+    }
+    
+    TEST("callback_ascii - INVALID (contains non-ASCII)");
+    {
+        RootMessage msg = RootMessage_init_zero;
+        msg.root_id = 1;
+        strcpy(msg.name, "Test");
+        
+        string_encode_ctx str_ctx = {"Caf\xc3\xa9"};  /* UTF-8 'é' */
+        msg.callback_ascii.funcs.encode = encode_callback_string;
+        msg.callback_ascii.arg = &str_ctx;
+        
+        assert(encode_message(&RootMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_INVALID(result == 0, "callback string contains non-ASCII");
+    }
+    
+    /* ============================================================
+     * EMAIL RULE TESTS (callback_email field)
+     * Must be valid email format
+     * ============================================================ */
+    
+    TEST("callback_email - VALID (proper email)");
+    {
+        RootMessage msg = RootMessage_init_zero;
+        msg.root_id = 1;
+        strcpy(msg.name, "Test");
+        
+        string_encode_ctx str_ctx = {"user@example.com"};
+        msg.callback_email.funcs.encode = encode_callback_string;
+        msg.callback_email.arg = &str_ctx;
+        
+        assert(encode_message(&RootMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_VALID(result == 0, "callback string is valid email");
+    }
+    
+    TEST("callback_email - INVALID (not an email)");
+    {
+        RootMessage msg = RootMessage_init_zero;
+        msg.root_id = 1;
+        strcpy(msg.name, "Test");
+        
+        string_encode_ctx str_ctx = {"notanemail"};
+        msg.callback_email.funcs.encode = encode_callback_string;
+        msg.callback_email.arg = &str_ctx;
+        
+        assert(encode_message(&RootMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_INVALID(result == 0, "callback string is not valid email");
+    }
+    
+    /* ============================================================
+     * IN RULE TESTS (callback_in field)
+     * Must be one of: "red", "green", "blue"
+     * ============================================================ */
+    
+    TEST("callback_in - VALID (value in allowed set)");
+    {
+        RootMessage msg = RootMessage_init_zero;
+        msg.root_id = 1;
+        strcpy(msg.name, "Test");
+        
+        string_encode_ctx str_ctx = {"red"};
+        msg.callback_in.funcs.encode = encode_callback_string;
+        msg.callback_in.arg = &str_ctx;
+        
+        assert(encode_message(&RootMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_VALID(result == 0, "callback string 'red' is in allowed set");
+    }
+    
+    TEST("callback_in - INVALID (value not in allowed set)");
+    {
+        RootMessage msg = RootMessage_init_zero;
+        msg.root_id = 1;
+        strcpy(msg.name, "Test");
+        
+        string_encode_ctx str_ctx = {"purple"};  /* Not in {red, green, blue} */
+        msg.callback_in.funcs.encode = encode_callback_string;
+        msg.callback_in.arg = &str_ctx;
+        
+        assert(encode_message(&RootMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_INVALID(result == 0, "callback string 'purple' is not in allowed set");
+    }
+    
+    /* ============================================================
+     * NOT_IN RULE TESTS (callback_not_in field)
+     * Must NOT be: "FORBIDDEN", "BLOCKED"
+     * ============================================================ */
+    
+    TEST("callback_not_in - VALID (value not in blocked set)");
+    {
+        RootMessage msg = RootMessage_init_zero;
+        msg.root_id = 1;
+        strcpy(msg.name, "Test");
+        
+        string_encode_ctx str_ctx = {"allowed_value"};
+        msg.callback_not_in.funcs.encode = encode_callback_string;
+        msg.callback_not_in.arg = &str_ctx;
+        
+        assert(encode_message(&RootMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_VALID(result == 0, "callback string is not in blocked set");
+    }
+    
+    TEST("callback_not_in - INVALID (value in blocked set)");
+    {
+        RootMessage msg = RootMessage_init_zero;
+        msg.root_id = 1;
+        strcpy(msg.name, "Test");
+        
+        string_encode_ctx str_ctx = {"FORBIDDEN"};  /* In blocked set */
+        msg.callback_not_in.funcs.encode = encode_callback_string;
+        msg.callback_not_in.arg = &str_ctx;
+        
+        assert(encode_message(&RootMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_INVALID(result == 0, "callback string 'FORBIDDEN' is in blocked set");
+    }
+    
+    /* ============================================================
+     * COMBINED TEST - Multiple callback fields in same message
+     * Tests that ALL callback fields are decoded and validated
+     * ============================================================ */
+    
+    TEST("All callback string content rules - ALL VALID");
+    {
+        RootMessage msg = RootMessage_init_zero;
+        msg.root_id = 1;
+        strcpy(msg.name, "Test");
+        
+        /* Set up all callback string fields with VALID values */
+        string_encode_ctx prefix_ctx = {"PREFIX_test"};
+        string_encode_ctx suffix_ctx = {"test_SUFFIX"};
+        string_encode_ctx contains_ctx = {"test@test.com"};
+        string_encode_ctx ascii_ctx = {"Hello World"};
+        string_encode_ctx email_ctx = {"user@example.com"};
+        string_encode_ctx in_ctx = {"green"};
+        string_encode_ctx not_in_ctx = {"allowed"};
+        
+        msg.callback_prefix.funcs.encode = encode_callback_string;
+        msg.callback_prefix.arg = &prefix_ctx;
+        
+        msg.callback_suffix.funcs.encode = encode_callback_string;
+        msg.callback_suffix.arg = &suffix_ctx;
+        
+        msg.callback_contains.funcs.encode = encode_callback_string;
+        msg.callback_contains.arg = &contains_ctx;
+        
+        msg.callback_ascii.funcs.encode = encode_callback_string;
+        msg.callback_ascii.arg = &ascii_ctx;
+        
+        msg.callback_email.funcs.encode = encode_callback_string;
+        msg.callback_email.arg = &email_ctx;
+        
+        msg.callback_in.funcs.encode = encode_callback_string;
+        msg.callback_in.arg = &in_ctx;
+        
+        msg.callback_not_in.funcs.encode = encode_callback_string;
+        msg.callback_not_in.arg = &not_in_ctx;
+        
+        assert(encode_message(&RootMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
+        result = filter_udp(NULL, buffer, msg_len);
+        EXPECT_VALID(result == 0, "all callback string content rules valid");
+    }
+}
+
+/*
  * Test that callbacks are properly wired before decode
  */
 static void test_callback_wiring(void) {
@@ -452,6 +769,7 @@ int main(void) {
     
     test_repeated_submessage_callback();
     test_string_bytes_callback();
+    test_callback_string_content_validation();  /* NEW: Content-based validation */
     test_callback_wiring();
     
     printf("\n=== Test Results ===\n");

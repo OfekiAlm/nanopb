@@ -131,10 +131,14 @@ RULE_TIMESTAMP_LT_NOW = 'TIMESTAMP_LT_NOW'
 RULE_TIMESTAMP_WITHIN = 'TIMESTAMP_WITHIN'
 
 # Rules that can be validated for callback string/bytes fields
-# Note: The callback context only stores field_length and field_decoded,
-# NOT the actual string data. Therefore only length-based rules can be validated.
-# Content-based rules require nanopb_generator.py to also store field_data pointer.
-_SUPPORTED_CALLBACK_STRING_RULES = frozenset({RULE_MIN_LEN, RULE_MAX_LEN})
+# The callback context stores field_data (char[256]), field_length, and field_decoded.
+# All string validation rules are supported for callback fields.
+_SUPPORTED_CALLBACK_STRING_RULES = frozenset({
+    RULE_MIN_LEN, RULE_MAX_LEN,  # Length-based rules
+    RULE_PREFIX, RULE_SUFFIX, RULE_CONTAINS, RULE_ASCII,  # Pattern rules
+    RULE_EMAIL, RULE_HOSTNAME, RULE_IP, RULE_IPV4, RULE_IPV6,  # Format rules  
+    RULE_IN, RULE_NOT_IN,  # Set rules
+})
 
 
 # =============================================================================
@@ -2664,10 +2668,11 @@ class ValidatorGenerator:
             yield '        }\n'
         
         # Pattern rules - need callback_ctx->field_data (the actual string content)
+        # Check field_decoded since _data is a fixed-size array, not a pointer
         elif rule.rule_type == RULE_PREFIX:
             prefix = rule.params.get('value', '')
             yield '        /* Check prefix on callback string */\n'
-            yield '        if (callback_ctx->%s_data != NULL) {\n' % field_var_name
+            yield '        if (callback_ctx->%s_decoded) {\n' % field_var_name
             yield '            const char *__pb_prefix = "%s";\n' % self._escape_c_string(prefix)
             yield '            size_t __pb_prefix_len = strlen(__pb_prefix);\n'
             yield '            if (callback_ctx->%s_length < __pb_prefix_len || \n' % field_var_name
@@ -2679,7 +2684,7 @@ class ValidatorGenerator:
         elif rule.rule_type == RULE_SUFFIX:
             suffix = rule.params.get('value', '')
             yield '        /* Check suffix on callback string */\n'
-            yield '        if (callback_ctx->%s_data != NULL) {\n' % field_var_name
+            yield '        if (callback_ctx->%s_decoded) {\n' % field_var_name
             yield '            const char *__pb_suffix = "%s";\n' % self._escape_c_string(suffix)
             yield '            size_t __pb_suffix_len = strlen(__pb_suffix);\n'
             yield '            if (callback_ctx->%s_length >= __pb_suffix_len) {\n' % field_var_name
@@ -2696,7 +2701,7 @@ class ValidatorGenerator:
         elif rule.rule_type == RULE_CONTAINS:
             needle = rule.params.get('value', '')
             yield '        /* Check contains on callback string */\n'
-            yield '        if (callback_ctx->%s_data != NULL) {\n' % field_var_name
+            yield '        if (callback_ctx->%s_decoded) {\n' % field_var_name
             yield '            const char *__pb_needle = "%s";\n' % self._escape_c_string(needle)
             yield '            /* Use a simple substring search */\n'
             yield '            bool __pb_found = false;\n'
@@ -2717,7 +2722,7 @@ class ValidatorGenerator:
         # ASCII rule
         elif rule.rule_type == RULE_ASCII:
             yield '        /* Check ASCII-only characters on callback string */\n'
-            yield '        if (callback_ctx->%s_data != NULL) {\n' % field_var_name
+            yield '        if (callback_ctx->%s_decoded) {\n' % field_var_name
             yield '            bool __pb_is_ascii = true;\n'
             yield '            for (pb_size_t i = 0; i < callback_ctx->%s_length; i++) {\n' % field_var_name
             yield '                if ((unsigned char)callback_ctx->%s_data[i] > 127) {\n' % field_var_name
@@ -2743,7 +2748,7 @@ class ValidatorGenerator:
             c_enum = format_rule_to_c_enum.get(rule.rule_type)
             if c_enum:
                 yield '        /* Check format on callback string */\n'
-                yield '        if (callback_ctx->%s_data != NULL) {\n' % field_var_name
+                yield '        if (callback_ctx->%s_decoded) {\n' % field_var_name
                 yield '            if (!pb_validate_string(callback_ctx->%s_data, callback_ctx->%s_length, NULL, %s)) {\n' % (field_var_name, field_var_name, c_enum)
                 yield '                pb_violations_add(violations, ctx.path_buffer, "%s", "String format validation failed");\n' % rule.constraint_id
                 yield '                if (ctx.early_exit) return false;\n'
@@ -2755,7 +2760,7 @@ class ValidatorGenerator:
             values = rule.params.get('values', [])
             if values:
                 yield '        /* Check callback string is in allowed set */\n'
-                yield '        if (callback_ctx->%s_data != NULL) {\n' % field_var_name
+                yield '        if (callback_ctx->%s_decoded) {\n' % field_var_name
                 yield '            bool __pb_match = false;\n'
                 values_array = ', '.join('"%s"' % self._escape_c_string(v) for v in values)
                 yield '            const char *__pb_allowed[] = { %s };\n' % values_array
@@ -2776,7 +2781,7 @@ class ValidatorGenerator:
             values = rule.params.get('values', [])
             if values:
                 yield '        /* Check callback string is not in blocked set */\n'
-                yield '        if (callback_ctx->%s_data != NULL) {\n' % field_var_name
+                yield '        if (callback_ctx->%s_decoded) {\n' % field_var_name
                 yield '            bool __pb_forbidden = false;\n'
                 values_array = ', '.join('"%s"' % self._escape_c_string(v) for v in values)
                 yield '            const char *__pb_blocked[] = { %s };\n' % values_array
