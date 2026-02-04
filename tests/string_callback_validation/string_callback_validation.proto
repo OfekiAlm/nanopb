@@ -175,11 +175,13 @@ message CallbackStringNotIn {
 /* ===========================================================================
  * ENVELOPE MESSAGE (root message for filter_udp)
  * 
- * Contains all test cases for end-to-end validation with filter_udp
+ * Contains test cases for end-to-end validation with filter_udp.
+ * Note: Callback string fields (FT_CALLBACK) require decode callbacks to
+ * populate and are tested separately in the existing callback_validation test.
  * ===========================================================================*/
 
 message StringValidationEnvelope {
-    /* Regular strings */
+    /* Regular strings - statically allocated with max_size */
     string regular_prefix = 1 [(nanopb).max_size = 64, (validate.rules).string.prefix = "PREFIX_"];
     string regular_suffix = 2 [(nanopb).max_size = 64, (validate.rules).string.suffix = "_SUFFIX"];
     string regular_contains = 3 [(nanopb).max_size = 64, (validate.rules).string.contains = "@"];
@@ -190,16 +192,7 @@ message StringValidationEnvelope {
     string regular_in = 8 [(nanopb).max_size = 32, (validate.rules).string.in = "red", (validate.rules).string.in = "green", (validate.rules).string.in = "blue"];
     string regular_not_in = 9 [(nanopb).max_size = 32, (validate.rules).string.not_in = "FORBIDDEN", (validate.rules).string.not_in = "BLOCKED"];
     
-    /* Repeated strings */
+    /* Repeated strings - statically allocated arrays with max_count */
     repeated string repeated_prefix = 10 [(nanopb).max_size = 64, (nanopb).max_count = 5, (validate.rules).repeated.items.string.prefix = "PREFIX_"];
     repeated string repeated_contains = 11 [(nanopb).max_size = 64, (nanopb).max_count = 5, (validate.rules).repeated.items.string.contains = "@"];
-    
-    /* Callback strings */
-    string callback_prefix = 20 [(nanopb).type = FT_CALLBACK, (validate.rules).string.prefix = "PREFIX_"];
-    string callback_suffix = 21 [(nanopb).type = FT_CALLBACK, (validate.rules).string.suffix = "_SUFFIX"];
-    string callback_contains = 22 [(nanopb).type = FT_CALLBACK, (validate.rules).string.contains = "@"];
-    string callback_ascii = 23 [(nanopb).type = FT_CALLBACK, (validate.rules).string.ascii = true];
-    string callback_email = 24 [(nanopb).type = FT_CALLBACK, (validate.rules).string.email = true];
-    string callback_in = 25 [(nanopb).type = FT_CALLBACK, (validate.rules).string.in = "red", (validate.rules).string.in = "green", (validate.rules).string.in = "blue"];
-    string callback_not_in = 26 [(nanopb).type = FT_CALLBACK, (validate.rules).string.not_in = "FORBIDDEN", (validate.rules).string.not_in = "BLOCKED"];
 }

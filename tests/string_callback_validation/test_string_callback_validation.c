@@ -508,9 +508,10 @@ static void test_filter_udp_envelope(void)
 
 int main(void)
 {
-    printf("=== String Callback Validation Test Suite ===\n");
-    printf("Tests string validation rules across all allocation modes\n");
+    printf("=== String Validation Test Suite ===\n");
+    printf("Tests string validation rules across regular and repeated strings\n");
     printf("using filter_udp for end-to-end validation.\n");
+    printf("(Note: Callback strings require decode callbacks, tested separately)\n");
     
     /* Run tests */
     test_regular_string_rules();
