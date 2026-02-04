@@ -2480,12 +2480,18 @@ class ValidatorGenerator:
                         # Check if field was decoded
                         pbtype = getattr(field, 'pbtype', None)
                         if pbtype in ['STRING', 'BYTES']:
-                            # Validate string/bytes length from context
+                            # Validate string/bytes from context
                             yield '    if (callback_ctx->%s_decoded) {\n' % field_var_name
                             
-                            # Generate validation for the stored length
+                            # Generate validation for callback string rules
+                            # Note: The callback context only stores field_length and field_decoded,
+                            # NOT the actual string data. Therefore only length-based rules
+                            # (MIN_LEN, MAX_LEN) can be validated. Content-based rules (PREFIX,
+                            # SUFFIX, CONTAINS, format rules, etc.) require the callback context
+                            # structure in nanopb_generator.py to also store field_data pointer.
+                            supported_callback_rules = {RULE_MIN_LEN, RULE_MAX_LEN}
                             for rule in field_validator.rules:
-                                if rule.rule_type in ['MIN_LEN', 'MAX_LEN']:
+                                if rule.rule_type in supported_callback_rules:
                                     yield from self._generate_callback_string_bytes_rule_check(field_var_name, rule)
                             
                             yield '    }\n'

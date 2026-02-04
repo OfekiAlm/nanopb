@@ -1,5 +1,11 @@
 # Build and run string_callback_validation test suite
-# Tests string validation rules across all allocation modes using filter_udp
+# Tests string validation rules across regular and repeated strings using filter_udp
+#
+# Note: Callback string content-based validation (PREFIX, SUFFIX, etc.) requires 
+# the callback context in nanopb_generator.py to store the string data pointer.
+# Currently only MIN_LEN/MAX_LEN rules work for callback strings because only
+# the field_length is stored in the callback context.
+# See the callback_validation test for MIN_LEN/MAX_LEN callback string validation.
 
 Import("env")
 

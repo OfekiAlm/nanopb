@@ -114,70 +114,15 @@ message RepeatedStringAscii {
 }
 
 /* ===========================================================================
- * CALLBACK STRING TESTS (dynamic allocation with FT_CALLBACK)
- * ===========================================================================*/
-
-/* Test PREFIX rule on callback string */
-message CallbackStringPrefix {
-    string value = 1 [(nanopb).type = FT_CALLBACK, (validate.rules).string.prefix = "PREFIX_"];
-}
-
-/* Test SUFFIX rule on callback string */
-message CallbackStringSuffix {
-    string value = 1 [(nanopb).type = FT_CALLBACK, (validate.rules).string.suffix = "_SUFFIX"];
-}
-
-/* Test CONTAINS rule on callback string */
-message CallbackStringContains {
-    string value = 1 [(nanopb).type = FT_CALLBACK, (validate.rules).string.contains = "@"];
-}
-
-/* Test ASCII rule on callback string */
-message CallbackStringAscii {
-    string value = 1 [(nanopb).type = FT_CALLBACK, (validate.rules).string.ascii = true];
-}
-
-/* Test EMAIL rule on callback string */
-message CallbackStringEmail {
-    string value = 1 [(nanopb).type = FT_CALLBACK, (validate.rules).string.email = true];
-}
-
-/* Test HOSTNAME rule on callback string */
-message CallbackStringHostname {
-    string value = 1 [(nanopb).type = FT_CALLBACK, (validate.rules).string.hostname = true];
-}
-
-/* Test IP rule on callback string */
-message CallbackStringIp {
-    string value = 1 [(nanopb).type = FT_CALLBACK, (validate.rules).string.ip = true];
-}
-
-/* Test IPV4 rule on callback string */
-message CallbackStringIpv4 {
-    string value = 1 [(nanopb).type = FT_CALLBACK, (validate.rules).string.ipv4 = true];
-}
-
-/* Test IPV6 rule on callback string */
-message CallbackStringIpv6 {
-    string value = 1 [(nanopb).type = FT_CALLBACK, (validate.rules).string.ipv6 = true];
-}
-
-/* Test IN rule on callback string */
-message CallbackStringIn {
-    string value = 1 [(nanopb).type = FT_CALLBACK, (validate.rules).string.in = "red", (validate.rules).string.in = "green", (validate.rules).string.in = "blue"];
-}
-
-/* Test NOT_IN rule on callback string */
-message CallbackStringNotIn {
-    string value = 1 [(nanopb).type = FT_CALLBACK, (validate.rules).string.not_in = "FORBIDDEN", (validate.rules).string.not_in = "BLOCKED", (validate.rules).string.not_in = "BANNED"];
-}
-
-/* ===========================================================================
  * ENVELOPE MESSAGE (root message for filter_udp)
  * 
- * Contains test cases for end-to-end validation with filter_udp.
- * Note: Callback string fields (FT_CALLBACK) require decode callbacks to
- * populate and are tested separately in the existing callback_validation test.
+ * Contains test cases for regular and repeated strings.
+ * 
+ * Note: Callback string content-based validation (PREFIX, SUFFIX, CONTAINS, etc.)
+ * requires the callback context in nanopb_generator.py to store the string data
+ * pointer. Currently only MIN_LEN/MAX_LEN rules work for callback strings because
+ * only the field_length is stored in the callback context.
+ * See the callback_validation test for MIN_LEN/MAX_LEN callback string validation.
  * ===========================================================================*/
 
 message StringValidationEnvelope {

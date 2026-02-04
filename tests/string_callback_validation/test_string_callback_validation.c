@@ -352,6 +352,25 @@ static void test_repeated_string_rules(void)
 }
 
 /*======================================================================
+ * CALLBACK STRING LENGTH TESTS (FT_CALLBACK fields via filter_udp)
+ * 
+ * NOTE: The callback context structure only stores field_length and
+ * field_decoded. Content-based rules (PREFIX, SUFFIX, etc.) require
+ * the callback context to also store field_data, which would require
+ * changes to nanopb_generator.py.
+ * 
+ * Currently supported callback string rules: MIN_LEN, MAX_LEN
+ * 
+ * These tests exercise the full pipeline for length validation:
+ *   encode → decode via callback → validation → filter_udp
+ *======================================================================*/
+
+/* Callback string length tests are exercised in callback_validation test
+ * which tests MIN_LEN and MAX_LEN on callback strings.
+ * Content-based rules cannot be tested until nanopb_generator.py
+ * is extended to store callback string data in the context. */
+
+/*======================================================================
  * FILTER_UDP ENVELOPE TEST
  *======================================================================*/
 
@@ -509,9 +528,10 @@ static void test_filter_udp_envelope(void)
 int main(void)
 {
     printf("=== String Validation Test Suite ===\n");
-    printf("Tests string validation rules across regular and repeated strings\n");
+    printf("Tests string validation rules for regular and repeated strings\n");
     printf("using filter_udp for end-to-end validation.\n");
-    printf("(Note: Callback strings require decode callbacks, tested separately)\n");
+    printf("Note: Callback string content-based validation requires nanopb_generator.py changes.\n");
+    printf("See callback_validation test for MIN_LEN/MAX_LEN callback string validation.\n");
     
     /* Run tests */
     test_regular_string_rules();
