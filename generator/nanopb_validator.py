@@ -182,6 +182,59 @@ def _get_numeric_validator_info(type_name: str) -> Tuple[Optional[str], Optional
     return TYPE_MAP.get(type_name, (None, None))
 
 
+# =============================================================================
+# WRAPPER TYPE DETECTION
+# =============================================================================
+# google/protobuf/wrappers.proto defines wrapper types for primitive values.
+# These wrapper types have a single 'value' field containing the wrapped value.
+# When validating wrapper fields, rules apply to the inner value, not the wrapper.
+
+# Mapping from wrapper type name to inner value type
+WRAPPER_TYPES = {
+    'google_protobuf_DoubleValue': ('double', 'double'),
+    'google_protobuf_FloatValue': ('float', 'float'),
+    'google_protobuf_Int64Value': ('int64', 'int64_t'),
+    'google_protobuf_UInt64Value': ('uint64', 'uint64_t'),
+    'google_protobuf_Int32Value': ('int32', 'int32_t'),
+    'google_protobuf_UInt32Value': ('uint32', 'uint32_t'),
+    'google_protobuf_BoolValue': ('bool', 'bool'),
+    'google_protobuf_StringValue': ('string', 'char *'),
+    'google_protobuf_BytesValue': ('bytes', 'pb_bytes_array_t *'),
+}
+
+def _is_wrapper_type(ctype: str) -> bool:
+    """
+    Check if a C type name corresponds to a google.protobuf wrapper type.
+    
+    Args:
+        ctype: The C type name (e.g., 'google_protobuf_StringValue')
+        
+    Returns:
+        True if this is a wrapper type, False otherwise.
+    """
+    if ctype is None:
+        return False
+    ctype_str = str(ctype).replace('.', '_')
+    return ctype_str in WRAPPER_TYPES
+
+
+def _get_wrapper_info(ctype: str) -> Optional[Tuple[str, str]]:
+    """
+    Get the inner type information for a wrapper type.
+    
+    Args:
+        ctype: The C type name (e.g., 'google_protobuf_StringValue')
+        
+    Returns:
+        A tuple of (proto_type_name, c_type_name), or None if not a wrapper type.
+        For example, ('string', 'char *') for StringValue.
+    """
+    if ctype is None:
+        return None
+    ctype_str = str(ctype).replace('.', '_')
+    return WRAPPER_TYPES.get(ctype_str)
+
+
 def _escape_for_comment(s: Any) -> str:
     """
     Escape a string to be safe for use inside C comments and Doxygen blocks.
@@ -310,6 +363,9 @@ class FieldContext:
         is_oneof: True if this field is inside a oneof group
         oneof_name: Name of the containing oneof (None for regular fields)
         is_anonymous: True for C11 anonymous unions (field accessed directly)
+        is_wrapper: True if this field is a google.protobuf wrapper type
+        wrapper_inner_type: The inner proto type name for wrapper types (e.g., 'string', 'int32')
+        wrapper_c_type: The inner C type for wrapper types (e.g., 'char *', 'int32_t')
         
     Properties:
         field_access: Returns the C expression to access this field from msg
@@ -322,6 +378,9 @@ class FieldContext:
     is_oneof: bool = False
     oneof_name: Optional[str] = None
     is_anonymous: bool = False
+    is_wrapper: bool = False
+    wrapper_inner_type: Optional[str] = None
+    wrapper_c_type: Optional[str] = None
     
     @property
     def field_access(self) -> str:
@@ -329,6 +388,13 @@ class FieldContext:
         if self.is_oneof and not self.is_anonymous:
             return f"{self.oneof_name}.{self.field_name}"
         return self.field_name
+    
+    @property
+    def wrapper_value_access(self) -> str:
+        """Return C expression to access the inner value of a wrapper field."""
+        if self.is_wrapper:
+            return f"{self.field_access}.value"
+        return self.field_access
     
     @property
     def is_optional(self) -> bool:
@@ -349,23 +415,37 @@ class FieldContext:
     @classmethod
     def for_regular_field(cls, field: Any) -> 'FieldContext':
         """Create context for a regular (non-oneof) field."""
+        # Check if this is a wrapper type
+        ctype = getattr(field, 'ctype', None)
+        wrapper_info = _get_wrapper_info(str(ctype)) if ctype else None
+        
         return cls(
             field=field,
             field_name=field.name,
             is_oneof=False,
             oneof_name=None,
-            is_anonymous=False
+            is_anonymous=False,
+            is_wrapper=wrapper_info is not None,
+            wrapper_inner_type=wrapper_info[0] if wrapper_info else None,
+            wrapper_c_type=wrapper_info[1] if wrapper_info else None
         )
     
     @classmethod
     def for_oneof_member(cls, field: Any, oneof_name: str, anonymous: bool) -> 'FieldContext':
         """Create context for a field within a oneof group."""
+        # Check if this is a wrapper type
+        ctype = getattr(field, 'ctype', None)
+        wrapper_info = _get_wrapper_info(str(ctype)) if ctype else None
+        
         return cls(
             field=field,
             field_name=field.name,
             is_oneof=True,
             oneof_name=oneof_name,
-            is_anonymous=anonymous
+            is_anonymous=anonymous,
+            is_wrapper=wrapper_info is not None,
+            wrapper_inner_type=wrapper_info[0] if wrapper_info else None,
+            wrapper_c_type=wrapper_info[1] if wrapper_info else None
         )
     
     @classmethod
@@ -382,7 +462,10 @@ class FieldContext:
             field_name='',
             is_oneof=False,
             oneof_name=None,
-            is_anonymous=False
+            is_anonymous=False,
+            is_wrapper=False,
+            wrapper_inner_type=None,
+            wrapper_c_type=None
         )
 
 
@@ -1217,12 +1300,35 @@ class MessageValidator:
         
         This method iterates through all fields, identifies oneofs, and creates
         FieldValidator objects for fields that have validation rules.
+        
+        Note: FT_CALLBACK + wrapper types are NOT supported. If a wrapper type field
+        uses FT_CALLBACK allocation, a generator-time error will be raised.
         """
         for field in getattr(self.message, 'fields', []) or []:
             # Check if this is a oneof container
             if hasattr(field, 'pbtype') and field.pbtype == 'oneof':
                 self._parse_oneof_field(field)
             elif hasattr(field, 'validate_rules') and field.validate_rules:
+                # Check for FT_CALLBACK + wrapper type combination - NOT supported
+                allocation = getattr(field, 'allocation', None)
+                ctype = getattr(field, 'ctype', None)
+                if allocation == 'CALLBACK' and ctype and _is_wrapper_type(str(ctype)):
+                    import sys
+                    sys.stderr.write(
+                        "\nError: FT_CALLBACK is not supported for google.protobuf wrapper types.\n"
+                        "Field '%s' in message '%s' uses wrapper type '%s' with FT_CALLBACK allocation.\n"
+                        "Wrapper type validation requires direct access to the wrapper struct's .value field,\n"
+                        "which is not possible with callback-based decoding.\n\n"
+                        "To fix this, either:\n"
+                        "  1. Remove FT_CALLBACK option from the wrapper field, or\n"
+                        "  2. Remove validation rules from the wrapper field\n\n"
+                        % (field.name, self.message.name, str(ctype))
+                    )
+                    raise ValueError(
+                        "FT_CALLBACK + wrapper type validation is not supported for field '%s'" 
+                        % field.name
+                    )
+                
                 # Regular field with validation rules
                 fv = FieldValidator(
                     field, field.validate_rules, self.proto_file, self.message
@@ -1837,6 +1943,171 @@ class EnumDefinedRuleEmitter(RuleEmitter):
         return ''
 
 
+class WrapperStringLengthEmitter(RuleEmitter):
+    """Emits C code for string length rules on wrapper types (StringValue)."""
+    
+    def emit(self, rule_ir: RuleIR, proto_file: Any) -> str:
+        if not rule_ir.context.is_wrapper:
+            return ''  # Not a wrapper, let regular emitter handle it
+        
+        if rule_ir.context.wrapper_inner_type != 'string':
+            return ''  # Not a string wrapper
+        
+        is_min = rule_ir.rule_type == RULE_MIN_LEN
+        length = rule_ir.rule.params.get('value', 0)
+        field_name = rule_ir.field_name
+        
+        macro = 'PB_VALIDATE_WRAPPER_STR_MIN_LEN' if is_min else 'PB_VALIDATE_WRAPPER_STR_MAX_LEN'
+        return '        %s(ctx, msg, %s, %d, "%s");\n' % (
+            macro, field_name, length, rule_ir.constraint_id)
+
+
+class WrapperStringPatternEmitter(RuleEmitter):
+    """Emits C code for string pattern rules on wrapper types (StringValue)."""
+    
+    def emit(self, rule_ir: RuleIR, proto_file: Any) -> str:
+        if not rule_ir.context.is_wrapper:
+            return ''
+        
+        if rule_ir.context.wrapper_inner_type != 'string':
+            return ''
+        
+        field_name = rule_ir.field_name
+        pattern = _escape_c_string(rule_ir.rule.params.get('value', ''))
+        
+        macro_map = {
+            RULE_PREFIX: 'PB_VALIDATE_WRAPPER_STR_PREFIX',
+            RULE_SUFFIX: 'PB_VALIDATE_WRAPPER_STR_SUFFIX',
+            RULE_CONTAINS: 'PB_VALIDATE_WRAPPER_STR_CONTAINS',
+        }
+        macro = macro_map.get(rule_ir.rule_type)
+        if macro:
+            return '        %s(ctx, msg, %s, "%s", "%s");\n' % (
+                macro, field_name, pattern, rule_ir.constraint_id)
+        return ''
+
+
+class WrapperStringFormatEmitter(RuleEmitter):
+    """Emits C code for string format rules on wrapper types (StringValue)."""
+    
+    def emit(self, rule_ir: RuleIR, proto_file: Any) -> str:
+        if not rule_ir.context.is_wrapper:
+            return ''
+        
+        if rule_ir.context.wrapper_inner_type != 'string':
+            return ''
+        
+        field_name = rule_ir.field_name
+        
+        macro_map = {
+            RULE_EMAIL: 'PB_VALIDATE_WRAPPER_STR_EMAIL',
+            RULE_HOSTNAME: 'PB_VALIDATE_WRAPPER_STR_HOSTNAME',
+            RULE_IP: 'PB_VALIDATE_WRAPPER_STR_IP',
+            RULE_IPV4: 'PB_VALIDATE_WRAPPER_STR_IPV4',
+            RULE_IPV6: 'PB_VALIDATE_WRAPPER_STR_IPV6',
+            RULE_ASCII: 'PB_VALIDATE_WRAPPER_STR_ASCII',
+        }
+        macro = macro_map.get(rule_ir.rule_type)
+        if macro:
+            return '        %s(ctx, msg, %s, "%s");\n' % (
+                macro, field_name, rule_ir.constraint_id)
+        return ''
+
+
+class WrapperNumericEmitter(RuleEmitter):
+    """Emits C code for numeric rules on wrapper types (Int32Value, etc.)."""
+    
+    RULE_TO_C_ENUM = {
+        RULE_GT: 'PB_VALIDATE_RULE_GT',
+        RULE_GTE: 'PB_VALIDATE_RULE_GTE',
+        RULE_LT: 'PB_VALIDATE_RULE_LT',
+        RULE_LTE: 'PB_VALIDATE_RULE_LTE',
+        RULE_EQ: 'PB_VALIDATE_RULE_EQ',
+    }
+    
+    WRAPPER_TYPE_TO_VALIDATOR = {
+        'int32': ('int32_t', 'pb_validate_int32'),
+        'int64': ('int64_t', 'pb_validate_int64'),
+        'uint32': ('uint32_t', 'pb_validate_uint32'),
+        'uint64': ('uint64_t', 'pb_validate_uint64'),
+        'float': ('float', 'pb_validate_float'),
+        'double': ('double', 'pb_validate_double'),
+    }
+    
+    def emit(self, rule_ir: RuleIR, proto_file: Any) -> str:
+        if not rule_ir.context.is_wrapper:
+            return ''
+        
+        inner_type = rule_ir.context.wrapper_inner_type
+        if inner_type not in self.WRAPPER_TYPE_TO_VALIDATOR:
+            return ''
+        
+        rule_enum = self.RULE_TO_C_ENUM.get(rule_ir.rule_type)
+        if not rule_enum:
+            return ''
+        
+        value = rule_ir.rule.params.get('value', 0)
+        ctype, func = self.WRAPPER_TYPE_TO_VALIDATOR[inner_type]
+        field_name = rule_ir.field_name
+        
+        return '        PB_VALIDATE_WRAPPER_NUMERIC(ctx, msg, %s, %s, %s, %s, %s, "%s");\n' % (
+            field_name, ctype, func, rule_enum, value, rule_ir.constraint_id)
+
+
+class WrapperBoolEmitter(RuleEmitter):
+    """Emits C code for bool rules on wrapper types (BoolValue)."""
+    
+    def emit(self, rule_ir: RuleIR, proto_file: Any) -> str:
+        if not rule_ir.context.is_wrapper:
+            return ''
+        
+        if rule_ir.context.wrapper_inner_type != 'bool':
+            return ''
+        
+        if rule_ir.rule_type != RULE_EQ:
+            return ''
+        
+        value = rule_ir.rule.params.get('value', False)
+        field_name = rule_ir.field_name
+        
+        return '        PB_VALIDATE_WRAPPER_BOOL(ctx, msg, %s, %s, "%s");\n' % (
+            field_name, 'true' if value else 'false', rule_ir.constraint_id)
+
+
+class WrapperBytesLengthEmitter(RuleEmitter):
+    """Emits C code for bytes length rules on wrapper types (BytesValue)."""
+    
+    def emit(self, rule_ir: RuleIR, proto_file: Any) -> str:
+        if not rule_ir.context.is_wrapper:
+            return ''
+        
+        if rule_ir.context.wrapper_inner_type != 'bytes':
+            return ''
+        
+        is_min = rule_ir.rule_type == RULE_MIN_LEN
+        length = rule_ir.rule.params.get('value', 0)
+        field_name = rule_ir.field_name
+        
+        macro = 'PB_VALIDATE_WRAPPER_BYTES_MIN_LEN' if is_min else 'PB_VALIDATE_WRAPPER_BYTES_MAX_LEN'
+        return '        %s(ctx, msg, %s, %d, "%s");\n' % (
+            macro, field_name, length, rule_ir.constraint_id)
+
+
+class WrapperRequiredEmitter(RuleEmitter):
+    """Emits C code for required rule on wrapper types."""
+    
+    def emit(self, rule_ir: RuleIR, proto_file: Any) -> str:
+        if not rule_ir.context.is_wrapper:
+            return ''
+        
+        if rule_ir.rule_type != RULE_REQUIRED:
+            return ''
+        
+        field_name = rule_ir.field_name
+        return '        PB_VALIDATE_WRAPPER_REQUIRED(ctx, msg, %s, "%s");\n' % (
+            field_name, rule_ir.constraint_id)
+
+
 class RuleEmitterRegistry:
     """
     Registry for rule emitters with table-driven dispatch.
@@ -1847,11 +2118,16 @@ class RuleEmitterRegistry:
     2. Registering it in this registry
     
     This is the single place where rule → emitter mapping is defined.
+    
+    For wrapper types (google.protobuf wrapper types like StringValue, Int32Value),
+    dedicated wrapper emitters are used that access the inner .value field and check
+    wrapper presence.
     """
     
     def __init__(self):
         """Initialize the registry with all known emitters."""
         self._emitters: Dict[str, RuleEmitter] = {}
+        self._wrapper_emitters: Dict[str, RuleEmitter] = {}
         self._register_defaults()
     
     def _register_defaults(self):
@@ -1895,6 +2171,44 @@ class RuleEmitterRegistry:
             self._emitters[rule_type] = in_not_in_emitter
         
         self._emitters[RULE_ENUM_DEFINED] = EnumDefinedRuleEmitter()
+        
+        # Register wrapper-specific emitters
+        self._register_wrapper_emitters()
+    
+    def _register_wrapper_emitters(self):
+        """Register emitters for google.protobuf wrapper types."""
+        # String wrapper (StringValue)
+        wrapper_str_len_emitter = WrapperStringLengthEmitter()
+        for rule_type in [RULE_MIN_LEN, RULE_MAX_LEN]:
+            self._wrapper_emitters[('string', rule_type)] = wrapper_str_len_emitter
+        
+        wrapper_str_pattern_emitter = WrapperStringPatternEmitter()
+        for rule_type in [RULE_PREFIX, RULE_SUFFIX, RULE_CONTAINS]:
+            self._wrapper_emitters[('string', rule_type)] = wrapper_str_pattern_emitter
+        
+        wrapper_str_format_emitter = WrapperStringFormatEmitter()
+        for rule_type in [RULE_EMAIL, RULE_HOSTNAME, RULE_IP, RULE_IPV4, RULE_IPV6, RULE_ASCII]:
+            self._wrapper_emitters[('string', rule_type)] = wrapper_str_format_emitter
+        
+        # Numeric wrappers (Int32Value, Int64Value, UInt32Value, UInt64Value, FloatValue, DoubleValue)
+        wrapper_numeric_emitter = WrapperNumericEmitter()
+        for numeric_type in ['int32', 'int64', 'uint32', 'uint64', 'float', 'double']:
+            for rule_type in [RULE_GT, RULE_GTE, RULE_LT, RULE_LTE, RULE_EQ]:
+                self._wrapper_emitters[(numeric_type, rule_type)] = wrapper_numeric_emitter
+        
+        # Bool wrapper (BoolValue)
+        wrapper_bool_emitter = WrapperBoolEmitter()
+        self._wrapper_emitters[('bool', RULE_EQ)] = wrapper_bool_emitter
+        
+        # Bytes wrapper (BytesValue)
+        wrapper_bytes_len_emitter = WrapperBytesLengthEmitter()
+        for rule_type in [RULE_MIN_LEN, RULE_MAX_LEN]:
+            self._wrapper_emitters[('bytes', rule_type)] = wrapper_bytes_len_emitter
+        
+        # Required rule for all wrapper types
+        wrapper_required_emitter = WrapperRequiredEmitter()
+        for inner_type in ['string', 'bytes', 'bool', 'int32', 'int64', 'uint32', 'uint64', 'float', 'double']:
+            self._wrapper_emitters[(inner_type, RULE_REQUIRED)] = wrapper_required_emitter
     
     def register(self, rule_type: str, emitter: RuleEmitter):
         """Register an emitter for a rule type."""
@@ -1905,7 +2219,12 @@ class RuleEmitterRegistry:
         Wrap code in optional field check if the field is optional.
         
         For optional fields, we only run validation if the has_<field> flag is set.
+        Note: Wrapper fields handle their own presence check, so this doesn't apply to them.
         """
+        # Wrapper fields handle their own presence check in the wrapper macros
+        if rule_ir.context.is_wrapper:
+            return code
+        
         if not rule_ir.context.is_optional:
             return code
         
@@ -1918,6 +2237,9 @@ class RuleEmitterRegistry:
         """
         Emit C code for a rule using the appropriate emitter.
         
+        For wrapper fields, uses wrapper-specific emitters that access the inner
+        .value field and handle presence checking.
+        
         Args:
             rule_ir: The RuleIR to emit
             proto_file: The ProtoFile for context
@@ -1925,6 +2247,17 @@ class RuleEmitterRegistry:
         Returns:
             C code string, or a TODO comment if no emitter is registered
         """
+        # Check for wrapper field and use wrapper-specific emitter
+        if rule_ir.context.is_wrapper:
+            inner_type = rule_ir.context.wrapper_inner_type
+            wrapper_key = (inner_type, rule_ir.rule_type)
+            wrapper_emitter = self._wrapper_emitters.get(wrapper_key)
+            if wrapper_emitter:
+                code = wrapper_emitter.emit(rule_ir, proto_file)
+                if code:
+                    return code  # Wrapper emitters handle presence check internally
+        
+        # Fall back to standard emitter
         emitter = self._emitters.get(rule_ir.rule_type)
         if emitter:
             code = emitter.emit(rule_ir, proto_file)
@@ -2523,33 +2856,39 @@ class ValidatorGenerator:
                 # Automatic recursion for nested message fields
                 # When a field contains another message, we need to recursively
                 # validate that nested message as well
+                # NOTE: Wrapper types (StringValue, Int32Value, etc.) are handled by
+                # wrapper-specific emitters and don't need recursive validation.
                 try:
                     is_message_field = getattr(field, 'pbtype', None) in ('MESSAGE', 'MSG_W_CB')
                     submsg_ctype = getattr(field, 'ctype', None)
                     if is_message_field and submsg_ctype:
+                        # Skip google.protobuf wrapper types - they're validated directly
+                        if _is_wrapper_type(str(submsg_ctype)):
+                            pass  # Wrapper validation is handled by wrapper emitters
                         # Skip google.protobuf.Any and google.protobuf.Timestamp - they have special validation
-                        submsg_ctype_str = str(submsg_ctype).lower()
-                        is_google_special = ('google' in submsg_ctype_str and 
-                                            'protobuf' in submsg_ctype_str and 
-                                            ('any' in submsg_ctype_str or 'timestamp' in submsg_ctype_str))
-                        if not is_google_special:
-                            # Skip nested validation for CALLBACK fields - they're validated during decode
-                            allocation = getattr(field, 'allocation', None)
-                            if allocation == 'CALLBACK':
-                                yield '    /* Field %s uses CALLBACK: validated during decode */\n' % field_name
-                            else:
-                                # Generate the nested validation function name
-                                sub_func = 'pb_validate_' + str(submsg_ctype).replace('.', '_')
-                                rules = getattr(field, 'rules', None)
-                                
-                                # Use different macros based on allocation type
-                                if allocation == 'POINTER':
-                                    yield '    PB_VALIDATE_NESTED_MSG_POINTER(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
+                        else:
+                            submsg_ctype_str = str(submsg_ctype).lower()
+                            is_google_special = ('google' in submsg_ctype_str and 
+                                                'protobuf' in submsg_ctype_str and 
+                                                ('any' in submsg_ctype_str or 'timestamp' in submsg_ctype_str))
+                            if not is_google_special:
+                                # Skip nested validation for CALLBACK fields - they're validated during decode
+                                allocation = getattr(field, 'allocation', None)
+                                if allocation == 'CALLBACK':
+                                    yield '    /* Field %s uses CALLBACK: validated during decode */\n' % field_name
                                 else:
-                                    if rules == 'OPTIONAL':
-                                        yield '    PB_VALIDATE_NESTED_MSG_OPTIONAL(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
+                                    # Generate the nested validation function name
+                                    sub_func = 'pb_validate_' + str(submsg_ctype).replace('.', '_')
+                                    rules = getattr(field, 'rules', None)
+                                    
+                                    # Use different macros based on allocation type
+                                    if allocation == 'POINTER':
+                                        yield '    PB_VALIDATE_NESTED_MSG_POINTER(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
                                     else:
-                                        yield '    PB_VALIDATE_NESTED_MSG(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
+                                        if rules == 'OPTIONAL':
+                                            yield '    PB_VALIDATE_NESTED_MSG_OPTIONAL(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
+                                        else:
+                                            yield '    PB_VALIDATE_NESTED_MSG(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
                 except Exception:
                     # If field shape is unexpected, skip recursion silently to avoid crashes
                     pass
@@ -2558,6 +2897,7 @@ class ValidatorGenerator:
                 yield '\n'
             
             # Also recurse into message-typed fields that have no field-level rules
+            # NOTE: Skip wrapper types since they don't need recursive validation.
             try:
                 field_names_with_rules = set(validator.field_validators.keys())
             except Exception:
@@ -2571,6 +2911,9 @@ class ValidatorGenerator:
                     fname = getattr(f, 'name')
                     submsg_ctype = getattr(f, 'ctype', None)
                     if not submsg_ctype:
+                        continue
+                    # Skip google.protobuf wrapper types - they don't have nested fields to validate
+                    if _is_wrapper_type(str(submsg_ctype)):
                         continue
                     # Skip google.protobuf.Any and google.protobuf.Timestamp - they have special validation
                     submsg_ctype_str = str(submsg_ctype).lower()

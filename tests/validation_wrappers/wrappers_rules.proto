@@ -1,0 +1,148 @@
+/*
+ * Test proto for google.protobuf wrapper types validation
+ * 
+ * This tests validation of messages containing wrapper types like:
+ * - google.protobuf.StringValue
+ * - google.protobuf.Int32Value
+ * - google.protobuf.BoolValue
+ * - google.protobuf.BytesValue
+ * - google.protobuf.DoubleValue
+ * - etc.
+ * 
+ * Rules apply to the inner .value field, not the wrapper message itself.
+ * Presence is checked on the wrapper (has_field), then rules apply to .value.
+ */
+
+syntax = "proto3";
+
+import "validate.proto";
+import "nanopb.proto";
+import "google/protobuf/wrappers.proto";
+
+option (validate.validate) = true;
+
+/* Test message with StringValue wrapper and various string rules */
+message StringWrapperTest {
+    /* String wrapper with min_len validation */
+    google.protobuf.StringValue name = 1 [
+        (nanopb).max_size = 128,
+        (validate.rules).string.min_len = 3
+    ];
+    
+    /* String wrapper with max_len validation */
+    google.protobuf.StringValue description = 2 [
+        (nanopb).max_size = 256,
+        (validate.rules).string.max_len = 100
+    ];
+    
+    /* String wrapper with prefix validation */
+    google.protobuf.StringValue code = 3 [
+        (nanopb).max_size = 64,
+        (validate.rules).string.prefix = "CODE_"
+    ];
+    
+    /* String wrapper with suffix validation */
+    google.protobuf.StringValue tag = 4 [
+        (nanopb).max_size = 64,
+        (validate.rules).string.suffix = "_TAG"
+    ];
+    
+    /* String wrapper with contains validation */
+    google.protobuf.StringValue identifier = 5 [
+        (nanopb).max_size = 64,
+        (validate.rules).string.contains = "@"
+    ];
+    
+    /* String wrapper with email validation */
+    google.protobuf.StringValue email = 6 [
+        (nanopb).max_size = 128,
+        (validate.rules).string.email = true
+    ];
+}
+
+/* Test message with Int32Value wrapper and numeric rules */
+message Int32WrapperTest {
+    /* Int32 wrapper with gt validation */
+    google.protobuf.Int32Value positive_number = 1 [
+        (validate.rules).int32.gt = 0
+    ];
+    
+    /* Int32 wrapper with gte validation */
+    google.protobuf.Int32Value non_negative = 2 [
+        (validate.rules).int32.gte = 0
+    ];
+    
+    /* Int32 wrapper with lt validation */
+    google.protobuf.Int32Value less_than_hundred = 3 [
+        (validate.rules).int32.lt = 100
+    ];
+    
+    /* Int32 wrapper with lte validation */
+    google.protobuf.Int32Value max_hundred = 4 [
+        (validate.rules).int32.lte = 100
+    ];
+}
+
+/* Test message with BoolValue wrapper */
+message BoolWrapperTest {
+    /* Bool wrapper with const value validation */
+    google.protobuf.BoolValue must_be_true = 1 [
+        (validate.rules).bool.const_value = true
+    ];
+    
+    google.protobuf.BoolValue must_be_false = 2 [
+        (validate.rules).bool.const_value = false
+    ];
+}
+
+/* Test message with BytesValue wrapper */
+message BytesWrapperTest {
+    /* Bytes wrapper with min_len validation */
+    google.protobuf.BytesValue data = 1 [
+        (nanopb).max_size = 256,
+        (validate.rules).bytes.min_len = 4
+    ];
+    
+    /* Bytes wrapper with max_len validation */
+    google.protobuf.BytesValue small_data = 2 [
+        (nanopb).max_size = 64,
+        (validate.rules).bytes.max_len = 32
+    ];
+}
+
+/* Test message with DoubleValue wrapper */
+message DoubleWrapperTest {
+    /* Double wrapper with gt validation */
+    google.protobuf.DoubleValue positive = 1 [
+        (validate.rules).double.gt = 0.0
+    ];
+    
+    /* Double wrapper with lt validation */
+    google.protobuf.DoubleValue less_than_one = 2 [
+        (validate.rules).double.lt = 1.0
+    ];
+}
+
+/* Test message with required wrapper field */
+message RequiredWrapperTest {
+    /* This wrapper field is required */
+    google.protobuf.StringValue required_name = 1 [
+        (nanopb).max_size = 64,
+        (validate.rules).required = true,
+        (validate.rules).string.min_len = 1
+    ];
+}
+
+/* Test message with multiple wrapper types - presence semantics */
+message PresenceTest {
+    /* Optional wrapper - should pass if absent */
+    google.protobuf.StringValue optional_name = 1 [
+        (nanopb).max_size = 64,
+        (validate.rules).string.min_len = 5
+    ];
+    
+    /* Optional numeric wrapper - should pass if absent */
+    google.protobuf.Int32Value optional_count = 2 [
+        (validate.rules).int32.gt = 0
+    ];
+}
