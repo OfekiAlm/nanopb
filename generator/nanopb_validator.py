@@ -1314,19 +1314,19 @@ class MessageValidator:
                 ctype = getattr(field, 'ctype', None)
                 if allocation == 'CALLBACK' and ctype and _is_wrapper_type(str(ctype)):
                     import sys
-                    sys.stderr.write(
+                    error_msg = (
                         "\nError: FT_CALLBACK is not supported for google.protobuf wrapper types.\n"
-                        "Field '%s' in message '%s' uses wrapper type '%s' with FT_CALLBACK allocation.\n"
+                        f"Field '{field.name}' in message '{self.message.name}' uses wrapper type '{ctype}' "
+                        "with FT_CALLBACK allocation.\n"
                         "Wrapper type validation requires direct access to the wrapper struct's .value field,\n"
                         "which is not possible with callback-based decoding.\n\n"
                         "To fix this, either:\n"
                         "  1. Remove FT_CALLBACK option from the wrapper field, or\n"
                         "  2. Remove validation rules from the wrapper field\n\n"
-                        % (field.name, self.message.name, str(ctype))
                     )
+                    sys.stderr.write(error_msg)
                     raise ValueError(
-                        "FT_CALLBACK + wrapper type validation is not supported for field '%s'" 
-                        % field.name
+                        f"FT_CALLBACK + wrapper type validation is not supported for field '{field.name}'"
                     )
                 
                 # Regular field with validation rules

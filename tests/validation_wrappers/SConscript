@@ -15,7 +15,9 @@ test_env.Replace(NANOPBFLAGS = "--validate,-x,validate.proto")
 cflags = str(test_env.get('CFLAGS', ''))
 if '-ansi' in cflags:
     cflags = cflags.replace('-ansi', '')
-test_env.Replace(CFLAGS = cflags + ' -std=c99 ')
+if '-std=' not in cflags:
+    cflags = cflags + ' -std=c99 '
+test_env.Replace(CFLAGS = cflags)
 
 # Prepend the build directory to CPPPATH so our generated headers are found
 # before any system-wide google/protobuf headers
