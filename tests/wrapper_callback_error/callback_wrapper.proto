@@ -1,0 +1,25 @@
+/*
+ * Test proto to verify that FT_CALLBACK + wrapper type combination
+ * produces a generator-time error.
+ * 
+ * This proto intentionally uses an unsupported combination to test error handling.
+ */
+
+syntax = "proto3";
+
+import "validate.proto";
+import "nanopb.proto";
+import "google/protobuf/wrappers.proto";
+
+option (validate.validate) = true;
+
+/* This message should cause a generator error because it uses
+ * FT_CALLBACK with a wrapper type that has validation rules.
+ */
+message InvalidCallbackWrapper {
+    /* This combination is NOT supported and should cause a generator error */
+    google.protobuf.StringValue callback_name = 1 [
+        (nanopb).type = FT_CALLBACK,
+        (validate.rules).string.min_len = 3
+    ];
+}

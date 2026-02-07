@@ -1,0 +1,2 @@
+google.protobuf.StringValue.value max_size:256
+google.protobuf.BytesValue.value max_size:256
