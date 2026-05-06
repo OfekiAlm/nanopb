@@ -628,9 +628,9 @@ Offset  Field
 ──────  ──────────────────────────────────────
 +0      id              (4 bytes, uint32_t)
 +4      name[0..32]     (33 bytes, char[33])
-+37     (padding to align pb_size_t)
-+38     scores_count    (2 bytes, pb_size_t)
-+40     scores[0..3]    (16 bytes, uint32_t[4])
++(pad)  (alignment padding, if any)
++?      scores_count    (2 bytes, pb_size_t)
++?      scores[0..3]    (16 bytes, uint32_t[4])
 ```
 
 _(Exact offsets are compiler/platform specific; the generator uses `offsetof()` macros to compute them.)_
@@ -658,11 +658,14 @@ array_size  = 1
 For `scores` (tag=3, uint32 repeated):
 ```
 type = PB_ATYPE_STATIC | PB_HTYPE_REPEATED | PB_LTYPE_UVARINT
-data_offset = offsetof(Person, scores)       = 40
+data_offset = offsetof(Person, scores)
 data_size   = sizeof(uint32_t)               = 4
-size_offset = pb_delta(Person, scores, scores_count) = +2 (positive: pField - size_offset)
+size_offset = pb_delta(Person, scores, scores_count)
+            = offsetof(Person, scores) - offsetof(Person, scores_count)
+            = positive value (scores is laid out after scores_count)
 array_size  = 4
 ```
+`pSize = (char*)pField - size_offset` subtracts this positive delta to step back to `&scores_count`.
 
 ### How `pb_field_iter_t` Connects Descriptors to Memory
 
