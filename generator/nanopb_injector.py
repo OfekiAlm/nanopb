@@ -128,6 +128,8 @@ class CodeInjector:
             lines.append("    }")
             
             # Add custom field-level processing
+            # Note: 'skip_message' is set by nanopb for fields that shouldn't be processed
+            # (e.g., OneOf union placeholders). We skip those to avoid duplicates.
             for field in message.fields:
                 if hasattr(field, 'name') and not hasattr(field, 'skip_message'):
                     field_name = field.name
@@ -146,6 +148,8 @@ class CodeInjector:
             lines.append("    }")
             
             # Add custom field-level validation
+            # Note: 'skip_message' is set by nanopb for fields that shouldn't be processed
+            # (e.g., OneOf union placeholders). We skip those to avoid duplicates.
             for field in message.fields:
                 if hasattr(field, 'name') and not hasattr(field, 'skip_message'):
                     field_name = field.name

@@ -65,6 +65,8 @@ class CustomCodeInjector(nanopb_injector.CodeInjector):
             lines.append("    if (!src || !dst) return false;")
             lines.append(f"    *dst = *src;  /* Shallow copy */")
             lines.append("    /* TODO: Deep copy allocated fields */")
+            # Note: 'skip_message' is set by nanopb for fields that shouldn't be processed
+            # (e.g., OneOf union placeholders). We skip those to avoid duplicates.
             for field in message.fields:
                 if hasattr(field, 'name') and not hasattr(field, 'skip_message'):
                     field_name = field.name
@@ -79,6 +81,8 @@ class CustomCodeInjector(nanopb_injector.CodeInjector):
             lines.append(f"bool {msg_name}_equals(const {msg_name} *a, const {msg_name} *b) {{")
             lines.append("    if (!a || !b) return false;")
             lines.append("    if (a == b) return true;")
+            # Note: 'skip_message' is set by nanopb for fields that shouldn't be processed
+            # (e.g., OneOf union placeholders). We skip those to avoid duplicates.
             for field in message.fields:
                 if hasattr(field, 'name') and not hasattr(field, 'skip_message'):
                     field_name = field.name
