@@ -58,7 +58,7 @@ swift test
 
 Relevant when changing `<repo_root>/Package.swift`, `<repo_root>/spm_headers/`, or `<repo_root>/spm-test/`.
 
-## Example-oriented sanity checks
+## Example-oriented quick checks
 
 - `<repo_root>/examples/simple/` is the fastest way to understand the normal generator + runtime loop
 - `<repo_root>/examples/validation_simple/` is the fastest way to understand validation-enabled generation
