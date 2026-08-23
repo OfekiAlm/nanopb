@@ -1,42 +1,44 @@
 # Repository structure
 
+Treat `<repo_root>` as the root of this checkout.
+
 ## Top-level map
 
-- `/home/runner/work/nanopb/nanopb/pb*.c` and `/home/runner/work/nanopb/nanopb/pb*.h` — handwritten runtime sources and public headers
-- `/home/runner/work/nanopb/nanopb/generator/` — Python generator, validator generator, plugin wrappers, and generator-owned proto files
-- `/home/runner/work/nanopb/nanopb/tests/` — the main executable spec; every subdirectory is usually one focused scenario or regression
-- `/home/runner/work/nanopb/nanopb/examples/` — consumer-facing usage examples and integration samples
-- `/home/runner/work/nanopb/nanopb/extra/` — reusable integration assets for downstream build systems
-- `/home/runner/work/nanopb/nanopb/build-tests/` — CI-oriented packaging and integration test fixtures
-- `/home/runner/work/nanopb/nanopb/docs/` — user docs and reference material
-- `/home/runner/work/nanopb/nanopb/.github/workflows/` — the authoritative CI matrix for supported environments
+- `<repo_root>/pb*.c` and `<repo_root>/pb*.h` — handwritten runtime sources and public headers
+- `<repo_root>/generator/` — Python generator, validator generator, plugin wrappers, and generator-owned proto files
+- `<repo_root>/tests/` — the main executable spec; every subdirectory is usually one focused scenario or regression
+- `<repo_root>/examples/` — consumer-facing usage examples and integration samples
+- `<repo_root>/extra/` — reusable integration assets for downstream build systems
+- `<repo_root>/build-tests/` — CI-oriented packaging and integration test fixtures
+- `<repo_root>/docs/` — user docs and reference material
+- `<repo_root>/.github/workflows/` — the authoritative CI matrix for supported environments
 
 ## Examples worth knowing
 
-- `/home/runner/work/nanopb/nanopb/examples/simple/` — smallest end-to-end encode/decode example
-- `/home/runner/work/nanopb/nanopb/examples/validation_simple/` — validation-enabled example
-- `/home/runner/work/nanopb/nanopb/examples/cmake_simple/`, `/home/runner/work/nanopb/nanopb/examples/meson_simple/`, and `/home/runner/work/nanopb/nanopb/examples/conan_dependency/` — downstream integration references
-- `/home/runner/work/nanopb/nanopb/examples/platformio/` — PlatformIO packaging and generator integration
+- `<repo_root>/examples/simple/` — smallest end-to-end encode/decode example
+- `<repo_root>/examples/validation_simple/` — validation-enabled example
+- `<repo_root>/examples/cmake_simple/`, `<repo_root>/examples/meson_simple/`, and `<repo_root>/examples/conan_dependency/` — downstream integration references
+- `<repo_root>/examples/platformio/` — PlatformIO packaging and generator integration
 
 ## Tests worth knowing
 
-- `/home/runner/work/nanopb/nanopb/tests/common/` — shared harness pieces
-- `/home/runner/work/nanopb/nanopb/tests/regression/` — issue-driven regressions; check here before changing behavior
-- `/home/runner/work/nanopb/nanopb/tests/validation/` — validation feature coverage
-- `/home/runner/work/nanopb/nanopb/tests/site_scons/` — SCons platform adapters and generator integration for the test harness
+- `<repo_root>/tests/common/` — shared harness pieces
+- `<repo_root>/tests/regression/` — issue-driven regressions; check here before changing behavior
+- `<repo_root>/tests/validation/` — validation feature coverage
+- `<repo_root>/tests/site_scons/` — SCons platform adapters and generator integration for the test harness
 
 ## Build/integration files worth knowing
 
-- `/home/runner/work/nanopb/nanopb/CMakeLists.txt`
-- `/home/runner/work/nanopb/nanopb/meson.build`
-- `/home/runner/work/nanopb/nanopb/BUILD.bazel`
-- `/home/runner/work/nanopb/nanopb/Package.swift`
-- `/home/runner/work/nanopb/nanopb/conanfile.py`
-- `/home/runner/work/nanopb/nanopb/extra/nanopb.mk`
+- `<repo_root>/CMakeLists.txt`
+- `<repo_root>/meson.build`
+- `<repo_root>/BUILD.bazel`
+- `<repo_root>/Package.swift`
+- `<repo_root>/conanfile.py`
+- `<repo_root>/extra/nanopb.mk`
 
 ## Docs worth knowing
 
-- `/home/runner/work/nanopb/nanopb/docs/index.md` — overview
-- `/home/runner/work/nanopb/nanopb/docs/concepts.md` — type mapping and stream model
-- `/home/runner/work/nanopb/nanopb/docs/reference.md` — API and generator options
-- `/home/runner/work/nanopb/nanopb/docs/validation.md` — validation feature behavior
+- `<repo_root>/docs/index.md` — overview
+- `<repo_root>/docs/concepts.md` — type mapping and stream model
+- `<repo_root>/docs/reference.md` — API and generator options
+- `<repo_root>/docs/validation.md` — validation feature behavior

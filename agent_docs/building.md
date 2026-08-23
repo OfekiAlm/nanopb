@@ -2,10 +2,12 @@
 
 ## Baseline prerequisites
 
+Treat `<repo_root>` as the root of this checkout.
+
 For most local work, install:
 
 - `protoc`
-- Python 3 packages from `/home/runner/work/nanopb/nanopb/requirements.txt`: `python3 -m pip install protobuf grpcio-tools`
+- Python 3 packages from `<repo_root>/requirements.txt`: `python3 -m pip install protobuf grpcio-tools`
 - `scons` for the main test harness
 
 Extra tools are only needed for the integration you are touching: `cmake`, `meson` + `ninja`, `bazelisk`, `swift`, or PlatformIO.
@@ -15,19 +17,19 @@ Extra tools are only needed for the integration you are touching: `cmake`, `meso
 ### Generate code from a schema
 
 ```bash
-python3 /home/runner/work/nanopb/nanopb/generator/nanopb_generator.py path/to/file.proto
+python3 <repo_root>/generator/nanopb_generator.py path/to/file.proto
 ```
 
-Enable validation generation when needed with the same flags used by `/home/runner/work/nanopb/nanopb/examples/validation_simple/Makefile` and `/home/runner/work/nanopb/nanopb/tests/validation/SConscript`.
+Enable validation generation when needed with the same flags used by `<repo_root>/examples/validation_simple/Makefile` and `<repo_root>/tests/validation/SConscript`.
 
 ### CMake
 
 ```bash
-cmake -S /home/runner/work/nanopb/nanopb -B /home/runner/work/nanopb/nanopb/build
-cmake --build /home/runner/work/nanopb/nanopb/build
+cmake -S <repo_root> -B <repo_root>/build
+cmake --build <repo_root>/build
 ```
 
-`/home/runner/work/nanopb/nanopb/CMakeLists.txt` requires `protoc` and can also install the Python generator package.
+`<repo_root>/CMakeLists.txt` requires `protoc` and can also install the Python generator package.
 
 ### Meson
 
@@ -36,7 +38,7 @@ meson setup build -Dexamples=enabled
 ninja -C build
 ```
 
-This is the same shape used in `/home/runner/work/nanopb/nanopb/.github/workflows/meson.yml`.
+This is the same shape used in `<repo_root>/.github/workflows/meson.yml`.
 
 ### Bazel
 
@@ -54,16 +56,16 @@ swift build
 swift test
 ```
 
-Relevant when changing `/home/runner/work/nanopb/nanopb/Package.swift`, `/home/runner/work/nanopb/nanopb/spm_headers/`, or `/home/runner/work/nanopb/nanopb/spm-test/`.
+Relevant when changing `<repo_root>/Package.swift`, `<repo_root>/spm_headers/`, or `<repo_root>/spm-test/`.
 
 ## Example-oriented sanity checks
 
-- `/home/runner/work/nanopb/nanopb/examples/simple/` is the fastest way to understand the normal generator + runtime loop
-- `/home/runner/work/nanopb/nanopb/examples/validation_simple/` is the fastest way to understand validation-enabled generation
-- `/home/runner/work/nanopb/nanopb/build-tests/` contains packaging/integration checks that mirror CI more than day-to-day development
+- `<repo_root>/examples/simple/` is the fastest way to understand the normal generator + runtime loop
+- `<repo_root>/examples/validation_simple/` is the fastest way to understand validation-enabled generation
+- `<repo_root>/build-tests/` contains packaging/integration checks that mirror CI more than day-to-day development
 
 ## Environment notes
 
-- `/home/runner/work/nanopb/nanopb/tests/SConstruct` prefers clang on macOS when `CC` is not set
-- `/home/runner/work/nanopb/nanopb/CMakeLists.txt` errors out immediately if `protoc` is missing
-- The development container under `/home/runner/work/nanopb/nanopb/.devcontainer/` already includes the common compiler, Python, protobuf, and debugging tools
+- `<repo_root>/tests/SConstruct` prefers clang on macOS when `CC` is not set
+- `<repo_root>/CMakeLists.txt` errors out immediately if `protoc` is missing
+- The development container under `<repo_root>/.devcontainer/` already includes the common compiler, Python, protobuf, and debugging tools
