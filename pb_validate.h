@@ -715,6 +715,169 @@ extern "C"
             }                                                                                                   \
         } while (0)
 
+    /* ========================================================================
+     * WRAPPER TYPE VALIDATION MACROS
+     * ========================================================================
+     * google.protobuf wrapper types (StringValue, Int32Value, etc.) wrap a
+     * primitive value in a message. These macros validate the inner .value field
+     * only when the wrapper is present (has_<field> is true).
+     */
+
+    /* Validate string wrapper (google.protobuf.StringValue) with length rules */
+    #define PB_VALIDATE_WRAPPER_STR_MIN_LEN(ctx_var, msg_ptr, field_name, MIN_LEN, CONSTRAINT_ID)                  \
+        do {                                                                                                     \
+            if ((msg_ptr)->has_##field_name) {                                                                   \
+                pb_size_t __pb_len = (pb_size_t)strlen((msg_ptr)->field_name.value);                             \
+                if (__pb_len < (MIN_LEN)) {                                                                      \
+                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),              \
+                                      "String too short");                                                       \
+                    if ((ctx_var).early_exit) return false;                                                      \
+                }                                                                                                \
+            }                                                                                                    \
+        } while (0)
+
+    #define PB_VALIDATE_WRAPPER_STR_MAX_LEN(ctx_var, msg_ptr, field_name, MAX_LEN, CONSTRAINT_ID)                  \
+        do {                                                                                                     \
+            if ((msg_ptr)->has_##field_name) {                                                                   \
+                pb_size_t __pb_len = (pb_size_t)strlen((msg_ptr)->field_name.value);                             \
+                if (__pb_len > (MAX_LEN)) {                                                                      \
+                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),              \
+                                      "String too long");                                                        \
+                    if ((ctx_var).early_exit) return false;                                                      \
+                }                                                                                                \
+            }                                                                                                    \
+        } while (0)
+
+    /* Validate string wrapper with pattern rules */
+    #define PB_VALIDATE_WRAPPER_STR_PREFIX(ctx_var, msg_ptr, field_name, PREFIX_STR, CONSTRAINT_ID)                \
+        do {                                                                                                     \
+            if ((msg_ptr)->has_##field_name) {                                                                   \
+                pb_size_t __pb_len = (pb_size_t)strlen((msg_ptr)->field_name.value);                             \
+                if (!pb_validate_string((msg_ptr)->field_name.value, __pb_len, (PREFIX_STR),                     \
+                                       PB_VALIDATE_RULE_PREFIX)) {                                               \
+                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),              \
+                                      "String must start with specified prefix");                                \
+                    if ((ctx_var).early_exit) return false;                                                      \
+                }                                                                                                \
+            }                                                                                                    \
+        } while (0)
+
+    #define PB_VALIDATE_WRAPPER_STR_SUFFIX(ctx_var, msg_ptr, field_name, SUFFIX_STR, CONSTRAINT_ID)                \
+        do {                                                                                                     \
+            if ((msg_ptr)->has_##field_name) {                                                                   \
+                pb_size_t __pb_len = (pb_size_t)strlen((msg_ptr)->field_name.value);                             \
+                if (!pb_validate_string((msg_ptr)->field_name.value, __pb_len, (SUFFIX_STR),                     \
+                                       PB_VALIDATE_RULE_SUFFIX)) {                                               \
+                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),              \
+                                      "String must end with specified suffix");                                  \
+                    if ((ctx_var).early_exit) return false;                                                      \
+                }                                                                                                \
+            }                                                                                                    \
+        } while (0)
+
+    #define PB_VALIDATE_WRAPPER_STR_CONTAINS(ctx_var, msg_ptr, field_name, NEEDLE_STR, CONSTRAINT_ID)              \
+        do {                                                                                                     \
+            if ((msg_ptr)->has_##field_name) {                                                                   \
+                pb_size_t __pb_len = (pb_size_t)strlen((msg_ptr)->field_name.value);                             \
+                if (!pb_validate_string((msg_ptr)->field_name.value, __pb_len, (NEEDLE_STR),                     \
+                                       PB_VALIDATE_RULE_CONTAINS)) {                                             \
+                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),              \
+                                      "String must contain specified substring");                                \
+                    if ((ctx_var).early_exit) return false;                                                      \
+                }                                                                                                \
+            }                                                                                                    \
+        } while (0)
+
+    /* Validate string wrapper with format rules */
+    #define PB_VALIDATE_WRAPPER_STR_FORMAT(ctx_var, msg_ptr, field_name, RULE_ENUM, CONSTRAINT_ID, ERR_MSG)        \
+        do {                                                                                                     \
+            if ((msg_ptr)->has_##field_name) {                                                                   \
+                pb_size_t __pb_len = (pb_size_t)strlen((msg_ptr)->field_name.value);                             \
+                if (!pb_validate_string((msg_ptr)->field_name.value, __pb_len, NULL, (RULE_ENUM))) {             \
+                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), (ERR_MSG));  \
+                    if ((ctx_var).early_exit) return false;                                                      \
+                }                                                                                                \
+            }                                                                                                    \
+        } while (0)
+
+    #define PB_VALIDATE_WRAPPER_STR_ASCII(ctx_var, msg_ptr, field_name, CONSTRAINT_ID) \
+        PB_VALIDATE_WRAPPER_STR_FORMAT(ctx_var, msg_ptr, field_name, PB_VALIDATE_RULE_ASCII, CONSTRAINT_ID, "String must contain only ASCII")
+
+    #define PB_VALIDATE_WRAPPER_STR_EMAIL(ctx_var, msg_ptr, field_name, CONSTRAINT_ID) \
+        PB_VALIDATE_WRAPPER_STR_FORMAT(ctx_var, msg_ptr, field_name, PB_VALIDATE_RULE_EMAIL, CONSTRAINT_ID, "Invalid email format")
+
+    #define PB_VALIDATE_WRAPPER_STR_HOSTNAME(ctx_var, msg_ptr, field_name, CONSTRAINT_ID) \
+        PB_VALIDATE_WRAPPER_STR_FORMAT(ctx_var, msg_ptr, field_name, PB_VALIDATE_RULE_HOSTNAME, CONSTRAINT_ID, "Invalid hostname format")
+
+    #define PB_VALIDATE_WRAPPER_STR_IP(ctx_var, msg_ptr, field_name, CONSTRAINT_ID) \
+        PB_VALIDATE_WRAPPER_STR_FORMAT(ctx_var, msg_ptr, field_name, PB_VALIDATE_RULE_IP, CONSTRAINT_ID, "Invalid IP address format")
+
+    #define PB_VALIDATE_WRAPPER_STR_IPV4(ctx_var, msg_ptr, field_name, CONSTRAINT_ID) \
+        PB_VALIDATE_WRAPPER_STR_FORMAT(ctx_var, msg_ptr, field_name, PB_VALIDATE_RULE_IPV4, CONSTRAINT_ID, "Invalid IPv4 format")
+
+    #define PB_VALIDATE_WRAPPER_STR_IPV6(ctx_var, msg_ptr, field_name, CONSTRAINT_ID) \
+        PB_VALIDATE_WRAPPER_STR_FORMAT(ctx_var, msg_ptr, field_name, PB_VALIDATE_RULE_IPV6, CONSTRAINT_ID, "Invalid IPv6 format")
+
+    /* Validate numeric wrappers (Int32Value, Int64Value, UInt32Value, UInt64Value, FloatValue, DoubleValue) */
+    #define PB_VALIDATE_WRAPPER_NUMERIC(ctx_var, msg_ptr, field_name, CTYPE, FUNC, RULE_ENUM, VALUE_EXPR, CONSTRAINT_ID) \
+        do {                                                                                                     \
+            if ((msg_ptr)->has_##field_name) {                                                                   \
+                CTYPE __pb_limit = (VALUE_EXPR);                                                                 \
+                if (!FUNC((msg_ptr)->field_name.value, &__pb_limit, (RULE_ENUM))) {                              \
+                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),              \
+                                      "Numeric constraint violated");                                            \
+                    if ((ctx_var).early_exit) return false;                                                      \
+                }                                                                                                \
+            }                                                                                                    \
+        } while (0)
+
+    /* Validate bool wrapper (google.protobuf.BoolValue) */
+    #define PB_VALIDATE_WRAPPER_BOOL(ctx_var, msg_ptr, field_name, EXPECTED_VALUE, CONSTRAINT_ID)                  \
+        do {                                                                                                     \
+            if ((msg_ptr)->has_##field_name) {                                                                   \
+                if ((msg_ptr)->field_name.value != (EXPECTED_VALUE)) {                                           \
+                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),              \
+                                      "Bool constraint violated");                                               \
+                    if ((ctx_var).early_exit) return false;                                                      \
+                }                                                                                                \
+            }                                                                                                    \
+        } while (0)
+
+    /* Validate bytes wrapper (google.protobuf.BytesValue) with length rules */
+    #define PB_VALIDATE_WRAPPER_BYTES_MIN_LEN(ctx_var, msg_ptr, field_name, MIN_LEN, CONSTRAINT_ID)                \
+        do {                                                                                                     \
+            if ((msg_ptr)->has_##field_name) {                                                                   \
+                pb_size_t __pb_len = (msg_ptr)->field_name.value.size;                                           \
+                if (__pb_len < (MIN_LEN)) {                                                                      \
+                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),              \
+                                      "Bytes too short");                                                        \
+                    if ((ctx_var).early_exit) return false;                                                      \
+                }                                                                                                \
+            }                                                                                                    \
+        } while (0)
+
+    #define PB_VALIDATE_WRAPPER_BYTES_MAX_LEN(ctx_var, msg_ptr, field_name, MAX_LEN, CONSTRAINT_ID)                \
+        do {                                                                                                     \
+            if ((msg_ptr)->has_##field_name) {                                                                   \
+                pb_size_t __pb_len = (msg_ptr)->field_name.value.size;                                           \
+                if (__pb_len > (MAX_LEN)) {                                                                      \
+                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),              \
+                                      "Bytes too long");                                                         \
+                    if ((ctx_var).early_exit) return false;                                                      \
+                }                                                                                                \
+            }                                                                                                    \
+        } while (0)
+
+    /* Validate wrapper presence (REQUIRED constraint) */
+    #define PB_VALIDATE_WRAPPER_REQUIRED(ctx_var, msg_ptr, field_name, CONSTRAINT_ID)                              \
+        do {                                                                                                     \
+            if (!(msg_ptr)->has_##field_name) {                                                                  \
+                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),                  \
+                                  "Required wrapper field is missing");                                          \
+                if ((ctx_var).early_exit) return false;                                                          \
+            }                                                                                                    \
+        } while (0)
+
     /* Oneof switch/case macros for cleaner generated code. */
     #define PB_VALIDATE_ONEOF_BEGIN(ctx_var, msg_ptr, oneof_name)                                                \
         switch ((msg_ptr)->which_##oneof_name) {

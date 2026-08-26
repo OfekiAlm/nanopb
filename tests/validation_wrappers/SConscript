@@ -1,0 +1,57 @@
+# Build and run wrapper validation test suite
+# Tests validation of google.protobuf wrapper types (StringValue, Int32Value, etc.)
+
+Import("env")
+
+# Clone environment to set validation-specific options
+test_env = env.Clone()
+
+# Enable validation code generation via NANOPBFLAGS
+# Also exclude validate.proto from #include list since it's only used for options
+test_env.Replace(NANOPBFLAGS = "--validate,-x,validate.proto")
+
+# Remove -ansi flag since pb_validate.h requires C99 features (inline)
+# Also enable C99 for stdbool.h
+cflags = str(test_env.get('CFLAGS', ''))
+if '-ansi' in cflags:
+    cflags = cflags.replace('-ansi', '')
+if '-std=' not in cflags:
+    cflags = cflags + ' -std=c99 '
+test_env.Replace(CFLAGS = cflags)
+
+# Prepend the build directory to CPPPATH so our generated headers are found
+# before any system-wide google/protobuf headers
+test_env.Prepend(CPPPATH = ['.'])
+
+# Build pb_validate.o without extra strict flags (avoid conversion warnings)
+test_env.Object("pb_validate.o", "$NANOPB/pb_validate.c")
+
+# Generate wrapper proto with options (no validation for the wrapper types themselves)
+wrappers_env = test_env.Clone()
+wrappers_env.Replace(NANOPBFLAGS = "-x,validate.proto")
+wrappers_env.NanopbProto(["google/protobuf/wrappers", "google/protobuf/wrappers.options"])
+
+# Generate the test proto (with validation)
+pb_files = test_env.NanopbProto("wrappers_rules")
+pb_sources = ["wrappers_rules.pb.c"]
+validate_c = "wrappers_rules_validate.c"
+validate_h = "wrappers_rules_validate.h"
+test_env.SideEffect(validate_c, pb_files)
+test_env.SideEffect(validate_h, pb_files)
+validate_sources = [validate_c]
+
+# All C source files for the test binary
+sources = ["test_wrappers.c"] + ["google/protobuf/wrappers.pb.c"] + pb_sources + validate_sources
+
+# Build the test binary
+test_prog = test_env.Program(
+    sources + [
+        "$COMMON/pb_encode.o",
+        "$COMMON/pb_decode.o",
+        "$COMMON/pb_common.o",
+        "pb_validate.o"
+    ]
+)
+
+# Run the test
+test_env.RunTest(test_prog)

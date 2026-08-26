@@ -1,0 +1,97 @@
+# Test that FT_CALLBACK + wrapper type combination produces a generator error
+# This test verifies that the generator correctly rejects the unsupported combination
+# and produces a helpful error message.
+
+Import("env")
+import os
+import subprocess
+import sys
+
+# Clone environment to set validation-specific options
+test_env = env.Clone()
+
+# Enable validation code generation
+test_env.Replace(NANOPBFLAGS = "--validate,-x,validate.proto")
+
+# Prepend the build directory to CPPPATH
+test_env.Prepend(CPPPATH = ['.'])
+
+# Generate wrapper proto without validation (this should succeed)
+wrappers_env = test_env.Clone()
+wrappers_env.Replace(NANOPBFLAGS = "-x,validate.proto")
+wrappers_env.NanopbProto(["google/protobuf/wrappers", "google/protobuf/wrappers.options"])
+
+def expect_generator_error(target, source, env):
+    """
+    Custom action that runs protoc and expects it to fail with a specific error.
+    Returns 0 (success) if the generator fails with the expected error,
+    Returns 1 (failure) if the generator succeeds or fails with unexpected error.
+    """
+    proto_file = str(source[0])
+    
+    # Build the protoc command - strip quotes from paths
+    protoc = str(env['PROTOC']).strip('"')
+    nanopb_path = str(env['NANOPB']).strip('"')
+    proto_path = os.path.dirname(proto_file) or '.'
+    generator_proto_path = os.path.join(nanopb_path, 'generator', 'proto')
+    generator_path = os.path.join(nanopb_path, 'generator')
+    
+    cmd = [
+        protoc,
+        '-I' + proto_path,
+        '-I' + generator_proto_path,
+        '-I' + generator_path,
+        '--nanopb_out=--validate,-x,validate.proto:' + proto_path,
+        proto_file
+    ]
+    
+    # Run the generator
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except Exception as e:
+        print('[FAIL] Exception running protoc: %s' % str(e))
+        return 1
+    
+    # Check that it failed
+    if result.returncode == 0:
+        print('[FAIL] Generator succeeded but was expected to fail')
+        print('stdout: %s' % result.stdout)
+        return 1
+    
+    # Check that the error message contains expected content
+    combined_output = result.stdout + result.stderr
+    expected_strings = [
+        'FT_CALLBACK is not supported for google.protobuf wrapper types',
+        'callback_name',
+        'InvalidCallbackWrapper'
+    ]
+    
+    for expected in expected_strings:
+        if expected not in combined_output:
+            print('[FAIL] Expected error message to contain: %s' % expected)
+            print('stderr: %s' % result.stderr)
+            return 1
+    
+    # Write a marker file to indicate success
+    with open(str(target[0]), 'w') as f:
+        f.write('PASS: Generator correctly rejected FT_CALLBACK + wrapper combination\n')
+    
+    print('[PASS] Generator correctly rejected FT_CALLBACK + wrapper combination')
+    return 0
+
+# Create a builder that expects the generator to fail
+expect_error_builder = Builder(
+    action=expect_generator_error,
+    suffix='.expected_error'
+)
+test_env.Append(BUILDERS={'ExpectGeneratorError': expect_error_builder})
+
+# Run the expected-error test
+# The source is the proto file, the target is a marker file
+test_result = test_env.ExpectGeneratorError(
+    'callback_wrapper.expected_error',
+    'callback_wrapper.proto'
+)
+
+# Make sure the wrapper proto is built first
+test_env.Depends(test_result, 'google/protobuf/wrappers.pb.c')
