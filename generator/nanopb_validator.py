@@ -2135,12 +2135,65 @@ class ValidatorGenerator:
             return f"- {field_name}: (constraints unavailable)"
     # ----------------------------------------------------------------------
 
+    def _type_has_validator(self, submsg_ctype_str: str) -> bool:
+        """
+        Check if the given message type (by C type name string) has validation rules.
+
+        Returns True if:
+        - The type is in self.validators with actual rules (same-file), OR
+        - The type is a cross-file dependency that has validation rules.
+
+        Returns False if the type has no validation rules, meaning no validator
+        function is (or will be) generated for it.
+        """
+        if not hasattr(self, '_validated_types_cache'):
+            self._validated_types_cache = self._build_validated_types_cache()
+        return submsg_ctype_str in self._validated_types_cache
+
+    def _build_validated_types_cache(self) -> set:
+        """
+        Build the set of type name strings that have at least one validation rule.
+
+        Includes same-file validators that have actual rules, and cross-file
+        dependency types that have validation rules.
+        """
+        validated = set()
+
+        # Add same-file validators that have actual rules
+        for type_name, v in self.validators.items():
+            if v.field_validators or v.message_rules or v.oneof_validators:
+                validated.add(type_name)
+
+        # Add cross-file types that have validation rules
+        for type_name, dep_obj in self.proto_file.dependencies.items():
+            if not hasattr(dep_obj, 'fields'):
+                continue  # not a message (likely an enum)
+            if getattr(dep_obj, 'protofile', None) is self.proto_file:
+                continue  # same-file type, already handled above
+            if type_name in validated:
+                continue  # already found
+            # Quick pre-check: skip if no field has validate_rules and no
+            # message-level rules, avoiding full MessageValidator construction.
+            has_field_rules = any(
+                getattr(f, 'validate_rules', None)
+                for f in getattr(dep_obj, 'fields', [])
+            )
+            has_msg_rules = bool(getattr(dep_obj, 'message_validate_rules', None))
+            if not has_field_rules and not has_msg_rules:
+                continue
+            mv = MessageValidator(dep_obj, getattr(dep_obj, 'message_validate_rules', None), self.proto_file)
+            if mv.field_validators or mv.message_rules or mv.oneof_validators:
+                validated.add(type_name)
+
+        return validated
+
     def _collect_validation_dependencies(self):
         """
         Collect validation header dependencies from imported proto files.
-        
+
         Returns a set of validation header paths that need to be included.
-        These are proto files that define messages used as field types in this file.
+        These are proto files that define messages used as field types in this file
+        and that actually have validation rules.
         """
         dep_headers = set()
         
@@ -2164,6 +2217,10 @@ class ValidatorGenerator:
                     if 'google' in submsg_ctype_str and 'protobuf' in submsg_ctype_str:
                         continue
                     
+                    # Only include the dep header if the nested type has validators
+                    if not self._type_has_validator(str(submsg_ctype)):
+                        continue
+
                     # Look up the message in dependencies
                     dep_msg = self.proto_file.dependencies.get(str(submsg_ctype))
                     if dep_msg and hasattr(dep_msg, 'protofile'):
@@ -2537,7 +2594,8 @@ class ValidatorGenerator:
                             allocation = getattr(field, 'allocation', None)
                             if allocation == 'CALLBACK':
                                 yield '    /* Field %s uses CALLBACK: validated during decode */\n' % field_name
-                            else:
+                            elif self._type_has_validator(str(submsg_ctype)):
+                                # Only call nested validator if the nested type has validation rules
                                 # Generate the nested validation function name
                                 sub_func = 'pb_validate_' + str(submsg_ctype).replace('.', '_')
                                 rules = getattr(field, 'rules', None)
@@ -2581,6 +2639,10 @@ class ValidatorGenerator:
                     allocation = getattr(f, 'allocation', None)
                     if allocation == 'CALLBACK':
                         # Callback fields are validated during decode, no need to validate here
+                        continue
+
+                    # Only call nested validator if the nested type has validation rules
+                    if not self._type_has_validator(str(submsg_ctype)):
                         continue
                     
                     sub_func = 'pb_validate_' + str(submsg_ctype).replace('.', '_')
