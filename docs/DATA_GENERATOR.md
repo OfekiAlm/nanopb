@@ -56,8 +56,11 @@ pip install protobuf grpcio-tools
 Basic usage:
 
 ```bash
-# Generate valid data as C array
+# Generate valid data as C array for a specific message
 python generator/nanopb_data_generator.py test_basic_validation.proto BasicValidation
+
+# Generate data for all messages in a proto file
+python generator/nanopb_data_generator.py my_proto.proto --all-messages
 
 # Generate invalid data violating a specific field
 python generator/nanopb_data_generator.py test_basic_validation.proto BasicValidation \
@@ -71,6 +74,11 @@ python generator/nanopb_data_generator.py test_basic_validation.proto BasicValid
 python generator/nanopb_data_generator.py test_basic_validation.proto BasicValidation \
     --format hex
 
+# Generate all messages and save to separate binary files
+python generator/nanopb_data_generator.py my_proto.proto --all-messages \
+    --format binary -o data.bin
+# Creates: data_message1.bin, data_message2.bin, etc.
+
 # With custom include paths
 python generator/nanopb_data_generator.py my_proto.proto MyMessage \
     -I proto -I third_party/proto
@@ -79,7 +87,8 @@ python generator/nanopb_data_generator.py my_proto.proto MyMessage \
 #### CLI Options
 
 - `proto_file` - Path to `.proto` file (required)
-- `message` - Message name to generate data for (required)
+- `message` - Message name to generate data for (optional if `--all-messages` is used)
+- `--all-messages` - Generate data for all messages in the proto file
 - `--invalid` - Generate invalid data instead of valid
 - `--field FIELD` - Field to violate (for invalid data)
 - `--rule RULE` - Rule to violate (for invalid data)
@@ -101,7 +110,15 @@ generator = DataGenerator('test_basic_validation.proto',
 messages = generator.get_messages()
 print(messages)  # ['BasicValidation']
 
-# Generate valid data
+# Generate valid data for all messages
+for message_name in generator.get_messages():
+    valid_data = generator.generate_valid(message_name, seed=42)
+    binary_data = generator.encode_to_binary(message_name, valid_data)
+    c_array = generator.format_output(binary_data, OutputFormat.C_ARRAY, 
+                                     f'{message_name.lower()}_data')
+    print(c_array)
+
+# Generate valid data for a specific message
 valid_data = generator.generate_valid('BasicValidation', seed=42)
 print(valid_data)
 # {
