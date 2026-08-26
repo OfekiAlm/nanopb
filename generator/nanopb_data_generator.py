@@ -40,6 +40,8 @@ except ImportError:
     from proto._utils import invoke_protoc
     from proto import TemporaryDirectory
 
+_MISSING = object()
+
 
 def _load_validate_pb2() -> Any:
     """Load validate_pb2 from the repository-local generator/proto directory."""
@@ -1279,7 +1281,19 @@ class DataGenerator:
             if runtime_field is None or value is None:
                 continue
 
-            if runtime_field.is_repeated:
+            is_repeated = getattr(runtime_field, 'is_repeated', _MISSING)
+            if is_repeated is _MISSING:
+                if hasattr(runtime_field, 'label'):
+                    is_repeated = (
+                        runtime_field.label
+                        == RuntimeFieldDescriptor.LABEL_REPEATED
+                    )
+                else:
+                    raise AttributeError(
+                        f"Field descriptor {runtime_field!r} does not expose repeated field metadata"
+                    )
+
+            if is_repeated:
                 if runtime_field.cpp_type == RuntimeFieldDescriptor.CPPTYPE_MESSAGE:
                     container = getattr(message, field_name)
                     for item in value:
