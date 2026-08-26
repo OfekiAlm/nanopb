@@ -534,7 +534,7 @@ def _generate_any_envelope_body(f, any_envelope_info):
     yield '    \n'
     yield '    /* Extract type_url from Any field */\n'
     yield '    const char *type_url = (const char *)envelope.%s.type_url;\n' % any_field_name
-    yield '    if (!type_url) {\n'
+    yield '    if (type_url[0] == \'\\0\') {\n'
     yield '        return %s;\n' % RET_ERR
     yield '    }\n'
     yield '    \n'
