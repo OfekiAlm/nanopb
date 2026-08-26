@@ -24,6 +24,9 @@ def build_nanopb_proto(protosrc, dirname):
 
     cmd = ["protoc", "--python_out={}".format(dirname)] + sources + ["-I={}".format(dirname)]
 
+    if any(os.path.basename(src) == "validate.proto" for src in sources):
+        cmd.append("--experimental_allow_proto3_optional")
+
     if has_grpcio_protoc():
         # grpcio-tools has an extra CLI argument
         # from grpc.tools.protoc __main__ invocation.
@@ -123,4 +126,3 @@ def load_nanopb_pb2():
     sys.stderr.write("Make sure that a protoc generator is available and matches python-protobuf version.\n")
     print_versions()
     sys.exit(1)
-
