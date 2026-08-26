@@ -1238,7 +1238,8 @@ static void test_oneof_rules(void)
     {
         OneofRules msg = OneofRules_init_zero;
         /* Fill common_field to exceed max_size=32 (but within nanopb buffer) */
-        strcpy(msg.common_field, "this_string_is_way_too_long_for_the_max_size_constraint");
+        strncpy(msg.common_field, "this_string_is_way_too_long_for_the_max_size_constraint", sizeof(msg.common_field) - 1);
+        msg.common_field[sizeof(msg.common_field) - 1] = '\0';
         msg.which_choice = OneofRules_str_option_tag;
         strcpy(msg.choice.str_option, "valid");
         
