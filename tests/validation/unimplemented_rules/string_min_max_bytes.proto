@@ -1,0 +1,7 @@
+syntax = "proto3";
+import "validate.proto";
+import "nanopb.proto";
+
+message Baz {
+    string s = 1 [(nanopb).max_size = 32, (validate.rules).string.min_bytes = 4];
+}

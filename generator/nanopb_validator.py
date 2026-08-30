@@ -91,6 +91,15 @@ except (ImportError, AttributeError):
         """Stub for OneOf class when nanopb_generator is not available."""
         pass
 
+
+class ValidationRuleNotImplementedError(Exception):
+    """Raised when a declared (validate.*) option has no C-runtime enforcement
+    yet. Generation fails with this rather than silently emitting no check --
+    see the "fail loudly" categories in docs/validation.md. The protoc plugin
+    (nanopb_validate_generator.py) catches this and turns it into a
+    GeneratorError, which protoc reports as a plain generation failure."""
+
+
 # =============================================================================
 # MODULE CONSTANTS
 # =============================================================================
@@ -424,82 +433,6 @@ class RuleIR:
         return self.context.field_access
 
 
-@dataclass
-class FieldRuleSet:
-    """
-    Aggregates all validation rules for a single field.
-    
-    FieldRuleSet is the IR for a complete field validation, containing:
-    - The field context (regular or oneof)
-    - All RuleIR objects for this field
-    - Whether recursive submessage validation is needed
-    
-    Attributes:
-        context: FieldContext with field information
-        rules: List of RuleIR objects for this field
-        needs_submsg_validation: True if this is a message field that needs recursive validation
-        submsg_func_name: Name of the validation function for the submessage (if applicable)
-    """
-    context: FieldContext
-    rules: List[RuleIR] = field(default_factory=list)
-    needs_submsg_validation: bool = False
-    submsg_func_name: str = ''
-    
-    @property
-    def field_name(self) -> str:
-        """Shortcut to get the field name."""
-        return self.context.field_name
-    
-    def has_rules(self) -> bool:
-        """Return True if this field has any validation rules."""
-        return bool(self.rules)
-
-
-@dataclass
-class OneofRuleSet:
-    """
-    Aggregates all validation rules for a oneof group.
-    
-    Attributes:
-        oneof_name: Name of the oneof group
-        oneof_obj: The oneof descriptor object
-        member_rule_sets: List of FieldRuleSet for each oneof member with rules
-        is_anonymous: True if this is an anonymous oneof (C11 anonymous union)
-    """
-    oneof_name: str
-    oneof_obj: Any
-    member_rule_sets: List[FieldRuleSet] = field(default_factory=list)
-    is_anonymous: bool = False
-
-
-@dataclass
-class MessageRuleSet:
-    """
-    Complete validation IR for an entire message.
-    
-    MessageRuleSet is the top-level IR that contains everything needed to generate
-    validation code for a message. It represents the full validation model built
-    from parsing, ready for emission.
-    
-    The pipeline is:
-        MessageValidator (parsed rules) → IRBuilder → MessageRuleSet (IR) → CodeEmitter → C code
-    
-    Attributes:
-        message: The message descriptor
-        struct_name: The C struct name for this message
-        func_name: The validation function name
-        field_rule_sets: Rules for regular fields
-        oneof_rule_sets: Rules for oneof groups
-        message_rules: Message-level validation rules
-    """
-    message: Any
-    struct_name: str
-    func_name: str
-    field_rule_sets: List[FieldRuleSet] = field(default_factory=list)
-    oneof_rule_sets: List[OneofRuleSet] = field(default_factory=list)
-    message_rules: List[RuleIR] = field(default_factory=list)
-
-
 # =============================================================================
 # IR BUILDER
 # =============================================================================
@@ -515,8 +448,7 @@ class IRBuilder:
     - Determines the appropriate C macro for each rule type
     - Resolves C type information for numeric rules
     - Pre-formats parameters for C code generation
-    - Creates the complete FieldRuleSet and MessageRuleSet structures
-    
+
     Dependencies:
         - Uses Globals.naming_style for C name formatting
         - Uses CTypeInfo for numeric type resolution
@@ -652,111 +584,6 @@ class IRBuilder:
             formatted['n'] = str(params['n'])
         
         return formatted
-    
-    def build_field_rule_set(self, field_validator: 'FieldValidator', 
-                             is_oneof: bool = False, 
-                             oneof_name: str = '', 
-                             is_anonymous: bool = False) -> FieldRuleSet:
-        """
-        Build a FieldRuleSet from a FieldValidator.
-        
-        Args:
-            field_validator: The parsed FieldValidator
-            is_oneof: Whether this field is in a oneof
-            oneof_name: Name of the oneof group (if applicable)
-            is_anonymous: Whether the oneof is anonymous
-            
-        Returns:
-            A FieldRuleSet with all RuleIRs for this field
-        """
-        field = field_validator.field
-        
-        if is_oneof:
-            context = FieldContext.for_oneof_member(field, oneof_name, is_anonymous)
-        else:
-            context = FieldContext.for_regular_field(field)
-        
-        rule_irs = [self.build_rule_ir(rule, context) for rule in field_validator.rules]
-        
-        # Check if submessage validation is needed
-        needs_submsg = False
-        submsg_func = ''
-        pbtype = getattr(field, 'pbtype', None)
-        if pbtype in ('MESSAGE', 'MSG_W_CB'):
-            submsg_ctype = getattr(field, 'ctype', None)
-            if submsg_ctype:
-                submsg_ctype_str = str(submsg_ctype).lower()
-                # Skip google.protobuf types
-                if not ('google' in submsg_ctype_str and 'protobuf' in submsg_ctype_str):
-                    needs_submsg = True
-                    submsg_func = 'pb_validate_' + str(submsg_ctype).replace('.', '_')
-        
-        return FieldRuleSet(
-            context=context,
-            rules=rule_irs,
-            needs_submsg_validation=needs_submsg,
-            submsg_func_name=submsg_func
-        )
-    
-    def build_message_rule_set(self, validator: 'MessageValidator') -> MessageRuleSet:
-        """
-        Build a complete MessageRuleSet from a MessageValidator.
-        
-        Args:
-            validator: The parsed MessageValidator
-            
-        Returns:
-            A MessageRuleSet with the complete IR for the message
-        """
-        message = validator.message
-        struct_name = str(message.name)
-        func_name = 'pb_validate_' + struct_name.replace('.', '_')
-        
-        # Build field rule sets
-        field_rule_sets = []
-        for field_name, field_validator in validator.field_validators.items():
-            frs = self.build_field_rule_set(field_validator)
-            field_rule_sets.append(frs)
-        
-        # Build oneof rule sets
-        oneof_rule_sets = []
-        for oneof_name, oneof_data in validator.oneof_validators.items():
-            oneof_obj = oneof_data['oneof']
-            is_anonymous = getattr(oneof_obj, 'anonymous', False)
-            
-            member_rule_sets = []
-            for member_field, member_fv in oneof_data['members']:
-                frs = self.build_field_rule_set(
-                    member_fv, 
-                    is_oneof=True, 
-                    oneof_name=oneof_name,
-                    is_anonymous=is_anonymous
-                )
-                member_rule_sets.append(frs)
-            
-            oneof_rule_sets.append(OneofRuleSet(
-                oneof_name=oneof_name,
-                oneof_obj=oneof_obj,
-                member_rule_sets=member_rule_sets,
-                is_anonymous=is_anonymous
-            ))
-        
-        # Build message rule IRs
-        message_rule_irs = []
-        for msg_rule in validator.message_rules:
-            # Message rules don't have a field context, use dedicated factory
-            msg_context = FieldContext.for_message_rule()
-            ir = self.build_rule_ir(msg_rule, msg_context)
-            message_rule_irs.append(ir)
-        
-        return MessageRuleSet(
-            message=message,
-            struct_name=struct_name,
-            func_name=func_name,
-            field_rule_sets=field_rule_sets,
-            oneof_rule_sets=oneof_rule_sets,
-            message_rules=message_rule_irs,
-        )
 
 
 class FieldValidator:
@@ -890,7 +717,29 @@ class FieldValidator:
         
         Args:
             rules: The StringRules message from validate.proto
+
+        Raises:
+            ValidationRuleNotImplementedError: for options declared in
+                validate.proto that have no C-runtime enforcement at all
+                (pattern has no regex engine; min_bytes/max_bytes have no
+                distinct byte-vs-character-length check for a NUL-terminated
+                C string).
         """
+        if rules.HasField('pattern'):
+            raise ValidationRuleNotImplementedError(
+                'validate.proto option "string.pattern" on field "%s" has no C-runtime '
+                'enforcement yet (no regex engine). Remove it from the .proto, or wait '
+                'for support.' % self.field.name)
+        if rules.HasField('min_bytes'):
+            raise ValidationRuleNotImplementedError(
+                'validate.proto option "string.min_bytes" on field "%s" has no C-runtime '
+                'enforcement yet. Remove it from the .proto, or wait for support.'
+                % self.field.name)
+        if rules.HasField('max_bytes'):
+            raise ValidationRuleNotImplementedError(
+                'validate.proto option "string.max_bytes" on field "%s" has no C-runtime '
+                'enforcement yet. Remove it from the .proto, or wait for support.'
+                % self.field.name)
         if rules.HasField('const_value'):
             self.rules.append(ValidationRule(RULE_EQ, 'string.const', {'value': rules.const_value}))
         if rules.HasField('min_len'):
@@ -928,7 +777,17 @@ class FieldValidator:
         
         Args:
             rules: The BytesRules message from validate.proto
+
+        Raises:
+            ValidationRuleNotImplementedError: "pattern" is declared in
+                validate.proto but has no C-runtime enforcement (no regex
+                engine for byte sequences).
         """
+        if rules.HasField('pattern'):
+            raise ValidationRuleNotImplementedError(
+                'validate.proto option "bytes.pattern" on field "%s" has no C-runtime '
+                'enforcement yet (no regex engine). Remove it from the .proto, or wait '
+                'for support.' % self.field.name)
         if rules.HasField('const_value'):
             self.rules.append(ValidationRule(RULE_EQ, 'bytes.const', {'value': rules.const_value}))
         if rules.HasField('min_len'):
@@ -1536,8 +1395,8 @@ class ItemsRuleEmitter(RuleEmitter):
                 code += '            pb_validate_context_push_index(&ctx, __pb_i);\n'
                 code += '            const char *__pb_prefix = "%s";\n' % prefix
                 code += '            if (!pb_validate_string(msg->%s[__pb_i], (pb_size_t)strlen(msg->%s[__pb_i]), __pb_prefix, PB_VALIDATE_RULE_PREFIX)) {\n' % (field_name, field_name)
-                code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "String must start with specified prefix");\n' % constraint_id
-                code += '                if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
+                code += '                PB_VALIDATE_RECORD(ctx, "%s", "String must start with specified prefix");\n' % constraint_id
+                code += '                if (PB_VALIDATE_SHOULD_EXIT(ctx)) { pb_validate_context_pop_index(&ctx); return false; }\n'
                 code += '            }\n'
                 code += '            pb_validate_context_pop_index(&ctx);\n'
                 code += '        }\n'
@@ -1549,8 +1408,8 @@ class ItemsRuleEmitter(RuleEmitter):
                 code += '            pb_validate_context_push_index(&ctx, __pb_i);\n'
                 code += '            const char *__pb_suffix = "%s";\n' % suffix
                 code += '            if (!pb_validate_string(msg->%s[__pb_i], (pb_size_t)strlen(msg->%s[__pb_i]), __pb_suffix, PB_VALIDATE_RULE_SUFFIX)) {\n' % (field_name, field_name)
-                code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "String must end with specified suffix");\n' % constraint_id
-                code += '                if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
+                code += '                PB_VALIDATE_RECORD(ctx, "%s", "String must end with specified suffix");\n' % constraint_id
+                code += '                if (PB_VALIDATE_SHOULD_EXIT(ctx)) { pb_validate_context_pop_index(&ctx); return false; }\n'
                 code += '            }\n'
                 code += '            pb_validate_context_pop_index(&ctx);\n'
                 code += '        }\n'
@@ -1562,8 +1421,8 @@ class ItemsRuleEmitter(RuleEmitter):
                 code += '            pb_validate_context_push_index(&ctx, __pb_i);\n'
                 code += '            const char *__pb_needle = "%s";\n' % needle
                 code += '            if (!pb_validate_string(msg->%s[__pb_i], (pb_size_t)strlen(msg->%s[__pb_i]), __pb_needle, PB_VALIDATE_RULE_CONTAINS)) {\n' % (field_name, field_name)
-                code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain specified substring");\n' % constraint_id
-                code += '                if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
+                code += '                PB_VALIDATE_RECORD(ctx, "%s", "String must contain specified substring");\n' % constraint_id
+                code += '                if (PB_VALIDATE_SHOULD_EXIT(ctx)) { pb_validate_context_pop_index(&ctx); return false; }\n'
                 code += '            }\n'
                 code += '            pb_validate_context_pop_index(&ctx);\n'
                 code += '        }\n'
@@ -1573,8 +1432,8 @@ class ItemsRuleEmitter(RuleEmitter):
                 code += '        for (pb_size_t __pb_i = 0; __pb_i < msg->%s_count; ++__pb_i) {\n' % field_name
                 code += '            pb_validate_context_push_index(&ctx, __pb_i);\n'
                 code += '            if (!pb_validate_string(msg->%s[__pb_i], (pb_size_t)strlen(msg->%s[__pb_i]), NULL, PB_VALIDATE_RULE_ASCII)) {\n' % (field_name, field_name)
-                code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "String must contain only ASCII characters");\n' % constraint_id
-                code += '                if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
+                code += '                PB_VALIDATE_RECORD(ctx, "%s", "String must contain only ASCII characters");\n' % constraint_id
+                code += '                if (PB_VALIDATE_SHOULD_EXIT(ctx)) { pb_validate_context_pop_index(&ctx); return false; }\n'
                 code += '            }\n'
                 code += '            pb_validate_context_pop_index(&ctx);\n'
                 code += '        }\n'
@@ -1586,8 +1445,8 @@ class ItemsRuleEmitter(RuleEmitter):
                     code += '        for (pb_size_t __pb_i = 0; __pb_i < msg->%s_count; ++__pb_i) {\n' % field_name
                     code += '            pb_validate_context_push_index(&ctx, __pb_i);\n'
                     code += '            if (!pb_validate_string(msg->%s[__pb_i], (pb_size_t)strlen(msg->%s[__pb_i]), NULL, %s)) {\n' % (field_name, field_name, rule_enum)
-                    code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "String format validation failed");\n' % constraint_id
-                    code += '                if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
+                    code += '                PB_VALIDATE_RECORD(ctx, "%s", "String format validation failed");\n' % constraint_id
+                    code += '                if (PB_VALIDATE_SHOULD_EXIT(ctx)) { pb_validate_context_pop_index(&ctx); return false; }\n'
                     code += '            }\n'
                     code += '            pb_validate_context_pop_index(&ctx);\n'
                     code += '        }\n'
@@ -1605,8 +1464,8 @@ class ItemsRuleEmitter(RuleEmitter):
                     code += '                if (strcmp(msg->%s[__pb_i], __pb_allowed[__pb_k]) == 0) { __pb_match = true; break; }\n' % field_name
                     code += '            }\n'
                     code += '            if (!__pb_match) {\n'
-                    code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of allowed set");\n' % constraint_id
-                    code += '                if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
+                    code += '                PB_VALIDATE_RECORD(ctx, "%s", "Value must be one of allowed set");\n' % constraint_id
+                    code += '                if (PB_VALIDATE_SHOULD_EXIT(ctx)) { pb_validate_context_pop_index(&ctx); return false; }\n'
                     code += '            }\n'
                     code += '            pb_validate_context_pop_index(&ctx);\n'
                     code += '        }\n'
@@ -1617,8 +1476,8 @@ class ItemsRuleEmitter(RuleEmitter):
                     code += '        for (pb_size_t __pb_i = 0; __pb_i < msg->%s_count; ++__pb_i) {\n' % field_name
                     code += '            pb_validate_context_push_index(&ctx, __pb_i);\n'
                     code += '            if (!(%s)) {\n' % condition_str
-                    code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of allowed set");\n' % constraint_id
-                    code += '                if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
+                    code += '                PB_VALIDATE_RECORD(ctx, "%s", "Value must be one of allowed set");\n' % constraint_id
+                    code += '                if (PB_VALIDATE_SHOULD_EXIT(ctx)) { pb_validate_context_pop_index(&ctx); return false; }\n'
                     code += '            }\n'
                     code += '            pb_validate_context_pop_index(&ctx);\n'
                     code += '        }\n'
@@ -1636,8 +1495,8 @@ class ItemsRuleEmitter(RuleEmitter):
                     code += '                if (strcmp(msg->%s[__pb_i], __pb_blocked[__pb_k]) == 0) { __pb_forbidden = true; break; }\n' % field_name
                     code += '            }\n'
                     code += '            if (__pb_forbidden) {\n'
-                    code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value is in forbidden set");\n' % constraint_id
-                    code += '                if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
+                    code += '                PB_VALIDATE_RECORD(ctx, "%s", "Value is in forbidden set");\n' % constraint_id
+                    code += '                if (PB_VALIDATE_SHOULD_EXIT(ctx)) { pb_validate_context_pop_index(&ctx); return false; }\n'
                     code += '            }\n'
                     code += '            pb_validate_context_pop_index(&ctx);\n'
                     code += '        }\n'
@@ -1648,8 +1507,8 @@ class ItemsRuleEmitter(RuleEmitter):
                     code += '        for (pb_size_t __pb_i = 0; __pb_i < msg->%s_count; ++__pb_i) {\n' % field_name
                     code += '            pb_validate_context_push_index(&ctx, __pb_i);\n'
                     code += '            if (!(%s)) {\n' % condition_str
-                    code += '                pb_violations_add(violations, ctx.path_buffer, "%s", "Value is in forbidden set");\n' % constraint_id
-                    code += '                if (ctx.early_exit) { pb_validate_context_pop_index(&ctx); return false; }\n'
+                    code += '                PB_VALIDATE_RECORD(ctx, "%s", "Value is in forbidden set");\n' % constraint_id
+                    code += '                if (PB_VALIDATE_SHOULD_EXIT(ctx)) { pb_validate_context_pop_index(&ctx); return false; }\n'
                     code += '            }\n'
                     code += '            pb_validate_context_pop_index(&ctx);\n'
                     code += '        }\n'
@@ -1711,8 +1570,8 @@ class RequiredRuleEmitter(RuleEmitter):
         field = rule_ir.context.field
         if getattr(field, 'rules', None) == 'OPTIONAL':
             return ('        if (!msg->has_%s) {\n'
-                    '            pb_violations_add(violations, ctx.path_buffer, "%s", "Field is required");\n'
-                    '            if (ctx.early_exit) return false;\n'
+                    '            PB_VALIDATE_RECORD(ctx, "%s", "Field is required");\n'
+                    '            if (PB_VALIDATE_SHOULD_EXIT(ctx)) return false;\n'
                     '        }\n') % (rule_ir.field_name, rule_ir.constraint_id)
         return ''
 
@@ -1736,12 +1595,12 @@ class InNotInRuleEmitter(RuleEmitter):
                 if is_in:
                     conditions = ['strcmp(msg->%s, "%s") == 0' % (field_access, _escape_c_string(v)) for v in values]
                     condition_str = ' || '.join(conditions)
-                    return ('    if (!(%s)) { pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of allowed set"); if (ctx.early_exit) return false; }\n'
+                    return ('    if (!(%s)) { PB_VALIDATE_RECORD(ctx, "%s", "Value must be one of allowed set"); if (PB_VALIDATE_SHOULD_EXIT(ctx)) return false; }\n'
                            ) % (condition_str, rule_ir.constraint_id)
                 else:
                     conditions = ['strcmp(msg->%s, "%s") != 0' % (field_access, _escape_c_string(v)) for v in values]
                     condition_str = ' && '.join(conditions)
-                    return ('    if (!(%s)) { pb_violations_add(violations, ctx.path_buffer, "%s", "Value in forbidden set"); if (ctx.early_exit) return false; }\n'
+                    return ('    if (!(%s)) { PB_VALIDATE_RECORD(ctx, "%s", "Value in forbidden set"); if (PB_VALIDATE_SHOULD_EXIT(ctx)) return false; }\n'
                            ) % (condition_str, rule_ir.constraint_id)
             else:
                 if is_in:
@@ -1761,16 +1620,16 @@ class InNotInRuleEmitter(RuleEmitter):
                 condition_str = ' || '.join(conditions)
                 values_str = ', '.join(str(v) for v in values)
                 return ('        if (!(%s)) {\n'
-                        '            pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be one of: %s");\n'
-                        '            if (ctx.early_exit) return false;\n'
+                        '            PB_VALIDATE_RECORD(ctx, "%s", "Value must be one of: %s");\n'
+                        '            if (PB_VALIDATE_SHOULD_EXIT(ctx)) return false;\n'
                         '        }\n') % (condition_str, rule_ir.constraint_id, values_str)
             else:
                 conditions = ['msg->%s != %s' % (field_access, v) for v in values]
                 condition_str = ' && '.join(conditions)
                 values_str = ', '.join(str(v) for v in values)
                 return ('        if (!(%s)) {\n'
-                        '            pb_violations_add(violations, ctx.path_buffer, "%s", "Value must not be one of: %s");\n'
-                        '            if (ctx.early_exit) return false;\n'
+                        '            PB_VALIDATE_RECORD(ctx, "%s", "Value must not be one of: %s");\n'
+                        '            if (PB_VALIDATE_SHOULD_EXIT(ctx)) return false;\n'
                         '        }\n') % (condition_str, rule_ir.constraint_id, values_str)
 
 
@@ -1803,8 +1662,8 @@ class EnumDefinedRuleEmitter(RuleEmitter):
                     field_access = '%s.%s' % (ctx.oneof_name, field_name)
                     return ('    static const int __pb_%s_vals[] = { %s };\n'
                             '    if (!pb_validate_enum_defined_only((int)msg->%s, __pb_%s_vals, (pb_size_t)(sizeof(__pb_%s_vals)/sizeof(__pb_%s_vals[0])))) {\n'
-                            '        pb_violations_add(violations, ctx.path_buffer, "%s", "Value must be a defined enum value");\n'
-                            '        if (ctx.early_exit) return false;\n'
+                            '        PB_VALIDATE_RECORD(ctx, "%s", "Value must be a defined enum value");\n'
+                            '        if (PB_VALIDATE_SHOULD_EXIT(ctx)) return false;\n'
                             '    }\n') % (field_name, arr_values, field_access, field_name, field_name, field_name, rule_ir.constraint_id)
                 else:
                     return ('    static const int __pb_%s_vals[] = { %s };\n'
@@ -1893,23 +1752,39 @@ class RuleEmitterRegistry:
                           for line in code.splitlines(True))
         return '        if (msg->has_%s) {\n%s        }\n' % (field_name, indented)
     
-    def emit(self, rule_ir: RuleIR, proto_file: Any) -> str:
+    def emit(self, rule_ir: RuleIR, proto_file: Any, message_name: Optional[str] = None) -> str:
         """
         Emit C code for a rule using the appropriate emitter.
-        
+
         Args:
             rule_ir: The RuleIR to emit
             proto_file: The ProtoFile for context
-            
+            message_name: Name of the owning message, used only to make the
+                error below easier to locate
+
         Returns:
-            C code string, or a TODO comment if no emitter is registered
+            C code string.
+
+        Raises:
+            ValidationRuleNotImplementedError: if no emitter is registered
+                for this rule type. A declared validate.proto option with no
+                C-runtime enforcement is a generation-time error, not a
+                silently-ignored no-op -- see the "fail loudly" categories
+                documented in docs/validation.md.
         """
         emitter = self._emitters.get(rule_ir.rule_type)
         if emitter:
             code = emitter.emit(rule_ir, proto_file)
             # Wrap in optional check if field is optional
             return self._wrap_optional(rule_ir, code)
-        return '        /* TODO: Implement rule type %s */\n' % rule_ir.rule_type
+
+        location = 'message "%s"' % message_name if message_name else 'an unknown message'
+        if rule_ir.field_name:
+            location += ' field "%s"' % rule_ir.field_name
+        raise ValidationRuleNotImplementedError(
+            'validate.proto option "%s" (rule type %s) on %s has no C-runtime '
+            'enforcement yet. Remove it from the .proto, or wait for support.'
+            % (rule_ir.constraint_id, rule_ir.rule_type, location))
 
 
 # Global emitter registry instance
@@ -2259,22 +2134,24 @@ class ValidatorGenerator:
     # All code generation routes through the IR pipeline:
     #   ValidationRule → IRBuilder → RuleIR → RuleEmitter → C code
     
-    def _emit_rule(self, rule: ValidationRule, field: Any, 
-                   is_oneof: bool = False, oneof_name: str = '', 
-                   is_anonymous: bool = False) -> str:
+    def _emit_rule(self, rule: ValidationRule, field: Any,
+                   is_oneof: bool = False, oneof_name: str = '',
+                   is_anonymous: bool = False, message_name: Optional[str] = None) -> str:
         """
         Emit C code for a single validation rule using the IR pipeline.
-        
+
         This is the SINGLE authoritative code generation path. All rule emission
         must go through this method.
-        
+
         Args:
             rule: The ValidationRule to emit
             field: The field descriptor
             is_oneof: Whether this field is in a oneof group
             oneof_name: Name of the oneof group (if applicable)
             is_anonymous: Whether the oneof is anonymous
-            
+            message_name: Name of the owning message, used only to make a
+                ValidationRuleNotImplementedError (if raised) easier to locate
+
         Returns:
             C code string for this rule
         """
@@ -2283,76 +2160,12 @@ class ValidatorGenerator:
             context = FieldContext.for_oneof_member(field, oneof_name, is_anonymous)
         else:
             context = FieldContext.for_regular_field(field)
-        
+
         # Build RuleIR
         rule_ir = self.ir_builder.build_rule_ir(rule, context)
-        
+
         # Emit via emitter registry
-        return self.emitter_registry.emit(rule_ir, self.proto_file)
-    
-    def _emit_field_rules_from_ir(self, field_rule_set: FieldRuleSet) -> str:
-        """
-        Emit C code for all rules in a FieldRuleSet using the IR pipeline.
-        
-        Args:
-            field_rule_set: The FieldRuleSet containing all rules for a field
-            
-        Returns:
-            C code string for validating this field
-        """
-        code_parts = []
-        
-        for rule_ir in field_rule_set.rules:
-            code = self.emitter_registry.emit(rule_ir, self.proto_file)
-            if code:
-                code_parts.append(code)
-        
-        return ''.join(code_parts)
-    
-    def _emit_message_validation_from_ir(self, msg_rule_set: MessageRuleSet) -> str:
-        """
-        Emit the complete validation function body for a message using IR.
-        
-        This method demonstrates the pipeline-driven approach:
-        1. Iterate over FieldRuleSets and emit field validations
-        2. Iterate over OneofRuleSets and emit oneof validations
-        3. Emit message-level validations
-        
-        Args:
-            msg_rule_set: The complete MessageRuleSet for the message
-            
-        Returns:
-            C code string for the validation function body
-        """
-        lines = []
-        
-        # Emit field validations
-        for frs in msg_rule_set.field_rule_sets:
-            if frs.has_rules():
-                lines.append('    /* Validate field: %s */\n' % frs.field_name)
-                lines.append('    PB_VALIDATE_FIELD_BEGIN(ctx, "%s");\n' % frs.field_name)
-                lines.append(self._emit_field_rules_from_ir(frs))
-                lines.append('    PB_VALIDATE_FIELD_END(ctx);\n')
-                lines.append('\n')
-        
-        # Emit oneof validations
-        for ors in msg_rule_set.oneof_rule_sets:
-            lines.append('    /* Validate oneof: %s */\n' % ors.oneof_name)
-            lines.append('    PB_VALIDATE_ONEOF_BEGIN(ctx, msg, %s)\n' % ors.oneof_name)
-            
-            for member_frs in ors.member_rule_sets:
-                tag_name = '%s_%s_tag' % (msg_rule_set.struct_name, member_frs.field_name)
-                lines.append('    PB_VALIDATE_ONEOF_CASE(%s)\n' % tag_name)
-                lines.append('    PB_VALIDATE_FIELD_BEGIN(ctx, "%s");\n' % member_frs.field_name)
-                lines.append(self._emit_field_rules_from_ir(member_frs))
-                lines.append('    PB_VALIDATE_FIELD_END(ctx);\n')
-                lines.append('    PB_VALIDATE_ONEOF_CASE_END()\n')
-            
-            lines.append('    PB_VALIDATE_ONEOF_DEFAULT()\n')
-            lines.append('    PB_VALIDATE_ONEOF_END()\n')
-            lines.append('\n')
-        
-        return ''.join(lines)
+        return self.emitter_registry.emit(rule_ir, self.proto_file, message_name)
 
     def generate_source(self):
         """Generate validation source file content."""
@@ -2426,7 +2239,7 @@ class ValidatorGenerator:
                 yield '    PB_VALIDATE_FIELD_BEGIN(ctx, "%s");\n' % field_name
                 
                 for rule in field_validator.rules:
-                    yield self._emit_rule(rule, field)
+                    yield self._emit_rule(rule, field, message_name=struct_name)
 
                 # Automatic recursion for nested message fields
                 # When a field contains another message, we need to recursively
@@ -2521,8 +2334,9 @@ class ValidatorGenerator:
                     is_anonymous = getattr(oneof_obj, 'anonymous', False)
                     
                     for rule in member_fv.rules:
-                        yield self._emit_rule(rule, member_field, is_oneof=True, 
-                                             oneof_name=oneof_name, is_anonymous=is_anonymous)
+                        yield self._emit_rule(rule, member_field, is_oneof=True,
+                                             oneof_name=oneof_name, is_anonymous=is_anonymous,
+                                             message_name=struct_name)
                     
                     yield '    PB_VALIDATE_FIELD_END(ctx);\n'
                     yield '    PB_VALIDATE_ONEOF_CASE_END()\n'
@@ -2569,19 +2383,19 @@ class ValidatorGenerator:
     def _generate_message_rule_check(self, message: Any, rule: ValidationRule) -> str:
         """
         Generate code for a message-level validation rule using the IR pipeline.
-        
+
         Args:
             message: The message descriptor
             rule: The ValidationRule to generate code for
-            
+
         Returns:
             C code string implementing the rule check
+
+        Raises:
+            ValidationRuleNotImplementedError: if no emitter is registered for
+                this rule type (see RuleEmitterRegistry.emit) -- generation
+                fails loudly rather than silently producing no enforcement.
         """
-        # Build IR for message rule and emit via the pipeline
         context = FieldContext.for_message_rule()
         rule_ir = self.ir_builder.build_rule_ir(rule, context)
-        result = self.emitter_registry.emit(rule_ir, self.proto_file)
-        if result:
-            return result
-        # Fallback for unimplemented message rule types
-        return '    /* TODO: Implement message rule type %s */\n' % rule.rule_type
+        return self.emitter_registry.emit(rule_ir, self.proto_file, str(message.name))

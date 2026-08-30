@@ -22,7 +22,8 @@ The runtime intentionally uses stream abstractions instead of depending only on 
 ## Generator pieces
 
 - `<repo_root>/generator/nanopb_generator.py` is the main entrypoint and owns parsing, IR construction, naming, and C emission.
-- `<repo_root>/generator/nanopb_validator.py` extends generation when validation is enabled.
+- `<repo_root>/generator/nanopb_validator.py` is a dependency-free library that parses `(validate.*)` options into an IR and emits the C body of `pb_validate_<Message>()` functions from it; it has no protoc plugin entrypoint of its own.
+- `<repo_root>/generator/nanopb_validate_generator.py` is the actual `protoc-gen-nanopb-validate` plugin entrypoint. It drives `nanopb_validator.py` to emit `*_validate.h`/`*_validate.c`, and separately owns the packet-filter feature (`pkg_Msg_filter_udp`/`filter_tcp`, spliced into nanopb's own `.pb.h`/`.pb.c` via `--protoc-insertion-points`).
 - `<repo_root>/generator/proto/` contains generator-owned schema files used by the plugin itself.
 - `<repo_root>/generator/protoc-gen-nanopb` and related wrappers expose the generator as a `protoc` plugin.
 
@@ -33,11 +34,30 @@ The generator is the architectural center for schema semantics: if generated cod
 Validation is a full cross-cutting feature:
 
 - Schema options live in `<repo_root>/generator/proto/validate.proto`
-- Generation logic lives in `<repo_root>/generator/nanopb_validator.py`
+- Rule parsing and C emission live in `<repo_root>/generator/nanopb_validator.py`
+- The protoc plugin driving it (and the packet-filter feature) lives in `<repo_root>/generator/nanopb_validate_generator.py`
 - Runtime support lives in `<repo_root>/pb_validate.c` and `<repo_root>/pb_validate.h`
 - End-to-end tests live in `<repo_root>/tests/validation/`
 
 If you change any one of those layers, verify the others still agree.
+
+A `.proto` option with no C-runtime enforcement (e.g. `string.pattern`, which
+would need a regex engine) is a generation-time error, not a silently-ignored
+no-op: `nanopb_validator.ValidationRuleNotImplementedError`, raised either
+while parsing an unsupported option or from `RuleEmitterRegistry.emit()`'s
+fallback when no emitter is registered for a rule type, is caught in
+`nanopb_validate_generator.main_plugin()` and reported as a normal protoc
+plugin failure.
+
+The runtime distinguishes two build modes via a single compile-time macro,
+`PB_VALIDATE_DEBUG` (undefined by default): without it, `pb_validate_*`
+functions honor `PB_VALIDATE_EARLY_EXIT` (default on) and every macro's
+"record a violation" step is a lightweight, allocation-free struct write; with
+it defined, validation always collects every violation on a message (ignoring
+`PB_VALIDATE_EARLY_EXIT`) and numeric/string-length violations carry the
+actual/expected values in their message text. Generated `*_validate.c` files
+are identical in both modes -- the macros in `pb_validate.h` are what change,
+not the generated call sites -- so there is no separate generator flag for it.
 
 ## Design choices that show up in reviews
 

@@ -1,0 +1,7 @@
+syntax = "proto3";
+import "validate.proto";
+import "nanopb.proto";
+
+message Qux {
+    bytes b = 1 [(nanopb).max_size = 32, (validate.rules).bytes.pattern = "abc"];
+}

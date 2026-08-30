@@ -1,0 +1,13 @@
+syntax = "proto3";
+import "validate.proto";
+
+message Contact {
+    string email = 1;
+    string phone = 2;
+    string address = 3;
+
+    option (validate.message).at_least = {
+        n: 2
+        fields: ["email", "phone", "address"]
+    };
+}

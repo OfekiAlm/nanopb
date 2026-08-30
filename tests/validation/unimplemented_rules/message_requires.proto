@@ -1,0 +1,9 @@
+syntax = "proto3";
+import "validate.proto";
+
+message Address {
+    string city = 1;
+    string state = 2;
+
+    option (validate.message).requires = "state";
+}

@@ -946,6 +946,30 @@ class FilterEmitter(object):
 
     # -- source (.pb.c, insertion point "eof") ------------------------------
 
+    def _reject_lines(self, indent, reason, with_violations=False):
+        """Emit `return RET_REJECT;`, preceded (only in debug builds) by a
+        log of why through the pluggable PB_VALIDATE_FILTER_LOG hook.
+
+        The whole debug block is inside `#ifdef PB_VALIDATE_DEBUG`, so a
+        normal (non-debug) build carries none of this: no extra code, no
+        dependency on `violations` having been populated.
+        """
+        yield '%s#ifdef PB_VALIDATE_DEBUG\n' % indent
+        if with_violations:
+            yield '%s{\n' % indent
+            yield '%s    pb_size_t __pb_vi;\n' % indent
+            yield '%s    for (__pb_vi = 0; __pb_vi < violations.count; __pb_vi++) {\n' % indent
+            yield ('%s        PB_VALIDATE_FILTER_LOG("%s: %%s %%s: %%s", '
+                   'violations.violations[__pb_vi].field_path, '
+                   'violations.violations[__pb_vi].constraint_id, '
+                   'violations.violations[__pb_vi].message);\n') % (indent, reason)
+            yield '%s    }\n' % indent
+            yield '%s}\n' % indent
+        else:
+            yield '%sPB_VALIDATE_FILTER_LOG("%s");\n' % (indent, reason)
+        yield '%s#endif\n' % indent
+        yield '%sreturn %s;\n' % (indent, RET_REJECT)
+
     def source_lines(self):
         spec = self.spec
 
@@ -964,14 +988,16 @@ class FilterEmitter(object):
         yield '    %s envelope = %s;\n' % (spec.entry.ctype, spec.entry.init_zero)
         yield '\n'
         yield '    if (!pb_decode(&stream, &%s, &envelope)) {\n' % spec.entry.msgdesc
-        yield '        return %s;\n' % RET_REJECT
+        for line in self._reject_lines('        ', 'failed to decode %s' % spec.entry.fqn):
+            yield line
         yield '    }\n'
         yield '\n'
 
         if spec.entry.validator_func:
             yield '    /* Validate the entrypoint before looking at its payload. */\n'
             yield '    if (!%s(&envelope, &violations)) {\n' % spec.entry.validator_func
-            yield '        return %s;\n' % RET_REJECT
+            for line in self._reject_lines('        ', 'entrypoint validation failed', with_violations=True):
+                yield line
             yield '    }\n'
             yield '\n'
         else:
@@ -1017,13 +1043,16 @@ class FilterEmitter(object):
             if route.kind == Route.ONEOF_MESSAGE and route.target.validator_func:
                 yield '            if (!%s(&%s, &violations)) {\n' % (
                     route.target.validator_func, route.access)
-                yield '                return %s;\n' % RET_REJECT
+                for line in self._reject_lines('                ', '%s validation failed' % route.comment,
+                                                with_violations=True):
+                    yield line
                 yield '            }\n'
             yield '            return %s;\n' % RET_ALLOW
             yield '\n'
         yield '        default:\n'
         yield '            /* No arm set, or an arm this build does not know. */\n'
-        yield '            return %s;\n' % RET_REJECT
+        for line in self._reject_lines('            ', 'no oneof arm set, or an arm this build does not know'):
+            yield line
         yield '    }\n'
 
     def _any_dispatch(self):
@@ -1032,7 +1061,8 @@ class FilterEmitter(object):
 
         if spec.presence_expr:
             yield '    if (!%s) {\n' % spec.presence_expr
-            yield '        return %s; /* no payload carried */\n' % RET_REJECT
+            for line in self._reject_lines('        ', 'no payload carried'):
+                yield line
             yield '    }\n'
             yield '\n'
 
@@ -1042,7 +1072,8 @@ class FilterEmitter(object):
         yield '        uint32_t type_hash = 0;\n'
         yield '\n'
         yield '        if (type_url[0] == \'\\0\') {\n'
-        yield '            return %s; /* unidentified payload */\n' % RET_REJECT
+        for line in self._reject_lines('            ', 'unidentified payload (empty type_url)'):
+            yield line
         yield '        }\n'
         yield '\n'
         yield '        /* Cheap rolling hash so the switch below is a jump table; the\n'
@@ -1062,11 +1093,14 @@ class FilterEmitter(object):
             yield '                        %s.value.bytes, %s.value.size);\n' % (access, access)
             yield '\n'
             yield '                    if (!pb_decode(&payload_stream, &%s, &payload)) {\n' % target.msgdesc
-            yield '                        return %s;\n' % RET_REJECT
+            for line in self._reject_lines('                        ', 'failed to decode payload for %s' % route.type_url):
+                yield line
             yield '                    }\n'
             if target.validator_func:
                 yield '                    if (!%s(&payload, &violations)) {\n' % target.validator_func
-                yield '                        return %s;\n' % RET_REJECT
+                for line in self._reject_lines('                        ', '%s payload validation failed' % route.type_url,
+                                                with_violations=True):
+                    yield line
                 yield '                    }\n'
             yield '                    return %s;\n' % RET_ALLOW
             yield '                }\n'
@@ -1079,7 +1113,8 @@ class FilterEmitter(object):
         yield '    }\n'
         yield '\n'
         yield '    /* type_url is not on the allow-list. */\n'
-        yield '    return %s;\n' % RET_REJECT
+        for line in self._reject_lines('    ', 'type_url not on the allow-list'):
+            yield line
 
     def _wrappers(self):
         """Transport shims over the transport-independent core."""
@@ -1103,6 +1138,23 @@ class FilterEmitter(object):
 # ---------------------------------------------------------------------------
 
 
+def _message_validate_rules(msg):
+    """Return the parsed (validate.message) MessageRules for a message, or None.
+
+    Mirrors field_validate_rules() above, but reads the message-level
+    extension (MessageOptions, field 1011) instead of the field-level one.
+    """
+    if validate_pb2 is None:
+        return None
+    try:
+        opts = msg.desc.options
+        if opts.HasExtension(validate_pb2.message):
+            return opts.Extensions[validate_pb2.message]
+    except (KeyError, AttributeError):
+        pass
+    return None
+
+
 def build_validator_generator(f, force_names=()):
     """Create and populate a ValidatorGenerator for one ProtoFile.
 
@@ -1114,23 +1166,23 @@ def build_validator_generator(f, force_names=()):
     """
     validator_gen = nanopb_validator.ValidatorGenerator(f)
 
-    # Add validators for all messages that carry rules.  Message-level rules
-    # are not supported: every rule lives on a field.
+    # Add validators for all messages that carry rules, field-level or
+    # message-level ((validate.message).requires/mutex/at_least).
     for msg in f.messages:
         if hasattr(msg, 'fields'):
-            validator_gen.add_message_validator(msg)
+            validator_gen.add_message_validator(msg, _message_validate_rules(msg))
 
     # Always emit validation functions, even when no message declares a rule,
     # so that a filter has something to call for every message on its path.
     if not validator_gen.validators:
         for msg in f.messages:
             if hasattr(msg, 'fields'):
-                validator_gen.force_add_message_validator(msg)
+                validator_gen.force_add_message_validator(msg, _message_validate_rules(msg))
 
     for fqn in force_names:
         msg = ir_message_for_fqn(f, fqn)
         if msg is not None and str(msg.name) not in validator_gen.validators:
-            validator_gen.force_add_message_validator(msg)
+            validator_gen.force_add_message_validator(msg, _message_validate_rules(msg))
 
     return validator_gen
 
@@ -1425,6 +1477,14 @@ def main_plugin():
 
     except GeneratorError as e:
         # Reported by protoc as a plugin failure, without a Python traceback.
+        response.ClearField('file')
+        response.error = str(e)
+    except nanopb_validator.ValidationRuleNotImplementedError as e:
+        # A declared validate.proto option has no C-runtime enforcement yet
+        # (see nanopb_validator.RuleEmitterRegistry.emit and the guard checks
+        # in FieldValidator._parse_string_rules/_parse_bytes_rules). Surfaced
+        # the same way as GeneratorError: a clean protoc failure, not a
+        # traceback, so it reads like any other "fix your .proto" error.
         response.ClearField('file')
         response.error = str(e)
 

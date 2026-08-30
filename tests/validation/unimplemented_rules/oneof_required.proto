@@ -1,0 +1,9 @@
+syntax = "proto3";
+import "validate.proto";
+
+message Config {
+    oneof setting {
+        string text = 1 [(validate.rules).oneof_required = true];
+        int32 number = 2;
+    }
+}
