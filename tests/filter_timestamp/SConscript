@@ -6,11 +6,11 @@ Import("env")
 # Clone environment to set validation-specific options
 test_env = env.Clone()
 
-# Enable validation code generation with timestamp envelope mode
+# This suite exercises the timestamp validators directly, not a packet filter,
+# so the plugin runs with no --filter option: validators only.
 # Also exclude validate.proto from #include list since it's only used for options
-# Specify envelope name for clarity
 test_env.Replace(NANOPBFLAGS = "-x,validate.proto")
-test_env.Replace(NANOPB_VALIDATE_FLAGS = "--envelope-mode=oneof,--envelope-name=FilterTimestampFuture")
+test_env.Replace(NANOPB_VALIDATE_FLAGS = "")
 
 # Remove -ansi flag since pb_validate.h requires C99 features (inline)
 # Also enable C99 for stdbool.h and time.h

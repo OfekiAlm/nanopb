@@ -1,16 +1,16 @@
 # Build and run filter_oneof test suite
-# Tests filter_tcp/filter_udp with oneof envelope pattern
+# Tests a oneof tunnel: FilterOneofMessage_filter_udp/_filter_tcp
 
 Import("env")
 
 # Clone environment to set validation-specific options
 test_env = env.Clone()
 
-# Enable validation code generation with oneof envelope mode
+# Generate a filter for the FilterOneofMessage entrypoint. It declares exactly
+# one oneof and no Any field, so --filter-mode=auto resolves to oneof dispatch.
 # Also exclude validate.proto from #include list since it's only used for options
-# Note: envelope-mode triggers filter_tcp/udp generation but has known issues
 test_env.Replace(NANOPBFLAGS = "-x,validate.proto")
-test_env.Replace(NANOPB_VALIDATE_FLAGS = "--envelope-mode=oneof,--envelope-name=FilterOneofMessage")
+test_env.Replace(NANOPB_VALIDATE_FLAGS = "--filter=FilterOneofMessage")
 
 # Remove -ansi flag since pb_validate.h requires C99 features (inline)
 # Also enable C99 for stdbool.h

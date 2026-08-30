@@ -268,12 +268,117 @@ if (!pb_validate_decode(&stream, MyMessage, &msg)) {
 Passed via `--nanopb-validate_opt=` (or before the `:` in
 `--nanopb-validate_out=`):
 
-- `--root-message=NAME`: Decode and validate every packet as this message type.
-- `--envelope-mode=oneof|any`: How to detect the envelope message. `oneof`
-  (default) looks for an opcode enum plus a oneof payload, or a bare oneof;
-  `any` looks for a `google.protobuf.Any` payload.
-- `--envelope-name=NAME`: Use this message as the envelope instead of
-  auto-detecting one.
+- `--filter=NAME`: Fully qualified name of the *protocol entrypoint* message,
+  e.g. `my_package.BaseMessage`. This is the only option that turns filter
+  generation on. Without it the plugin emits validators and nothing else.
+- `--filter-mode=auto|single|oneof|any`: How packets are identified.
+  `auto` (default) derives this from the entrypoint's descriptor. Giving the
+  mode explicitly *asserts* it: generation fails if the schema does not have
+  the required shape. Use `single` to decode every packet as the entrypoint
+  itself even when it declares a oneof or carries an `Any`.
+- `--filter-payloads=A;B;C`: Fully qualified payload types allowed inside a
+  `google.protobuf.Any` entrypoint, separated by `;`. Overrides the
+  `(validate.rules).any.in` allow-list. (`,` cannot be used as a separator
+  because protoc already uses it to separate plugin options.)
+
+#### What you must declare, and what is derived
+
+The filter is a security boundary, so nothing about the protocol shape is
+guessed. You name the entrypoint; everything structurally present in the
+descriptors is derived from them:
+
+| Derived automatically | Must be declared |
+|---|---|
+| That a field is `google.protobuf.Any` (exact type match) | Which message is the entrypoint (`--filter`) |
+| That the entrypoint has a oneof, its arms and their message types | The `Any` allow-list (`any.in` or `--filter-payloads`) |
+| Fully qualified `type_url`s, nested and imported types included | Anything the schema leaves ambiguous |
+| Whether each payload type has a validator to call | |
+
+Anything ambiguous is a **generation error**, never a pick. That includes an
+entrypoint with more than one oneof, more than one `Any` field, both an `Any`
+and a oneof, a repeated `Any`, an `Any` with no allow-list (a `not_in`
+deny-list cannot produce a dispatch table), or an allow-list entry naming a
+message that is not in the compiled descriptors. Each error names the
+conflicting fields and the option that resolves it.
+
+Note that an *opcode enum* alongside the payload oneof is not used for
+dispatch. The oneof tag on the wire is authoritative; correlating an enum to
+oneof arms by name is a guess, and a wrong guess routes a packet to the wrong
+validator. Constrain the opcode with an ordinary rule such as
+`(validate.rules).enum.defined_only = true` and it is checked when the
+entrypoint is validated, before any payload is inspected.
+
+#### Generated API
+
+For `--filter=my_package.BaseMessage` the plugin injects into the `.pb.h`:
+
+```c
+int my_package_BaseMessage_filter_udp(void *ctx, const uint8_t *packet,
+                                      size_t packet_size);
+int my_package_BaseMessage_filter_tcp(void *ctx, const uint8_t *packet,
+                                      size_t packet_size, bool is_to_server);
+```
+
+Both return `0` to allow the packet and `-1` to reject it, and both are thin
+wrappers over one transport-independent static core, so the filtering logic is
+not coupled to UDP or TCP. Symbols are namespaced by the entrypoint message, so
+several filtered `.proto` files can be linked into one binary.
+
+The filter decodes, validates the entrypoint, identifies the payload, decodes
+and validates it, and rejects anything it cannot account for -- an undecodable
+buffer, an unset or unknown oneof arm, an absent payload, or a `type_url` that
+is not on the allow-list.
+
+#### Examples
+
+`google.protobuf.Any` carries a string and a bytes field, and nanopb turns both
+into `pb_callback_t` unless an `.options` file gives them a `max_size`. The
+filter reads them directly, so an `Any` entrypoint needs, alongside your
+`.proto`:
+
+```
+google.protobuf.Any.type_url max_size:128
+google.protobuf.Any.value    max_size:512
+```
+
+sized for your protocol. Without it the injected filter will not compile. The
+plugin cannot check this for you: `google/protobuf/any.pb.h` is produced by a
+separate protoc invocation whose options this plugin does not see.
+
+`Any` tunnel, allow-list taken from the schema:
+
+```protobuf
+message BaseMessage {
+  google.protobuf.Any payload = 1 [
+    (nanopb).max_size = 512,
+    (validate.rules).any.in = "type.googleapis.com/my_package.Login",
+    (validate.rules).any.in = "type.googleapis.com/my_package.Telemetry"
+  ];
+}
+```
+
+    --nanopb-validate_opt=--filter=my_package.BaseMessage
+
+Same, with the allow-list pinned in the build instead:
+
+    --nanopb-validate_opt=--filter=my_package.BaseMessage,--filter-payloads=my_package.Login;my_package.Telemetry
+
+`oneof` tunnel (with or without an opcode field alongside it):
+
+    --nanopb-validate_opt=--filter=my_package.BaseMessage
+
+Single fixed message -- every packet is this type:
+
+    --nanopb-validate_opt=--filter=my_package.Foo
+
+...and to force that even when `Foo` declares a oneof you would otherwise
+dispatch on:
+
+    --nanopb-validate_opt=--filter=my_package.Foo,--filter-mode=single
+
+Apply `--filter` only to the invocation that compiles the `.proto` defining the
+entrypoint. If the named message is not in the descriptors the plugin was
+given, generation fails rather than silently producing no filter.
 
 ## Limitations
 

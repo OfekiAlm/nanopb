@@ -7,16 +7,73 @@ nanopb_validate_generator.py - project-specific validation and packet-filter cod
 
 This is a *separate* protoc plugin that layers our project-specific code on top
 of stock nanopb output.  It exists so that `nanopb_generator.py` can stay
-upstream nanopb: none of the logic here is patched into the upstream generator
-any more.
+upstream nanopb: none of the logic here is patched into the upstream generator.
 
 Responsibilities
 ----------------
 1. Emit ``<base>_validate.h`` / ``<base>_validate.c``.  The actual validator
    code is produced by :mod:`nanopb_validator`; this module only drives it.
-2. Inject our packet-filter code (``filter_udp`` / ``filter_tcp``) into the
+2. Generate a *packet filter* -- a decode/identify/validate/reject boundary --
+   for one nominated protocol entrypoint message, and inject it into the
    ``.pb.h`` and ``.pb.c`` that nanopb already generated, using protoc
    *insertion points* rather than by modifying the generator.
+
+The filter as a security boundary
+---------------------------------
+The generated filter sits at the entrance of a communication path::
+
+    untrusted bytes -> decode -> identify -> validate -> allow / reject
+
+It is a security boundary, so the generator follows a strict policy:
+
+  * unknown     -> reject at runtime
+  * ambiguous   -> generation error
+  * unsupported -> generation error
+  * invalid     -> reject at runtime
+
+Nothing about the protocol shape is guessed.  The user names the entrypoint
+message; everything that is structurally present in the descriptors (that a
+field is ``google.protobuf.Any``, that a oneof exists, its arms and their
+types, the ``any.in`` allow-list) is derived from them; anything ambiguous is
+a hard error rather than a pick.
+
+Architecture
+------------
+The pipeline is layered so that no stage needs to understand the previous
+one's inputs::
+
+    CLI parameter        FilterOptions          (pure configuration)
+          |
+          v
+    descriptors          DescriptorIndex        (FQN -> DescriptorProto; the
+          |                                      semantic truth, unmangled)
+          v
+    analysis             ProtocolAnalyzer       (descriptors + nanopb IR)
+          |
+          v
+    resolved model       FilterSpec             (fully resolved, C names baked in)
+          |
+          v
+    emission             FilterEmitter          (FilterSpec -> C text; knows
+                                                 nothing about the CLI)
+
+The descriptors are the source of truth for protocol *semantics*; the nanopb IR
+(:func:`nanopb_generator.parse_file`) is consulted only as a *C name oracle*, so
+that the emitted code uses exactly the identifiers nanopb wrote into the .pb.h.
+
+Generated API
+-------------
+For an entrypoint ``my_package.BaseMessage`` the filter is exposed as::
+
+    int my_package_BaseMessage_filter_udp(void *ctx, const uint8_t *packet,
+                                          size_t packet_size);
+    int my_package_BaseMessage_filter_tcp(void *ctx, const uint8_t *packet,
+                                          size_t packet_size, bool is_to_server);
+
+Both are thin wrappers over one transport-independent static core, so the
+filtering logic is not coupled to UDP or TCP.  Returns 0 to allow, -1 to reject.
+Symbols are namespaced by the entrypoint message, so several filtered .proto
+files can be linked into one binary.
 
 How the injection works
 -----------------------
@@ -32,9 +89,9 @@ struct body, so it is unusable for us.  That leaves:
     ===============  ===============  =========================================
     Target           Insertion point  What we inject
     ===============  ===============  =========================================
-    ``<base>.pb.h``  ``eof``          opcode enum alias + filter declarations
-    ``<base>.pb.c``  ``includes``     pb_encode.h / pb_decode.h / _validate.h
-    ``<base>.pb.c``  ``eof``          validate_message() + filter bodies
+    ``<base>.pb.h``  ``eof``          filter declarations
+    ``<base>.pb.c``  ``includes``     pb_decode.h / _validate.h
+    ``<base>.pb.c``  ``eof``          filter core + transport wrappers
     ===============  ===============  =========================================
 
 Ordering requirement
@@ -45,7 +102,7 @@ run first, and with insertion points enabled::
 
     protoc \\
       --nanopb_out=--protoc-insertion-points,-x,validate.proto:. \\
-      --nanopb-validate_out=--root-message=pkg.Packet,-x,validate.proto:. \\
+      --nanopb-validate_out=--filter=pkg.BaseMessage,-x,validate.proto:. \\
       myfile.proto
 
 Options that affect C naming (``-C``, ``--custom-style``, ``-s``, ``-f``,
@@ -65,6 +122,8 @@ from __future__ import unicode_literals
 import os
 import shlex
 import sys
+
+from collections import OrderedDict
 
 # The heavy lifting - descriptor parsing, option handling, naming styles - is
 # all reused from nanopb_generator.  Importing it also builds nanopb_pb2 and
@@ -103,6 +162,18 @@ class GeneratorError(Exception):
     """Raised for user-facing errors that should surface as a protoc failure."""
 
 
+# Fully qualified name of the well-known Any type, as it appears in
+# FieldDescriptorProto.type_name (which is always leading-dot qualified).
+ANY_TYPE_NAME = '.google.protobuf.Any'
+
+# Default host portion of a type_url, as used by the protobuf runtimes.
+DEFAULT_TYPE_URL_HOST = 'type.googleapis.com'
+
+# Filter return codes.  0 allows the packet through, -1 rejects it.
+RET_ALLOW = '0'
+RET_REJECT = '-1'
+
+
 # ---------------------------------------------------------------------------
 #                        Validation rule IR enrichment
 # ---------------------------------------------------------------------------
@@ -139,590 +210,892 @@ def attach_validate_rules(f):
                     getattr(member, 'tag', None), None)
 
 
-# ---------------------------------------------------------------------------
-#                        Envelope / root-message discovery
-# ---------------------------------------------------------------------------
-#
-# The filters need to know which message to decode a packet as.  There are
-# three supported ways to determine that, checked in this order:
-#
-#   1. --root-message=NAME    explicit; decode every packet as that message
-#   2. --envelope-mode=any    a message carrying a google.protobuf.Any payload
-#   3. --envelope-mode=oneof  a message with an opcode enum + oneof payload,
-#                             or just a oneof payload
-#
-# All three work purely off the nanopb IR, so the names they produce match the
-# names nanopb emitted into the .pb.h.
-
-
-def find_message_by_name(f, message_name):
-    """Find a message by its fully qualified name or simple name.
-
-    Args:
-        f: The nanopb ProtoFile.
-        message_name: Name like "mypkg.Packet", "mypkg.sub.Packet", or "Packet".
-
-    Returns:
-        The Message object if found, None otherwise.
-    """
-    if not message_name:
+def field_validate_rules(field_desc):
+    """Return the parsed ``(validate.rules)`` for a FieldDescriptorProto, or None."""
+    if validate_pb2 is None:
         return None
-
-    # Normalize the message name: remove leading dots
-    normalized_name = message_name.lstrip('.')
-
-    # Build package prefix
-    pkg_prefix = f.fdesc.package + '.' if f.fdesc.package else ''
-
-    for msg in f.messages:
-        # msg.name is like "chat_ClientMessage" or "mypackage_sub_Packet"
-        # We need to match against various name forms
-        msg_name_str = str(msg.name)
-
-        # Extract the simple message name (last part after underscore)
-        msg_name_parts = msg_name_str.split('_')
-        simple_name = msg_name_parts[-1] if len(msg_name_parts) > 1 else msg_name_str
-
-        # Try to reconstruct the fully qualified name.
-        # If package is "mypkg" and msg.name is "mypkg_sub_Packet", then the
-        # fully qualified name is "mypkg.sub.Packet".
-        if len(msg_name_parts) > 1 and f.fdesc.package:
-            pkg_parts = f.fdesc.package.split('.')
-            # Check that msg_name_parts has enough elements to match pkg_parts
-            if len(msg_name_parts) >= len(pkg_parts) and msg_name_parts[:len(pkg_parts)] == pkg_parts:
-                remaining_parts = msg_name_parts[len(pkg_parts):]
-            else:
-                remaining_parts = msg_name_parts
-            full_qualified_name = pkg_prefix + '.'.join(remaining_parts)
-        else:
-            full_qualified_name = pkg_prefix + simple_name
-
-        # Match against:
-        # 1. Fully qualified name: "mypkg.Packet"
-        # 2. Simple name: "Packet"
-        # 3. Partial qualified name: "sub.Packet" (for nested messages)
-        if normalized_name == full_qualified_name:
-            return msg
-        if normalized_name == simple_name:
-            return msg
-        if full_qualified_name.endswith('.' + normalized_name):
-            return msg
-        # Also try matching against the raw msg.name (underscore-separated)
-        if normalized_name.replace('.', '_') == msg_name_str:
-            return msg
-
+    try:
+        if field_desc.options.HasExtension(validate_pb2.rules):
+            return field_desc.options.Extensions[validate_pb2.rules]
+    except (KeyError, AttributeError):
+        pass
     return None
 
 
-def detect_envelope_pattern(f, envelope_name=None):
-    """Detect an Envelope message with an enum + oneof payload, or just a oneof.
+# ---------------------------------------------------------------------------
+#                    Descriptor layer: the semantic truth
+# ---------------------------------------------------------------------------
+#
+# Everything about *what the protocol is* is decided here, against the pristine
+# FileDescriptorProtos that protoc handed us.  The nanopb IR is deliberately not
+# consulted at this layer: its type names are mangled by -C / mangle_names /
+# --custom-style, and its `msg.desc` copies have had field type_names rewritten.
 
-    Returns (envelope_msg, opcode_field, opcode_enum, oneof_field,
-    opcode_to_msg_map) or None.  For oneof-only patterns, opcode_field,
-    opcode_enum and opcode_to_msg_map are None.
 
-    Args:
-        f: The nanopb ProtoFile.
-        envelope_name: Optional envelope message name.  If given, only that
-            message is considered.
+class DescriptorEntry(object):
+    """One message, identified by its protobuf fully qualified name."""
+
+    __slots__ = ('fqn', 'filename', 'desc')
+
+    def __init__(self, fqn, filename, desc):
+        self.fqn = fqn
+        self.filename = filename
+        self.desc = desc
+
+    def __repr__(self):
+        return 'DescriptorEntry(%r, %r)' % (self.fqn, self.filename)
+
+
+class DescriptorIndex(object):
+    """Fully qualified name -> :class:`DescriptorEntry` for the whole request.
+
+    Built once per protoc invocation from ``request.proto_file``, which contains
+    every file the compilation transitively depends on.  Lookups are exact: a
+    security filter must never resolve a name by fuzzy matching.
     """
-    messages_to_check = f.messages
 
-    # If envelope_name is specified, filter to just that message
-    if envelope_name:
-        messages_to_check = [msg for msg in f.messages
-                             if str(msg.name).split('_')[-1].lower() == envelope_name.lower()]
+    def __init__(self, fdescs):
+        self.by_fqn = OrderedDict()
+        for fdesc in fdescs:
+            for fqn, desc in self._walk(fdesc):
+                # First definition wins; duplicate FQNs across files are a
+                # protoc-level error we will never see here.
+                self.by_fqn.setdefault(fqn, DescriptorEntry(fqn, fdesc.name, desc))
 
-    for msg in messages_to_check:
-        # Look for a message with both an enum field and a oneof
-        enum_field = None
-        oneof_field = None
+    @staticmethod
+    def _walk(fdesc):
+        """Yield (fqn, DescriptorProto) for every message, nested ones included."""
+        def rec(prefix, messages):
+            for msg in messages:
+                fqn = prefix + '.' + msg.name if prefix else msg.name
+                yield fqn, msg
+                for item in rec(fqn, msg.nested_type):
+                    yield item
 
-        for field in msg.fields:
-            # Check if this is an enum field (potential opcode) - ENUM or UENUM
-            if hasattr(field, 'pbtype') and field.pbtype in ('ENUM', 'UENUM'):
-                enum_field = field
-            # Check if this is a oneof
-            elif isinstance(field, OneOf):
-                oneof_field = field
+        for item in rec(fdesc.package, fdesc.message_type):
+            yield item
 
-        # If we found both an enum and a oneof, this is likely an envelope with opcode
-        if enum_field and oneof_field:
-            # Try to find the enum definition
-            opcode_enum = None
-            for enum in f.enums:
-                if str(enum.names) == str(enum_field.ctype):
-                    opcode_enum = enum
-                    break
+    def lookup(self, name):
+        """Resolve a fully qualified message name.  Returns None if unknown."""
+        if not name:
+            return None
+        return self.by_fqn.get(name.lstrip('.'))
 
-            if not opcode_enum:
-                continue
-
-            # Build mapping from enum values to message types in the oneof.
-            # This requires matching enum value names to oneof field names.
-            opcode_to_msg_map = {}
-
-            for enum_name, enum_value in opcode_enum.values:
-                # Get the last part of the enum name (e.g. "OP_LOGIN" -> "LOGIN")
-                enum_suffix = str(enum_name).split('_')[-1].lower()
-
-                # Try to match with oneof field names
-                for oneof_subfield in oneof_field.fields:
-                    field_name_lower = oneof_subfield.name.lower()
-                    if enum_suffix == field_name_lower or enum_suffix in field_name_lower:
-                        opcode_to_msg_map[enum_value] = oneof_subfield
-                        break
-
-            # If we have at least one mapping, consider this a valid envelope pattern
-            if opcode_to_msg_map:
-                return (msg, enum_field, opcode_enum, oneof_field, opcode_to_msg_map)
-
-        # If we found just a oneof (no enum), this is a simpler envelope pattern
-        elif oneof_field:
-            return (msg, None, None, oneof_field, None)
-
-    return None
+    def candidates(self, filename=None):
+        """Sorted FQNs, optionally restricted to one file.  Used in error text."""
+        return sorted(entry.fqn for entry in self.by_fqn.values()
+                      if filename is None or entry.filename == filename)
 
 
-def detect_any_envelope_pattern(f, envelope_name=None):
-    """Detect an Envelope message carrying a google.protobuf.Any payload.
+def real_oneof_indices(desc):
+    """Indices of the *user-written* oneofs in a DescriptorProto.
 
-    Returns (envelope_msg, any_field, all_msg_types) or None.
-
-    Args:
-        f: The nanopb ProtoFile.
-        envelope_name: Optional envelope message name.  If given, only that
-            message is considered.
+    proto3 ``optional`` fields are represented as single-member synthetic
+    oneofs.  They carry no dispatch meaning and must not be mistaken for a
+    payload union.
     """
-    messages_to_check = f.messages
-
-    # If envelope_name is specified, filter to just that message
-    if envelope_name:
-        messages_to_check = [msg for msg in f.messages
-                             if str(msg.name).split('_')[-1].lower() == envelope_name.lower()]
-
-    for msg in messages_to_check:
-        # Look for a message with a google.protobuf.Any field.
-        # The ctype for Any fields will be 'google_protobuf_Any' or similar.
-        any_field = None
-
-        for field in msg.fields:
-            if hasattr(field, 'ctype'):
-                ctype_str = str(field.ctype).lower()
-                if 'any' in ctype_str and 'google' in ctype_str:
-                    any_field = field
-                    break
-
-        if any_field:
-            # Collect all message types that could be payloads
-            # (excluding the envelope itself)
-            all_msg_types = [other for other in f.messages if other != msg]
-            return (msg, any_field, all_msg_types)
-
-    return None
+    synthetic = set()
+    for field in desc.field:
+        if field.HasField('oneof_index') and getattr(field, 'proto3_optional', False):
+            synthetic.add(field.oneof_index)
+    return [i for i in range(len(desc.oneof_decl)) if i not in synthetic]
 
 
-def resolve_filter_target(f, options):
-    """Work out what the filters should decode, based on the command line.
+def oneof_members(desc, index):
+    """FieldDescriptorProtos belonging to oneof `index`, in declaration order."""
+    return [field for field in desc.field
+            if field.HasField('oneof_index') and field.oneof_index == index]
 
-    Returns a (root_message, any_envelope_info, envelope_info) triple in which
-    at most one entry is non-None, or (None, None, None) when this file has
-    nothing filterable.
 
-    Raises:
-        GeneratorError: if --root-message names a message that does not exist.
+def any_payload_fields(desc):
+    """Singular fields of type ``google.protobuf.Any``.
+
+    The check is an exact match on the descriptor's ``type_name``; substring
+    matching on mangled C names would accept unrelated types such as
+    ``google.protobuf.AnyValue`` or a user type in a package named ``google``.
     """
-    root_message_name = getattr(options, 'root_message', None)
-    envelope_mode = getattr(options, 'envelope_mode', 'oneof')
-    envelope_name = getattr(options, 'envelope_name', None)
+    fields = []
+    for field in desc.field:
+        if field.type_name == ANY_TYPE_NAME:
+            fields.append(field)
+    return fields
 
-    if root_message_name:
-        root_message = find_message_by_name(f, root_message_name)
-        if not root_message:
-            available = '\n'.join('  - %s' % str(msg.name) for msg in f.messages)
+
+# ---------------------------------------------------------------------------
+#                     Resolved filter model (the IR)
+# ---------------------------------------------------------------------------
+#
+# Everything below this point works off a FilterSpec alone.  The emitter never
+# sees the CLI, the descriptors, or the nanopb IR: every C identifier it needs
+# has already been resolved and baked in.
+
+
+class Strategy(object):
+    """How the filter identifies the message carried by a packet."""
+
+    SINGLE = 'single'   # every packet is the entrypoint message, full stop
+    ONEOF = 'oneof'     # entrypoint carries a oneof payload; dispatch on the tag
+    ANY = 'any'         # entrypoint carries a google.protobuf.Any; dispatch on type_url
+
+    ALL = (SINGLE, ONEOF, ANY)
+
+
+class MessageRef(object):
+    """A message resolved all the way down to the C identifiers nanopb emitted."""
+
+    __slots__ = ('fqn', 'ctype', 'init_zero', 'msgdesc', 'validator_func',
+                 'validate_header')
+
+    def __init__(self, fqn, ctype, init_zero, msgdesc, validator_func, validate_header):
+        self.fqn = fqn
+        self.ctype = ctype                    # e.g. "my_package_BaseMessage"
+        self.init_zero = init_zero            # e.g. "my_package_BaseMessage_init_zero"
+        self.msgdesc = msgdesc                # e.g. "my_package_BaseMessage_msg"
+        self.validator_func = validator_func  # pb_validate_* name, or None if no rules
+        self.validate_header = validate_header  # "<base>_validate.h" if cross-file
+
+    def __repr__(self):
+        return 'MessageRef(%r)' % (self.fqn,)
+
+
+class Route(object):
+    """One arm of the filter's dispatch table."""
+
+    __slots__ = ('kind', 'case_label', 'comment', 'target', 'access', 'type_url')
+
+    #: payload is a submessage reached through the oneof union
+    ONEOF_MESSAGE = 'oneof-message'
+    #: payload is a scalar oneof arm; it has no descriptor of its own and is
+    #: already covered by validating the entrypoint message
+    ONEOF_SCALAR = 'oneof-scalar'
+    #: payload is a serialized message inside a google.protobuf.Any
+    ANY_PAYLOAD = 'any-payload'
+
+    def __init__(self, kind, case_label, comment, target=None, access=None, type_url=None):
+        self.kind = kind
+        self.case_label = case_label
+        self.comment = comment
+        self.target = target
+        self.access = access
+        self.type_url = type_url
+
+
+class FilterSpec(object):
+    """A fully resolved filter, ready to emit.
+
+    Attributes:
+        entry: :class:`MessageRef` for the protocol entrypoint.
+        strategy: one of :class:`Strategy`.
+        symbol_prefix: C symbol prefix for the generated functions.
+        dispatch_expr: C expression the dispatch switches on, or None for SINGLE.
+        presence_expr: C expression guarding payload presence, or None.
+        routes: tuple of :class:`Route`.
+        extra_headers: extra ``*_validate.h`` includes the filter body needs.
+    """
+
+    __slots__ = ('entry', 'strategy', 'symbol_prefix', 'dispatch_expr',
+                 'presence_expr', 'routes', 'extra_headers')
+
+    def __init__(self, entry, strategy, symbol_prefix, dispatch_expr=None,
+                 presence_expr=None, routes=(), extra_headers=()):
+        self.entry = entry
+        self.strategy = strategy
+        self.symbol_prefix = symbol_prefix
+        self.dispatch_expr = dispatch_expr
+        self.presence_expr = presence_expr
+        self.routes = tuple(routes)
+        self.extra_headers = tuple(extra_headers)
+
+    @property
+    def udp_signature(self):
+        return ('int %s_filter_udp(void *ctx, const uint8_t *packet, size_t packet_size)'
+                % self.symbol_prefix)
+
+    @property
+    def tcp_signature(self):
+        return ('int %s_filter_tcp(void *ctx, const uint8_t *packet, size_t packet_size, '
+                'bool is_to_server)' % self.symbol_prefix)
+
+    @property
+    def core_signature(self):
+        return ('static int %s_filter_core(const uint8_t *packet, size_t packet_size)'
+                % self.symbol_prefix)
+
+    #: Messages whose validators must exist because the filter calls them.
+    def required_validators(self):
+        names = [self.entry.fqn]
+        for route in self.routes:
+            if route.target is not None:
+                names.append(route.target.fqn)
+        return names
+
+
+# ---------------------------------------------------------------------------
+#                          C naming (the name oracle)
+# ---------------------------------------------------------------------------
+#
+# The one place that is allowed to translate protobuf names into C identifiers.
+# It goes through the nanopb IR so that the result is byte-for-byte what nanopb
+# wrote into the .pb.h, under whatever naming style and mangling is in effect.
+
+
+def ir_message_for_fqn(f, fqn):
+    """Find the nanopb IR Message for a fully qualified protobuf name.
+
+    ``ProtoFile.add_dependency`` keys ``f.dependencies`` by the *canonical*
+    unmangled underscore form of each message name -- exactly ``fqn`` with dots
+    replaced by underscores -- for this file and every dependency added to it.
+    Reusing that index means mangling options are handled for free.
+    """
+    return f.dependencies.get(fqn.replace('.', '_'))
+
+
+def validator_func_name(ir_msg):
+    """Name of the ``pb_validate_*`` function nanopb_validator emits for a message."""
+    return 'pb_validate_' + str(ir_msg.name).replace('.', '_')
+
+
+def validate_header_for(ir_msg):
+    """``<base>_validate.h`` for the file that defines `ir_msg`, or None."""
+    protofile = getattr(ir_msg, 'protofile', None)
+    if protofile is None:
+        return None
+    base = protofile.fdesc.name
+    if base.endswith('.proto'):
+        base = base[:-6]
+    return base + '_validate.h'
+
+
+def strip_proto_ext(filename):
+    return filename[:-6] if filename.endswith('.proto') else filename
+
+
+def type_url_hash(text):
+    """The rolling hash the generated C computes over a type_url.
+
+    Kept in lockstep with the loop emitted by :meth:`FilterEmitter._any_dispatch`.
+    """
+    value = 0
+    for char in text:
+        value = (value * 31 + ord(char)) & 0xFFFFFFFF
+    return value
+
+
+# ---------------------------------------------------------------------------
+#                            Protocol analysis
+# ---------------------------------------------------------------------------
+
+
+class ProtocolAnalyzer(object):
+    """Turn (CLI options + descriptors + nanopb IR) into a :class:`FilterSpec`.
+
+    This is the only stage that makes decisions about protocol shape, and it
+    makes them exhaustively: every case it does not fully understand raises
+    :class:`GeneratorError` instead of choosing.
+    """
+
+    def __init__(self, protofile, index, filter_options, validator_lookup):
+        self.f = protofile
+        self.index = index
+        self.opts = filter_options
+        # callable(ProtoFile, ir_msg) -> bool: will a pb_validate_* be emitted?
+        self.validator_lookup = validator_lookup
+
+    # -- entry points -------------------------------------------------------
+
+    def analyze(self):
+        """Return a FilterSpec, or None if this file hosts no filter.
+
+        None means "the requested entrypoint lives in another file of this
+        compilation", which is normal when one set of options is applied to
+        several .proto files.  A genuinely unresolvable entrypoint is an error.
+        """
+        if not self.opts.filter_message:
+            return None
+
+        entry_desc = self.index.lookup(self.opts.filter_message)
+        if entry_desc is None:
+            # List this file's own messages: the well-known types that also sit
+            # in the index are never what the user meant, and burying the real
+            # candidates under them makes the error useless.
+            local = self.index.candidates(self.f.fdesc.name)
             raise GeneratorError(
-                "--root-message '%s' does not match any message in the loaded "
-                "descriptors.\nAvailable messages:\n%s" % (root_message_name, available))
-        return (root_message, None, None)
+                "--filter=%s does not name any message in the compiled "
+                "descriptors.\nUse a fully qualified name. Messages defined in "
+                "%s:\n%s"
+                % (self.opts.filter_message, self.f.fdesc.name,
+                   '\n'.join('  - ' + name for name in local) or '  (none)'))
 
-    if envelope_mode == 'any':
-        return (None, detect_any_envelope_pattern(f, envelope_name), None)
+        if entry_desc.filename != self.f.fdesc.name:
+            # The filter belongs to whichever file defines the entrypoint.
+            return None
 
-    return (None, None, detect_envelope_pattern(f, envelope_name))
+        entry_ir = ir_message_for_fqn(self.f, entry_desc.fqn)
+        if entry_ir is None:
+            raise GeneratorError(
+                "--filter=%s resolved to a message that nanopb did not generate "
+                "a struct for (it may be excluded by skip_message or "
+                "discard_deprecated). No filter can be generated for it."
+                % entry_desc.fqn)
+
+        strategy = self._select_strategy(entry_desc)
+        entry_ref = self._message_ref(entry_desc.fqn, entry_ir)
+        symbol_prefix = Globals.naming_style.func_name(entry_ir.name)
+
+        if strategy == Strategy.SINGLE:
+            return FilterSpec(entry_ref, strategy, symbol_prefix)
+        if strategy == Strategy.ONEOF:
+            return self._build_oneof_spec(entry_desc, entry_ir, entry_ref, symbol_prefix)
+        return self._build_any_spec(entry_desc, entry_ir, entry_ref, symbol_prefix)
+
+    # -- strategy selection -------------------------------------------------
+
+    def _select_strategy(self, entry_desc):
+        """Decide how packets are identified, or refuse to.
+
+        `--filter-mode` defaults to `auto`, which derives the shape from the
+        descriptors.  Anything the schema leaves ambiguous is an error: the user
+        resolves it by asserting a mode explicitly, which is then checked
+        against the schema rather than trusted.
+        """
+        desc = entry_desc.desc
+        any_fields = any_payload_fields(desc)
+        oneofs = real_oneof_indices(desc)
+        requested = self.opts.filter_mode
+
+        if requested == Strategy.SINGLE:
+            return Strategy.SINGLE
+
+        if requested == Strategy.ANY:
+            if not any_fields:
+                raise GeneratorError(
+                    "--filter-mode=any, but '%s' has no google.protobuf.Any field."
+                    % entry_desc.fqn)
+            if len(any_fields) > 1:
+                raise GeneratorError(self._multi_any_message(entry_desc, any_fields))
+            self._reject_repeated(entry_desc, any_fields[0])
+            return Strategy.ANY
+
+        if requested == Strategy.ONEOF:
+            if not oneofs:
+                raise GeneratorError(
+                    "--filter-mode=oneof, but '%s' declares no oneof."
+                    % entry_desc.fqn)
+            if len(oneofs) > 1:
+                raise GeneratorError(self._multi_oneof_message(entry_desc, oneofs))
+            return Strategy.ONEOF
+
+        # requested == 'auto': derive, but never guess.
+        if len(any_fields) > 1:
+            raise GeneratorError(self._multi_any_message(entry_desc, any_fields))
+        if len(oneofs) > 1:
+            raise GeneratorError(self._multi_oneof_message(entry_desc, oneofs))
+        if any_fields and oneofs:
+            raise GeneratorError(
+                "'%s' carries both a google.protobuf.Any field ('%s') and a oneof "
+                "('%s'), so the payload it dispatches on is ambiguous.\n"
+                "Pick one explicitly with --filter-mode=any, --filter-mode=oneof "
+                "or --filter-mode=single."
+                % (entry_desc.fqn, any_fields[0].name,
+                   desc.oneof_decl[oneofs[0]].name))
+        if any_fields:
+            self._reject_repeated(entry_desc, any_fields[0])
+            return Strategy.ANY
+        if oneofs:
+            return Strategy.ONEOF
+        return Strategy.SINGLE
+
+    def _reject_repeated(self, entry_desc, field_desc):
+        label_repeated = nanopb.descriptor.FieldDescriptorProto.LABEL_REPEATED
+        if field_desc.label == label_repeated:
+            raise GeneratorError(
+                "'%s.%s' is a repeated google.protobuf.Any. A filter cannot "
+                "dispatch on a repeated payload; wrap it in a singular field or "
+                "use --filter-mode=single."
+                % (entry_desc.fqn, field_desc.name))
+
+    def _multi_any_message(self, entry_desc, any_fields):
+        return (
+            "'%s' has %d google.protobuf.Any fields (%s), so the payload the "
+            "filter should dispatch on is ambiguous.\nA filter entrypoint must "
+            "carry exactly one Any field, or use --filter-mode=single to decode "
+            "and validate the entrypoint only."
+            % (entry_desc.fqn, len(any_fields),
+               ', '.join(field.name for field in any_fields)))
+
+    def _multi_oneof_message(self, entry_desc, oneofs):
+        names = [entry_desc.desc.oneof_decl[i].name for i in oneofs]
+        return (
+            "'%s' declares %d oneofs (%s), so the payload the filter should "
+            "dispatch on is ambiguous.\nA filter entrypoint must declare exactly "
+            "one oneof, or use --filter-mode=single to decode and validate the "
+            "entrypoint only."
+            % (entry_desc.fqn, len(oneofs), ', '.join(names)))
+
+    # -- oneof strategy -----------------------------------------------------
+
+    def _build_oneof_spec(self, entry_desc, entry_ir, entry_ref, symbol_prefix):
+        index = real_oneof_indices(entry_desc.desc)[0]
+        oneof_name = entry_desc.desc.oneof_decl[index].name
+
+        oneof_ir = None
+        for field in entry_ir.fields:
+            if isinstance(field, OneOf) and field.name == oneof_name:
+                oneof_ir = field
+                break
+        if oneof_ir is None:
+            raise GeneratorError(
+                "nanopb did not generate a union for oneof '%s' in '%s'; it may "
+                "have been split by field options. A filter cannot dispatch on it."
+                % (oneof_name, entry_desc.fqn))
+
+        oneof_var = Globals.naming_style.var_name(oneof_ir.name)
+        # An anonymous union lifts its members straight into the struct.
+        prefix = 'envelope.' if oneof_ir.anonymous else 'envelope.%s.' % oneof_var
+
+        members_ir = {field.name: field for field in oneof_ir.fields}
+        routes = []
+        extra_headers = []
+
+        for member_desc in oneof_members(entry_desc.desc, index):
+            member_ir = members_ir.get(member_desc.name)
+            if member_ir is None:
+                # nanopb dropped the arm (skipped/ignored field). Leaving it out
+                # of the switch would silently make it unroutable, so refuse.
+                raise GeneratorError(
+                    "oneof arm '%s.%s.%s' has no nanopb field, so the filter "
+                    "cannot route it. Remove the field option that drops it, or "
+                    "use --filter-mode=single."
+                    % (entry_desc.fqn, oneof_name, member_desc.name))
+
+            case_label = Globals.naming_style.define_name(
+                '%s_%s_tag' % (entry_ir.name, member_ir.name))
+
+            if member_ir.pbtype in ('MESSAGE', 'MSG_W_CB'):
+                target_fqn = member_desc.type_name.lstrip('.')
+                target = self._resolve_payload(entry_desc, target_fqn,
+                                               "oneof arm '%s'" % member_desc.name)
+                if target.validate_header:
+                    extra_headers.append(target.validate_header)
+                access = prefix + Globals.naming_style.var_name(member_ir.name)
+                routes.append(Route(Route.ONEOF_MESSAGE, case_label,
+                                    target.fqn, target=target, access=access))
+            else:
+                # A scalar arm has no descriptor of its own; validating the
+                # entrypoint (which the core always does) already covered it.
+                routes.append(Route(Route.ONEOF_SCALAR, case_label,
+                                    '%s (%s, covered by entrypoint validation)'
+                                    % (member_desc.name, member_ir.pbtype)))
+
+        if not routes:
+            raise GeneratorError(
+                "oneof '%s' in '%s' has no members, so there is nothing to route."
+                % (oneof_name, entry_desc.fqn))
+
+        return FilterSpec(
+            entry_ref, Strategy.ONEOF, symbol_prefix,
+            dispatch_expr='envelope.which_%s' % oneof_var,
+            routes=routes,
+            extra_headers=_dedupe(extra_headers))
+
+    # -- any strategy -------------------------------------------------------
+
+    def _build_any_spec(self, entry_desc, entry_ir, entry_ref, symbol_prefix):
+        any_desc = any_payload_fields(entry_desc.desc)[0]
+
+        any_ir = None
+        for field in entry_ir.fields:
+            if not isinstance(field, OneOf) and field.tag == any_desc.number:
+                any_ir = field
+                break
+        if any_ir is None:
+            raise GeneratorError(
+                "nanopb did not generate a field for '%s.%s'; a filter cannot "
+                "read its type_url." % (entry_desc.fqn, any_desc.name))
+
+        if any_ir.allocation != 'STATIC':
+            raise GeneratorError(
+                "'%s.%s' has %s allocation. The filter needs a statically "
+                "allocated google.protobuf.Any so it can read type_url and value "
+                "directly; give google.protobuf.Any.type_url and "
+                "google.protobuf.Any.value a max_size in your .options file."
+                % (entry_desc.fqn, any_desc.name, any_ir.allocation))
+
+        any_var = Globals.naming_style.var_name(any_ir.name)
+        any_access = 'envelope.%s' % any_var
+        presence = None
+        if any_ir.rules == 'OPTIONAL':
+            presence = 'envelope.%s' % Globals.naming_style.var_name('has_' + any_ir.name)
+
+        allowed = self._any_allow_list(entry_desc, any_desc)
+
+        routes = []
+        extra_headers = []
+        by_hash = OrderedDict()
+        for type_url, target_fqn in allowed:
+            target = self._resolve_payload(entry_desc, target_fqn,
+                                           "Any allow-list entry '%s'" % type_url)
+            if target.validate_header:
+                extra_headers.append(target.validate_header)
+            digest = type_url_hash(type_url)
+            by_hash.setdefault(digest, []).append(type_url)
+            routes.append(Route(Route.ANY_PAYLOAD, '0x%08XU' % digest,
+                                type_url, target=target, access=any_access,
+                                type_url=type_url))
+
+        # Two allow-list entries that hash alike would emit duplicate case
+        # labels and break the user's build with a confusing C error. Catch it
+        # here, where we can explain it.
+        collisions = [urls for urls in by_hash.values() if len(urls) > 1]
+        if collisions:
+            raise GeneratorError(
+                "type_url hash collision in the Any allow-list: %s.\n"
+                "The generated dispatch switch cannot distinguish them. Rename "
+                "one of the payload messages, or narrow the allow-list."
+                % '; '.join(' == '.join(urls) for urls in collisions))
+
+        return FilterSpec(
+            entry_ref, Strategy.ANY, symbol_prefix,
+            dispatch_expr=any_access,
+            presence_expr=presence,
+            routes=routes,
+            extra_headers=_dedupe(extra_headers))
+
+    def _any_allow_list(self, entry_desc, any_desc):
+        """The set of payload types the Any field is permitted to carry.
+
+        An ``Any`` field is an open extension point, so a dispatch table can only
+        be built from an explicit allow-list. In order of precedence:
+
+        1. ``--filter-payloads``, when the user wants it in the build.
+        2. ``(validate.rules).any.in`` on the field, which keeps the policy next
+           to the schema and is also enforced by the runtime validator.
+
+        "every message in this .proto file" is deliberately *not* an option: it
+        makes the allow-list a side effect of file layout, so adding an unrelated
+        message to the file silently widens the attack surface.
+        """
+        raw = None
+        source = None
+        if self.opts.filter_payloads:
+            raw = list(self.opts.filter_payloads)
+            source = '--filter-payloads'
+        else:
+            rules = field_validate_rules(any_desc)
+            if rules is not None and rules.HasField('any') and list(rules.any.__getattribute__('in')):
+                raw = list(rules.any.__getattribute__('in'))
+                source = "(validate.rules).any.in on '%s.%s'" % (entry_desc.fqn, any_desc.name)
+
+        if not raw:
+            hint = ''
+            rules = field_validate_rules(any_desc)
+            if rules is not None and rules.HasField('any') and list(rules.any.not_in):
+                hint = ("\nThe field declares any.not_in, but a deny-list cannot "
+                        "produce a dispatch table: it says what is forbidden, not "
+                        "what is decodable.")
+            raise GeneratorError(
+                "'%s.%s' is a google.protobuf.Any with no allow-list, so the "
+                "filter has no safe set of payload types to decode.%s\n"
+                "Declare the permitted types with (validate.rules).any.in on the "
+                "field, or pass --filter-payloads=pkg.A;pkg.B."
+                % (entry_desc.fqn, any_desc.name, hint))
+
+        allowed = []
+        seen = set()
+        for item in raw:
+            item = item.strip()
+            if not item:
+                continue
+            # Accept "type.googleapis.com/pkg.Msg", "host/pkg.Msg" or "pkg.Msg".
+            fqn = item.rsplit('/', 1)[-1].lstrip('.')
+            type_url = item if '/' in item else '%s/%s' % (DEFAULT_TYPE_URL_HOST, fqn)
+            if type_url in seen:
+                continue
+            seen.add(type_url)
+            if not fqn:
+                raise GeneratorError(
+                    "%s contains '%s', which names no message type." % (source, item))
+            allowed.append((type_url, fqn))
+
+        if not allowed:
+            raise GeneratorError("%s is empty; nothing could be allowed." % source)
+        return allowed
+
+    # -- shared -------------------------------------------------------------
+
+    def _resolve_payload(self, entry_desc, fqn, what):
+        entry = self.index.lookup(fqn)
+        if entry is None:
+            raise GeneratorError(
+                "%s of '%s' refers to message '%s', which is not in the compiled "
+                "descriptors. Import the .proto that defines it."
+                % (what, entry_desc.fqn, fqn))
+        ir_msg = ir_message_for_fqn(self.f, fqn)
+        if ir_msg is None:
+            raise GeneratorError(
+                "%s of '%s' refers to message '%s', which nanopb did not generate "
+                "a struct for in this compilation. The filter cannot decode it."
+                % (what, entry_desc.fqn, fqn))
+        return self._message_ref(fqn, ir_msg)
+
+    def _message_ref(self, fqn, ir_msg):
+        ctype = Globals.naming_style.type_name(ir_msg.name)
+        init_zero = Globals.naming_style.define_name(str(ir_msg.name) + '_init_zero')
+        msgdesc = '%s_msg' % ctype
+
+        protofile = getattr(ir_msg, 'protofile', None)
+        is_local = protofile is None or protofile.fdesc.name == self.f.fdesc.name
+
+        if is_local:
+            # Local messages on the filter path always get a validator: the
+            # driver force-adds one, so the call below is guaranteed to link.
+            validator = validator_func_name(ir_msg)
+            header = None
+        elif self.validator_lookup(protofile, ir_msg):
+            validator = validator_func_name(ir_msg)
+            header = validate_header_for(ir_msg)
+        else:
+            # The defining file generates no validator for this message, which
+            # means it declares no rules: decoding it *is* the whole check.
+            validator = None
+            header = None
+
+        return MessageRef(fqn, ctype, init_zero, msgdesc, validator, header)
+
+
+def _dedupe(items):
+    seen = set()
+    out = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
 
 
 # ---------------------------------------------------------------------------
-#                     .pb.h injection (insertion point: eof)
+#                              C emission
 # ---------------------------------------------------------------------------
 
 
-def opcode_alias_type(envelope_msg):
-    """Name of the ALL-CAPS opcode enum alias emitted for an envelope message."""
-    return (str(envelope_msg.name) + '_OPCODE').replace('.', '_').replace('-', '_').upper()
+class FilterEmitter(object):
+    """Render a :class:`FilterSpec` as C.
 
-
-def generate_filter_declarations(f, options):
-    """Declarations for the UDP and TCP packet filters, plus an optional
-    Envelope opcode enum alias.
-
-    Injected into <base>.pb.h at the `eof` insertion point, which sits inside
-    the include guard and after every struct definition.
+    Deliberately dependency-free: it receives a fully resolved spec and never
+    inspects descriptors, the nanopb IR, or the command line.
     """
-    # If an Envelope pattern is detected, generate a CAPS enum alias that maps
-    # to the original opcode enum.
-    envelope_info = detect_envelope_pattern(f, getattr(options, 'envelope_name', None))
-    if envelope_info:
-        envelope_msg, opcode_field, opcode_enum, oneof_field, opcode_to_msg_map = envelope_info
 
-        # Only generate the enum alias if we have an opcode enum
-        # (not for oneof-only patterns)
-        if opcode_enum:
-            # Type name in ALL CAPS: <ENVELOPE_NAME>_OPCODE
-            alias_type = opcode_alias_type(envelope_msg)
-            yield 'typedef enum %s {\n' % alias_type
+    def __init__(self, spec):
+        self.spec = spec
 
-            # Map numeric values back to enumerator names and emit alias entries
-            # Format: <ALIAS_TYPE>_<ENUM_ENTRY> = <ENUM_ENTRY>,
-            for (enumname, enumvalue) in opcode_enum.values:
-                original_entry = Globals.naming_style.enum_entry(enumname)
-                alias_entry = original_entry.replace('.', '_').replace('-', '_').upper()
-                yield '    %s_%s = %s,\n' % (alias_type, alias_entry, original_entry)
+    # -- header (.pb.h, insertion point "eof") ------------------------------
 
-            yield '} %s;\n\n' % alias_type
+    def header_lines(self):
+        spec = self.spec
+        yield '\n'
+        yield '#ifdef __cplusplus\n'
+        yield 'extern "C" {\n'
+        yield '#endif\n\n'
 
-    # Doxygen for filter functions
-    yield "/**\n"
-    yield " * @brief Decode and validate a UDP packet.\n"
-    yield " *\n"
-    yield " * Decodes an incoming datagram and validates the contained message(s).\n"
-    yield " *\n"
-    yield " * @param ctx           Optional user context (implementation-defined).\n"
-    yield " * @param packet        Pointer to packet buffer.\n"
-    yield " * @param packet_size   Length of packet buffer in bytes.\n"
-    yield " * @return 0 on success, -1 on failure.\n"
-    yield " */\n"
-    yield 'int filter_udp(void *ctx, uint8_t *packet, size_t packet_size);\n\n'
+        yield '/* Packet filter for %s (%s dispatch).\n' % (spec.entry.fqn, spec.strategy)
+        yield ' * Decodes, identifies and validates an untrusted buffer, and reports\n'
+        yield ' * whether it may be handed on to the application.\n'
+        yield ' */\n\n'
 
-    yield "/**\n"
-    yield " * @brief Decode and validate a TCP packet.\n"
-    yield " *\n"
-    yield " * Decodes an incoming stream message and validates the contained message(s).\n"
-    yield " *\n"
-    yield " * @param ctx           Optional user context (implementation-defined).\n"
-    yield " * @param packet        Pointer to packet buffer.\n"
-    yield " * @param packet_size   Length of packet buffer in bytes.\n"
-    yield " * @param is_to_server  True if packet direction is client -> server.\n"
-    yield " * @return 0 on success, -1 on failure.\n"
-    yield " */\n"
-    yield 'int filter_tcp(void *ctx, uint8_t *packet, size_t packet_size, bool is_to_server);\n'
-    yield '\n'
+        yield '/**\n'
+        yield ' * @brief Decode and validate a UDP datagram carrying %s.\n' % spec.entry.fqn
+        yield ' *\n'
+        yield ' * @param ctx           Optional user context (unused; reserved).\n'
+        yield ' * @param packet        Pointer to the received datagram.\n'
+        yield ' * @param packet_size   Length of the datagram in bytes.\n'
+        yield ' * @return 0 to allow the packet, -1 to reject it.\n'
+        yield ' */\n'
+        yield '%s;\n\n' % spec.udp_signature
 
+        yield '/**\n'
+        yield ' * @brief Decode and validate a stream message carrying %s.\n' % spec.entry.fqn
+        yield ' *\n'
+        yield ' * @param ctx           Optional user context (unused; reserved).\n'
+        yield ' * @param packet        Pointer to one complete framed message.\n'
+        yield ' * @param packet_size   Length of the message in bytes.\n'
+        yield ' * @param is_to_server  True if the direction is client -> server.\n'
+        yield ' * @return 0 to allow the packet, -1 to reject it.\n'
+        yield ' */\n'
+        yield '%s;\n' % spec.tcp_signature
 
-def generate_header_injection(f, options):
-    """Full <base>.pb.h `eof` payload, wrapped for C++ compatibility."""
-    yield '\n'
-    yield '#ifdef __cplusplus\n'
-    yield 'extern "C" {\n'
-    yield '#endif\n\n'
+        yield '\n#ifdef __cplusplus\n'
+        yield '} /* extern "C" */\n'
+        yield '#endif\n'
 
-    for line in generate_filter_declarations(f, options):
-        yield line
+    # -- includes (.pb.c, insertion point "includes") -----------------------
 
-    yield '\n#ifdef __cplusplus\n'
-    yield '} /* extern "C" */\n'
-    yield '#endif\n'
-
-
-# ---------------------------------------------------------------------------
-#                 .pb.c injection (insertion points: includes, eof)
-# ---------------------------------------------------------------------------
-
-# Return codes used by both filters.
-RET_OK = '0'
-RET_ERR = '-1'
-
-
-def generate_source_includes(f, options):
-    """Includes the filter code needs, injected at the `includes` point.
-
-    These used to be emitted at the very end of the .pb.c.  Putting them at the
-    `includes` marker is both idiomatic and keeps the file compilable if
-    anything is ever injected between them and the filter bodies.
-    """
-    # options.libformat carries no trailing newline (it defaults to
-    # '#include <%s>'), so each include has to be terminated explicitly.
-    for header in ('pb_encode.h', 'pb_decode.h'):
+    def include_lines(self, protofile, options):
+        """Includes the filter body needs, injected at the `includes` marker."""
+        # options.libformat carries no trailing newline (it defaults to
+        # '#include <%s>'), so each include has to be terminated explicitly.
         try:
-            yield options.libformat % (header)
+            yield options.libformat % 'pb_decode.h'
         except TypeError:
             # no %s specified - use whatever was passed in as options.libformat
             yield options.libformat
         yield '\n'
 
-    # The generated validators live in a sibling header.
-    basename = f.fdesc.name.rsplit('.', 1)[0]
-    yield '#include "%s_validate.h"\n' % basename
+        yield '#include "%s_validate.h"\n' % strip_proto_ext(protofile.fdesc.name)
+        for header in self.spec.extra_headers:
+            yield '#include "%s"\n' % header
 
+    # -- source (.pb.c, insertion point "eof") ------------------------------
 
-def generate_validate_message_helper(f):
-    """Emit the static validate_message() dispatcher.
+    def source_lines(self):
+        spec = self.spec
 
-    Maps a nanopb message descriptor to the matching pb_validate_*() function,
-    so the filter bodies can validate a decoded message generically.
-    """
-    yield 'static int validate_message(const pb_msgdesc_t *fields, const void *msg_struct) {\n'
-    yield '    pb_violations_t violations = {0};\n'
-    for msg in f.messages:
-        msg_type_name = Globals.naming_style.type_name(msg.name)
-        validate_func_name = 'pb_validate_' + msg_type_name
-        yield '    if (fields == &%s_msg) {\n' % msg_type_name
-        yield '        return %s((const %s *)msg_struct, &violations) ? 1 : 0;\n' % (
-            validate_func_name, msg_type_name)
+        yield '\n'
+        yield '/* ---------------------------------------------------------------------\n'
+        yield ' * Packet filter for %s\n' % spec.entry.fqn
+        yield ' * Strategy: %s\n' % self._strategy_comment()
+        yield ' * Policy:   unknown or undecodable input is rejected.\n'
+        yield ' * --------------------------------------------------------------------- */\n'
+        yield '\n'
+
+        yield '%s\n' % spec.core_signature
+        yield '{\n'
+        yield '    pb_violations_t violations = {0};\n'
+        yield '    pb_istream_t stream = pb_istream_from_buffer(packet, packet_size);\n'
+        yield '    %s envelope = %s;\n' % (spec.entry.ctype, spec.entry.init_zero)
+        yield '\n'
+        yield '    if (!pb_decode(&stream, &%s, &envelope)) {\n' % spec.entry.msgdesc
+        yield '        return %s;\n' % RET_REJECT
         yield '    }\n'
-    yield '    return 1; /* Default: message is valid */\n'
-    yield '}\n\n'
+        yield '\n'
 
-
-def _generate_root_message_body(f, root_message, is_tcp):
-    """Filter body for --root-message mode: decode and validate one fixed type."""
-    msg_type = Globals.naming_style.type_name(root_message.name)
-    init_zero = Globals.naming_style.define_name(str(root_message.name) + '_init_zero')
-
-    if is_tcp:
-        yield '    (void)is_to_server; /* Direction unused in single-root-message mode */\n'
-    yield '    /* Single-root-message mode: decode as %s */\n' % msg_type
-    yield '    %s msg = %s;\n' % (msg_type, init_zero)
-    yield '    stream = pb_istream_from_buffer(packet, packet_size);\n'
-    yield '    status = pb_decode(&stream, &%s_msg, &msg);\n' % msg_type
-    yield '    \n'
-    yield '    if (!status) {\n'
-    yield '        return %s;\n' % RET_ERR
-    yield '    }\n'
-    yield '    \n'
-    yield '    /* Validate the root message */\n'
-    yield '    if (validate_message(&%s_msg, &msg)) {\n' % msg_type
-    yield '        return %s;\n' % RET_OK
-    yield '    }\n'
-    yield '    \n'
-    yield '    return %s;\n' % RET_ERR
-
-
-def _generate_any_envelope_body(f, any_envelope_info):
-    """Filter body for an envelope carrying a google.protobuf.Any payload.
-
-    The payload type is identified by its type_url.  Rather than strcmp-ing
-    against every candidate, we switch on a cheap rolling hash of the type_url
-    and only strcmp inside the matching case.
-    """
-    envelope_msg, any_field, all_msg_types = any_envelope_info
-    envelope_type = Globals.naming_style.type_name(envelope_msg.name)
-    any_field_name = Globals.naming_style.var_name(any_field.name)
-
-    yield '    %s envelope = %s;\n' % (
-        envelope_type, Globals.naming_style.define_name(str(envelope_msg.name) + '_init_zero'))
-    yield '    stream = pb_istream_from_buffer(packet, packet_size);\n'
-    yield '    status = pb_decode(&stream, &%s_msg, &envelope);\n' % envelope_type
-    yield '    \n'
-    yield '    if (!status) {\n'
-    yield '        return %s;\n' % RET_ERR
-    yield '    }\n'
-    yield '    \n'
-    yield '    /* Validate the envelope message first (checks any.in/any.not_in rules) */\n'
-    yield '    if (!validate_message(&%s_msg, &envelope)) {\n' % envelope_type
-    yield '        return %s;\n' % RET_ERR
-    yield '    }\n'
-    yield '    \n'
-    yield '    /* Extract type_url from Any field */\n'
-    yield '    const char *type_url = (const char *)envelope.%s.type_url;\n' % any_field_name
-    yield '    if (type_url[0] == \'\\0\') {\n'
-    yield '        return %s;\n' % RET_ERR
-    yield '    }\n'
-    yield '    \n'
-    yield '    /* Compute hash of type_url for efficient switching */\n'
-    yield '    uint32_t type_hash = 0;\n'
-    yield '    for (const char *p = type_url; *p; p++) {\n'
-    yield '        type_hash = type_hash * 31 + (uint8_t)*p;\n'
-    yield '    }\n'
-    yield '    \n'
-    yield '    /* Switch on type_url hash to determine payload type */\n'
-    yield '    switch (type_hash) {\n'
-
-    # Generate switch cases using hash values
-    for msg in all_msg_types:
-        msg_type = Globals.naming_style.type_name(msg.name)
-        # Extract the simple message name for type URL
-        msg_simple_name = str(msg.name).split('_')[-1]
-
-        # Build the expected type_url
-        # (typically "type.googleapis.com/package.MessageName")
-        if f.fdesc.package:
-            expected_type_url = 'type.googleapis.com/%s.%s' % (f.fdesc.package, msg_simple_name)
+        if spec.entry.validator_func:
+            yield '    /* Validate the entrypoint before looking at its payload. */\n'
+            yield '    if (!%s(&envelope, &violations)) {\n' % spec.entry.validator_func
+            yield '        return %s;\n' % RET_REJECT
+            yield '    }\n'
+            yield '\n'
         else:
-            expected_type_url = 'type.googleapis.com/%s' % msg_simple_name
+            yield '    /* %s declares no validation rules; decoding is the whole check. */\n' % spec.entry.fqn
+            yield '\n'
 
-        # Calculate hash for the case label - must match the C loop emitted above
-        type_hash = 0
-        for c in expected_type_url:
-            type_hash = (type_hash * 31 + ord(c)) & 0xFFFFFFFF
-
-        yield '        case 0x%08XU: /* %s */\n' % (type_hash, expected_type_url)
-        yield '            if (strcmp(type_url, "%s") == 0) {\n' % expected_type_url
-        yield '                %s payload_msg = %s;\n' % (
-            msg_type, Globals.naming_style.define_name(str(msg.name) + '_init_zero'))
-        yield '                pb_istream_t payload_stream = pb_istream_from_buffer(envelope.%s.value.bytes, envelope.%s.value.size);\n' % (
-            any_field_name, any_field_name)
-        yield '                if (pb_decode(&payload_stream, &%s_msg, &payload_msg)) {\n' % msg_type
-        yield '                    if (validate_message(&%s_msg, &payload_msg)) {\n' % msg_type
-        yield '                        return %s;\n' % RET_OK
-        yield '                    }\n'
-        yield '                }\n'
-        yield '            }\n'
-        yield '            break;\n'
-
-    yield '        default:\n'
-    yield '            break;\n'
-    yield '    }\n'
-    yield '    \n'
-    yield '    return %s;\n' % RET_ERR
-
-
-def _generate_oneof_envelope_body(f, envelope_info):
-    """Filter body for an envelope with a oneof payload.
-
-    Two shapes are supported: an explicit opcode enum paired with the oneof
-    (switch on the opcode, then confirm the oneof tag agrees), or a bare oneof
-    (switch directly on the which_ tag).
-    """
-    envelope_msg, opcode_field, opcode_enum, oneof_field, opcode_to_msg_map = envelope_info
-    envelope_type = Globals.naming_style.type_name(envelope_msg.name)
-    oneof_name = Globals.naming_style.var_name(oneof_field.name)
-
-    yield '    %s envelope = %s;\n' % (
-        envelope_type, Globals.naming_style.define_name(str(envelope_msg.name) + '_init_zero'))
-    yield '    stream = pb_istream_from_buffer(packet, packet_size);\n'
-    yield '    status = pb_decode(&stream, &%s_msg, &envelope);\n' % envelope_type
-    yield '    \n'
-    yield '    if (!status) {\n'
-    yield '        return %s;\n' % RET_ERR
-    yield '    }\n'
-    yield '    \n'
-
-    def validate_payload(oneof_subfield, indent):
-        """Emit the validate_message() call opening one oneof arm.
-
-        MESSAGE arms validate the nested submessage.  Scalar arms have no
-        descriptor of their own, so the whole envelope is validated instead.
-        """
-        if oneof_subfield.pbtype == 'MESSAGE':
-            submsg_type = Globals.naming_style.type_name(oneof_subfield.ctype)
-            oneof_member_name = Globals.naming_style.var_name(oneof_subfield.name)
-            yield '%sif (validate_message(&%s_msg, &envelope.%s.%s)) {\n' % (
-                indent, submsg_type, oneof_name, oneof_member_name)
-        else:
-            yield '%sif (validate_message(&%s_msg, &envelope)) {\n' % (indent, envelope_type)
-
-    if opcode_field and opcode_enum and opcode_to_msg_map:
-        # Opcode + oneof pattern
-        opcode_field_name = Globals.naming_style.var_name(opcode_field.name)
-        # CAPS alias type produced in the header
-        alias_type = opcode_alias_type(envelope_msg)
-        # Map numeric opcode values to original enumerator names
-        val_to_name = {
-            v: Globals.naming_style.enum_entry(n).replace('.', '_').replace('-', '_').upper()
-            for (n, v) in opcode_enum.values}
-
-        yield '    switch (envelope.%s) {\n' % opcode_field_name
-
-        for opcode_val, oneof_subfield in sorted(opcode_to_msg_map.items(), key=lambda x: x[0]):
-            enum_suffix = val_to_name.get(opcode_val, None)
-            if enum_suffix is not None:
-                yield '        case %s_%s:\n' % (alias_type, enum_suffix)
-            else:
-                # Fallback to numeric value if mapping fails
-                yield '        case %d:\n' % (opcode_val)
-            # Use the field tag constant for the which_field comparison
-            tag_constant = Globals.naming_style.define_name(
-                '%s_%s_tag' % (envelope_msg.name, oneof_subfield.name))
-            yield '            if (envelope.which_%s == %s) {\n' % (oneof_name, tag_constant)
-            for line in validate_payload(oneof_subfield, '                '):
+        if spec.strategy == Strategy.SINGLE:
+            for line in self._single_dispatch():
                 yield line
-            yield '                    return %s;\n' % RET_OK
+        elif spec.strategy == Strategy.ONEOF:
+            for line in self._oneof_dispatch():
+                yield line
+        else:
+            for line in self._any_dispatch():
+                yield line
+
+        yield '}\n'
+        yield '\n'
+
+        for line in self._wrappers():
+            yield line
+
+    def _strategy_comment(self):
+        spec = self.spec
+        if spec.strategy == Strategy.SINGLE:
+            return 'every packet is decoded and validated as %s' % spec.entry.fqn
+        if spec.strategy == Strategy.ONEOF:
+            return ('dispatch on %s across %d oneof arm(s)'
+                    % (spec.dispatch_expr, len(spec.routes)))
+        return ('dispatch on google.protobuf.Any type_url across %d allowed type(s)'
+                % len(spec.routes))
+
+    def _single_dispatch(self):
+        if not self.spec.entry.validator_func:
+            yield '    (void)violations;\n'
+        yield '    return %s;\n' % RET_ALLOW
+
+    def _oneof_dispatch(self):
+        spec = self.spec
+        yield '    switch (%s) {\n' % spec.dispatch_expr
+        for route in spec.routes:
+            yield '        case %s: /* %s */\n' % (route.case_label, route.comment)
+            if route.kind == Route.ONEOF_MESSAGE and route.target.validator_func:
+                yield '            if (!%s(&%s, &violations)) {\n' % (
+                    route.target.validator_func, route.access)
+                yield '                return %s;\n' % RET_REJECT
+                yield '            }\n'
+            yield '            return %s;\n' % RET_ALLOW
+            yield '\n'
+        yield '        default:\n'
+        yield '            /* No arm set, or an arm this build does not know. */\n'
+        yield '            return %s;\n' % RET_REJECT
+        yield '    }\n'
+
+    def _any_dispatch(self):
+        spec = self.spec
+        access = spec.dispatch_expr
+
+        if spec.presence_expr:
+            yield '    if (!%s) {\n' % spec.presence_expr
+            yield '        return %s; /* no payload carried */\n' % RET_REJECT
+            yield '    }\n'
+            yield '\n'
+
+        yield '    {\n'
+        yield '        const char *type_url = %s.type_url;\n' % access
+        yield '        const char *cursor;\n'
+        yield '        uint32_t type_hash = 0;\n'
+        yield '\n'
+        yield '        if (type_url[0] == \'\\0\') {\n'
+        yield '            return %s; /* unidentified payload */\n' % RET_REJECT
+        yield '        }\n'
+        yield '\n'
+        yield '        /* Cheap rolling hash so the switch below is a jump table; the\n'
+        yield '         * strcmp inside each case is what actually decides identity. */\n'
+        yield '        for (cursor = type_url; *cursor != \'\\0\'; cursor++) {\n'
+        yield '            type_hash = type_hash * 31u + (uint32_t)(uint8_t)*cursor;\n'
+        yield '        }\n'
+        yield '\n'
+        yield '        switch (type_hash) {\n'
+
+        for route in spec.routes:
+            target = route.target
+            yield '            case %s: /* %s */\n' % (route.case_label, route.type_url)
+            yield '                if (strcmp(type_url, "%s") == 0) {\n' % route.type_url
+            yield '                    %s payload = %s;\n' % (target.ctype, target.init_zero)
+            yield '                    pb_istream_t payload_stream = pb_istream_from_buffer(\n'
+            yield '                        %s.value.bytes, %s.value.size);\n' % (access, access)
+            yield '\n'
+            yield '                    if (!pb_decode(&payload_stream, &%s, &payload)) {\n' % target.msgdesc
+            yield '                        return %s;\n' % RET_REJECT
+            yield '                    }\n'
+            if target.validator_func:
+                yield '                    if (!%s(&payload, &violations)) {\n' % target.validator_func
+                yield '                        return %s;\n' % RET_REJECT
+                yield '                    }\n'
+            yield '                    return %s;\n' % RET_ALLOW
             yield '                }\n'
-            yield '            }\n'
-            yield '            break;\n'
+            yield '                break;\n'
+            yield '\n'
 
-        yield '        default:\n'
-        yield '            return %s;\n' % RET_ERR
+        yield '            default:\n'
+        yield '                break;\n'
+        yield '        }\n'
         yield '    }\n'
-        yield '    \n'
-        yield '    return %s;\n' % RET_ERR
-    else:
-        # Oneof-only pattern - switch on which_field
-        yield '    switch (envelope.which_%s) {\n' % oneof_name
+        yield '\n'
+        yield '    /* type_url is not on the allow-list. */\n'
+        yield '    return %s;\n' % RET_REJECT
 
-        for oneof_subfield in oneof_field.fields:
-            tag_constant = Globals.naming_style.define_name(
-                '%s_%s_tag' % (envelope_msg.name, oneof_subfield.name))
-
-            yield '        case %s:\n' % tag_constant
-            for line in validate_payload(oneof_subfield, '            '):
-                yield line
-            yield '                return %s;\n' % RET_OK
-            yield '            }\n'
-            yield '            break;\n'
-
-        yield '        default:\n'
-        yield '            break;\n'
-        yield '    }\n'
-        yield '    \n'
-        yield '    return %s;\n' % RET_ERR
-
-
-def generate_filter_function(f, signature, is_tcp, root_message,
-                             any_envelope_info, envelope_info):
-    """Emit one complete filter function.
-
-    filter_udp and filter_tcp share their entire body apart from the unused
-    `is_to_server` parameter, so both are produced from this one generator.
-    """
-    yield 'int %s {\n' % signature
-    yield '    pb_istream_t stream;\n'
-    yield '    bool status;\n'
-    yield '    (void)ctx; /* Context may be unused */\n\n'
-
-    if root_message:
-        body = _generate_root_message_body(f, root_message, is_tcp)
-    elif any_envelope_info:
-        body = _generate_any_envelope_body(f, any_envelope_info)
-    elif envelope_info:
-        body = _generate_oneof_envelope_body(f, envelope_info)
-    else:
-        # Nothing to decode against - reject everything.
-        body = iter(['    return %s;\n' % RET_ERR])
-
-    for line in body:
-        yield line
-
-    yield '}\n'
-
-
-def generate_source_injection(f, options):
-    """Full <base>.pb.c `eof` payload: the dispatcher plus both filters."""
-    root_message, any_envelope_info, envelope_info = resolve_filter_target(f, options)
-
-    for line in generate_validate_message_helper(f):
-        yield line
-
-    for line in generate_filter_function(
-            f, 'filter_udp(void *ctx, uint8_t *packet, size_t packet_size)',
-            False, root_message, any_envelope_info, envelope_info):
-        yield line
-    yield '\n'
-
-    for line in generate_filter_function(
-            f, 'filter_tcp(void *ctx, uint8_t *packet, size_t packet_size, bool is_to_server)',
-            True, root_message, any_envelope_info, envelope_info):
-        yield line
+    def _wrappers(self):
+        """Transport shims over the transport-independent core."""
+        spec = self.spec
+        yield '%s\n' % spec.udp_signature
+        yield '{\n'
+        yield '    (void)ctx;\n'
+        yield '    return %s_filter_core(packet, packet_size);\n' % spec.symbol_prefix
+        yield '}\n'
+        yield '\n'
+        yield '%s\n' % spec.tcp_signature
+        yield '{\n'
+        yield '    (void)ctx;\n'
+        yield '    (void)is_to_server;\n'
+        yield '    return %s_filter_core(packet, packet_size);\n' % spec.symbol_prefix
+        yield '}\n'
 
 
 # ---------------------------------------------------------------------------
@@ -730,8 +1103,15 @@ def generate_source_injection(f, options):
 # ---------------------------------------------------------------------------
 
 
-def build_validator_generator(f):
-    """Create and populate a ValidatorGenerator for one ProtoFile."""
+def build_validator_generator(f, force_names=()):
+    """Create and populate a ValidatorGenerator for one ProtoFile.
+
+    Args:
+        f: the nanopb ProtoFile.
+        force_names: fully qualified names of messages that must get a validator
+            even when they declare no rules.  The filter calls these directly,
+            so the symbol has to exist.
+    """
     validator_gen = nanopb_validator.ValidatorGenerator(f)
 
     # Add validators for all messages that carry rules.  Message-level rules
@@ -741,33 +1121,83 @@ def build_validator_generator(f):
             validator_gen.add_message_validator(msg)
 
     # Always emit validation functions, even when no message declares a rule,
-    # so that validate_message() has something to dispatch to for every
-    # descriptor it knows about.
+    # so that a filter has something to call for every message on its path.
     if not validator_gen.validators:
         for msg in f.messages:
             if hasattr(msg, 'fields'):
                 validator_gen.force_add_message_validator(msg)
 
+    for fqn in force_names:
+        msg = ir_message_for_fqn(f, fqn)
+        if msg is not None and str(msg.name) not in validator_gen.validators:
+            validator_gen.force_add_message_validator(msg)
+
     return validator_gen
+
+
+class ValidatorIndex(object):
+    """Answers "will file F emit a pb_validate_* for message M?".
+
+    Used to decide whether a cross-file payload can be validated, or declares no
+    rules at all.  Results are cached because the answer costs a full parse of
+    the dependency's rules.
+    """
+
+    def __init__(self):
+        self._cache = {}
+
+    def __call__(self, protofile, ir_msg):
+        key = protofile.fdesc.name
+        if key not in self._cache:
+            self._cache[key] = set(build_validator_generator(protofile).validators.keys())
+        return str(ir_msg.name) in self._cache[key]
 
 
 # ---------------------------------------------------------------------------
 #                            Command line handling
 # ---------------------------------------------------------------------------
 
-# Options owned by this plugin.  Everything else in the argument list is handed
-# straight to nanopb's own parser, so that -I/-x/-s/-C/--custom-style behave
-# identically here and in nanopb_generator.
+
+class FilterOptions(object):
+    """This plugin's own configuration, kept apart from nanopb's options.
+
+    The CLI describes *intent* -- which message is the protocol entrypoint, and
+    what it is allowed to carry -- not the detection strategy the generator
+    happens to use internally.
+    """
+
+    __slots__ = ('filter_message', 'filter_mode', 'filter_payloads')
+
+    def __init__(self, filter_message=None, filter_mode='auto', filter_payloads=()):
+        self.filter_message = filter_message
+        self.filter_mode = filter_mode
+        self.filter_payloads = tuple(filter_payloads)
+
+    @property
+    def wants_filter(self):
+        return bool(self.filter_message)
+
+
+#: Options owned by this plugin.  Everything else in the argument list is handed
+#: straight to nanopb's own parser, so that -I/-x/-s/-C/--custom-style behave
+#: identically here and in nanopb_generator.
 OWN_OPTIONS = {
-    '--root-message': 'root_message',
-    '--envelope-mode': 'envelope_mode',
-    '--envelope-name': 'envelope_name',
+    '--filter': 'filter_message',
+    '--filter-mode': 'filter_mode',
+    '--filter-payloads': 'filter_payloads',
 }
 
-OWN_DEFAULTS = {
-    'root_message': None,
-    'envelope_mode': 'oneof',
-    'envelope_name': None,
+#: Options that used to exist and described the generator's internals rather
+#: than the user's protocol.  Kept only to produce a useful error.
+RETIRED_OPTIONS = {
+    '--root-message':
+        "use --filter=<fully.qualified.Message> (add --filter-mode=single to "
+        "decode every packet as that message even if it declares a oneof)",
+    '--envelope-name':
+        "use --filter=<fully.qualified.Message>",
+    '--envelope-mode':
+        "use --filter-mode=auto|single|oneof|any; the entrypoint is named by "
+        "--filter",
 }
 
 
@@ -777,13 +1207,18 @@ def split_own_options(args):
     Both "--opt=value" and "--opt value" spellings are accepted, matching how
     nanopb itself tolerates protoc's comma separation and shell-style splitting.
     """
-    own = dict(OWN_DEFAULTS)
+    own = {}
     rest = []
 
     i = 0
     while i < len(args):
         arg = args[i]
         name, sep, value = arg.partition('=')
+
+        if name in RETIRED_OPTIONS:
+            raise GeneratorError(
+                "%s is no longer supported: %s" % (name, RETIRED_OPTIONS[name]))
+
         if name in OWN_OPTIONS:
             if not sep:
                 # "--opt value" form; consume the following argument
@@ -796,12 +1231,36 @@ def split_own_options(args):
             rest.append(arg)
         i += 1
 
-    if own['envelope_mode'] not in ('oneof', 'any'):
-        raise GeneratorError(
-            "--envelope-mode must be either 'oneof' or 'any', got: '%s'"
-            % own['envelope_mode'])
+    return build_filter_options(own), rest
 
-    return own, rest
+
+def build_filter_options(raw):
+    """Validate the raw strings collected by :func:`split_own_options`."""
+    filter_message = raw.get('filter_message') or None
+    filter_mode = raw.get('filter_mode', 'auto') or 'auto'
+    payloads = raw.get('filter_payloads') or ''
+
+    allowed_modes = ('auto',) + Strategy.ALL
+    if filter_mode not in allowed_modes:
+        raise GeneratorError(
+            "--filter-mode must be one of %s, got: '%s'"
+            % ('|'.join(allowed_modes), filter_mode))
+
+    # ';' separates payload types, because protoc already claims ',' for
+    # separating plugin options.
+    payload_list = [item.strip() for item in payloads.split(';') if item.strip()]
+
+    if filter_message is None:
+        if 'filter_mode' in raw:
+            raise GeneratorError(
+                "--filter-mode was given without --filter. Name the protocol "
+                "entrypoint with --filter=<fully.qualified.Message>.")
+        if payload_list:
+            raise GeneratorError(
+                "--filter-payloads was given without --filter. Name the protocol "
+                "entrypoint with --filter=<fully.qualified.Message>.")
+
+    return FilterOptions(filter_message, filter_mode, payload_list)
 
 
 def parse_plugin_parameter(parameter):
@@ -835,7 +1294,8 @@ def parse_plugin_parameter(parameter):
 # ---------------------------------------------------------------------------
 
 
-def process_file(filename, fdesc, options, other_files):
+def process_file(filename, fdesc, options, filter_options, index,
+                 other_files, validator_index):
     """Produce every output this plugin owns, for one .proto file.
 
     Returns a list of (name, insertion_point_or_None, content) tuples ready to
@@ -847,14 +1307,20 @@ def process_file(filename, fdesc, options, other_files):
     # Check the list of dependencies, and if they are available in other_files,
     # add them to be considered for import resolving. Recursively add any files
     # imported by the dependencies.  This mirrors nanopb_generator.process_file,
-    # and the validator needs it in order to emit `#include "<dep>_validate.h"`
-    # for messages that reference types from another .proto.
+    # and both the validator and the filter need it: the validator to emit
+    # `#include "<dep>_validate.h"` for cross-file field types, the filter to
+    # resolve payload messages defined in another .proto.
     deps = list(f.fdesc.dependency)
     while deps:
         dep = deps.pop(0)
         if dep in other_files:
             f.add_dependency(other_files[dep])
             deps += list(other_files[dep].fdesc.dependency)
+
+    # Resolve the filter once, up front. Every later stage reads this one model
+    # rather than re-deriving protocol facts, so the header and the source can
+    # never disagree about what the filter does.
+    spec = ProtocolAnalyzer(f, index, filter_options, validator_index).analyze()
 
     # Match nanopb's own output naming exactly, so our insertion targets line up.
     noext = os.path.splitext(filename)[0]
@@ -863,8 +1329,11 @@ def process_file(filename, fdesc, options, other_files):
 
     outputs = []
 
-    # 1. The standalone validator files.
-    validator_gen = build_validator_generator(f)
+    # 1. The standalone validator files.  Messages on the filter path get a
+    #    validator even if they declare no rules, so the filter's direct calls
+    #    always resolve.
+    force = spec.required_validators() if spec else ()
+    validator_gen = build_validator_generator(f, force)
     validate_headerdata = ''.join(validator_gen.generate_header())
     validate_sourcedata = ''.join(validator_gen.generate_source())
     if validate_headerdata or validate_sourcedata:
@@ -873,15 +1342,12 @@ def process_file(filename, fdesc, options, other_files):
         outputs.append((noext + '_validate' + options.source_extension,
                         None, validate_sourcedata))
 
-    # 2. The filter code, spliced into the files nanopb already produced.
-    root_message, any_envelope_info, envelope_info = resolve_filter_target(f, options)
-    if root_message or any_envelope_info or envelope_info:
-        outputs.append((headername, 'eof',
-                        ''.join(generate_header_injection(f, options))))
-        outputs.append((sourcename, 'includes',
-                        ''.join(generate_source_includes(f, options))))
-        outputs.append((sourcename, 'eof',
-                        ''.join(generate_source_injection(f, options))))
+    # 2. The filter, spliced into the files nanopb already produced.
+    if spec is not None:
+        emitter = FilterEmitter(spec)
+        outputs.append((headername, 'eof', ''.join(emitter.header_lines())))
+        outputs.append((sourcename, 'includes', ''.join(emitter.include_lines(f, options))))
+        outputs.append((sourcename, 'eof', ''.join(emitter.source_lines())))
 
     return outputs
 
@@ -902,7 +1368,7 @@ def main_plugin():
 
     try:
         args = parse_plugin_parameter(request.parameter)
-        own, nanopb_args = split_own_options(args)
+        filter_options, nanopb_args = split_own_options(args)
 
         if nanopb_validator is None:
             raise GeneratorError("nanopb_validator module is not available; "
@@ -912,15 +1378,13 @@ def main_plugin():
                                   "[--nanopb-validate_opt=option] file.proto")
         options, _ = nanopb.process_cmdline(nanopb_args, is_plugin=True)
 
-        # Carry our own options alongside nanopb's, so the generators below can
-        # read everything off a single object.
-        for key, value in own.items():
-            setattr(options, key, value)
-
         # Google's protoc does not currently indicate the full path of proto
         # files.  Instead always add the main file path to the search dirs,
         # that works for the common case.
         options.options_path.append(os.path.dirname(request.file_to_generate[0]))
+
+        # The pristine descriptors are the source of truth for protocol shape.
+        index = DescriptorIndex(request.proto_file)
 
         # Process any include files first, in order to have them available as
         # dependencies when resolving cross-file message references.
@@ -930,18 +1394,38 @@ def main_plugin():
             attach_validate_rules(dep)
             other_files[fdesc.name] = dep
 
+        validator_index = ValidatorIndex()
+        generated_filter = False
+
         for filename in request.file_to_generate:
             for fdesc in request.proto_file:
                 if fdesc.name == filename:
                     for name, insertion_point, content in process_file(
-                            filename, fdesc, options, other_files):
+                            filename, fdesc, options, filter_options, index,
+                            other_files, validator_index):
+                        if insertion_point:
+                            generated_filter = True
                         entry = response.file.add()
                         entry.name = name
                         if insertion_point:
                             entry.insertion_point = insertion_point
                         entry.content = content
+
+        if filter_options.wants_filter and not generated_filter:
+            # The entrypoint resolved (the analyzer would have raised otherwise)
+            # but lives in a file this invocation was not asked to generate, so
+            # nobody emitted a filter. Silently producing none would leave the
+            # boundary missing at link time.
+            raise GeneratorError(
+                "--filter=%s names a message defined in a file that is not being "
+                "generated in this invocation (%s). Run the plugin on the .proto "
+                "that defines the entrypoint."
+                % (filter_options.filter_message,
+                   ', '.join(request.file_to_generate)))
+
     except GeneratorError as e:
         # Reported by protoc as a plugin failure, without a Python traceback.
+        response.ClearField('file')
         response.error = str(e)
 
     if hasattr(plugin_pb2.CodeGeneratorResponse, "FEATURE_PROTO3_OPTIONAL"):

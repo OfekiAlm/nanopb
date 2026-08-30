@@ -16,13 +16,14 @@
 #
 #   NANOPB_VALIDATE_OPTIONS  - If defined, additionally run the nanopb-validate
 #                              plugin, which generates <name>_validate.h and
-#                              <name>_validate.c and injects filter_udp() and
-#                              filter_tcp() into the generated .pb.h/.pb.c.
-#                              Set it to an empty string for plain validation,
-#                              or to plugin options such as
-#                              "--root-message=pkg.Packet" or
-#                              "--envelope-mode=any". NANOPB_OPTIONS are
-#                              forwarded to this plugin automatically.
+#                              <name>_validate.c.  Set it to an empty string for
+#                              plain validation, or add
+#                              "--filter=pkg.BaseMessage" to also inject a packet
+#                              filter (pkg_BaseMessage_filter_udp/_filter_tcp)
+#                              into the generated .pb.h/.pb.c.  Apply --filter
+#                              only to the .proto that defines the entrypoint.
+#                              NANOPB_OPTIONS are forwarded to this plugin
+#                              automatically.
 #
 #   Nanopb_FIND_COMPONENTS   - List of options to append to NANOPB_OPTIONS without the
 #                              leading '--'.  This should not manually be set, but allows
@@ -339,7 +340,7 @@ function(NANOPB_GENERATE_CPP)
     # - Or a newer one, using --nanopb_opt which requires a version of protoc >= 3.6
     # Since nanopb 0.4.6, --nanopb_opt is the default.
     # When validation is requested, nanopb has to emit protoc insertion point
-    # markers so the nanopb-validate plugin can inject filter_udp/filter_tcp
+    # markers so the nanopb-validate plugin can inject the packet filter
     # into the generated .pb.h/.pb.c.
     set(NANOPB_VALIDATE_ARGS)
     if(DEFINED NANOPB_VALIDATE_OPTIONS)

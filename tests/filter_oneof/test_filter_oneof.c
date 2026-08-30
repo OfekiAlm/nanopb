@@ -2,7 +2,7 @@
  * Test suite for oneof envelope pattern validation
  *
  * This test exercises validation of messages with --envelope-mode=oneof
- * using the opcode + oneof pattern. The generated filter_tcp/filter_udp functions
+ * using the opcode + oneof pattern. The generated FilterOneofMessage_filter_tcp/FilterOneofMessage_filter_udp functions
  * are declared in the header but have known issues in the current generator.
  * 
  * This test validates the core validation functionality for oneof patterns.
@@ -62,10 +62,10 @@ static bool encode_message(const pb_msgdesc_t *fields, const void *src_struct,
 }
 
 /*
- * Test valid messages with different oneof variants using filter_udp/filter_tcp
+ * Test valid messages with different oneof variants using FilterOneofMessage_filter_udp/FilterOneofMessage_filter_tcp
  */
 static void test_valid_messages(void) {
-    printf("\n=== Testing Valid Messages with filter_udp ===\n");
+    printf("\n=== Testing Valid Messages with FilterOneofMessage_filter_udp ===\n");
     uint8_t buffer[256];
     size_t msg_len;
     int result;
@@ -80,8 +80,8 @@ static void test_valid_messages(void) {
         /* Encode to buffer */
         assert(encode_message(&FilterOneofMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
         
-        /* Test with filter_udp */
-        result = filter_udp(NULL, buffer, msg_len);
+        /* Test with FilterOneofMessage_filter_udp */
+        result = FilterOneofMessage_filter_udp(NULL, buffer, msg_len);
         EXPECT_VALID(result == 0, "auth message with valid username");
     }
     
@@ -95,8 +95,8 @@ static void test_valid_messages(void) {
         /* Encode to buffer */
         assert(encode_message(&FilterOneofMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
         
-        /* Test with filter_udp */
-        result = filter_udp(NULL, buffer, msg_len);
+        /* Test with FilterOneofMessage_filter_udp */
+        result = FilterOneofMessage_filter_udp(NULL, buffer, msg_len);
         EXPECT_VALID(result == 0, "data message with valid value");
     }
     
@@ -111,15 +111,15 @@ static void test_valid_messages(void) {
         /* Encode to buffer */
         assert(encode_message(&FilterOneofMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
         
-        /* Test with filter_udp */
-        result = filter_udp(NULL, buffer, msg_len);
+        /* Test with FilterOneofMessage_filter_udp */
+        result = FilterOneofMessage_filter_udp(NULL, buffer, msg_len);
         EXPECT_VALID(result == 0, "status message with valid nested payload");
     }
     
-    printf("\n=== Testing Valid Messages with filter_tcp ===\n");
+    printf("\n=== Testing Valid Messages with FilterOneofMessage_filter_tcp ===\n");
     
-    /* Test 4: Valid message with filter_tcp (client to server) */
-    TEST("Valid auth message via filter_tcp (client->server)");
+    /* Test 4: Valid message with FilterOneofMessage_filter_tcp (client to server) */
+    TEST("Valid auth message via FilterOneofMessage_filter_tcp (client->server)");
     {
         FilterOneofMessage msg = FilterOneofMessage_init_zero;
         msg.which_payload = FilterOneofMessage_auth_username_tag;
@@ -128,13 +128,13 @@ static void test_valid_messages(void) {
         /* Encode to buffer */
         assert(encode_message(&FilterOneofMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
         
-        /* Test with filter_tcp (is_to_server = true) */
-        result = filter_tcp(NULL, buffer, msg_len, true);
-        EXPECT_VALID(result == 0, "auth via filter_tcp to server");
+        /* Test with FilterOneofMessage_filter_tcp (is_to_server = true) */
+        result = FilterOneofMessage_filter_tcp(NULL, buffer, msg_len, true);
+        EXPECT_VALID(result == 0, "auth via FilterOneofMessage_filter_tcp to server");
     }
     
-    /* Test 5: Valid message with filter_tcp (server to client) */
-    TEST("Valid data message via filter_tcp (server->client)");
+    /* Test 5: Valid message with FilterOneofMessage_filter_tcp (server to client) */
+    TEST("Valid data message via FilterOneofMessage_filter_tcp (server->client)");
     {
         FilterOneofMessage msg = FilterOneofMessage_init_zero;
         msg.which_payload = FilterOneofMessage_data_value_tag;
@@ -143,9 +143,9 @@ static void test_valid_messages(void) {
         /* Encode to buffer */
         assert(encode_message(&FilterOneofMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
         
-        /* Test with filter_tcp (is_to_server = false) */
-        result = filter_tcp(NULL, buffer, msg_len, false);
-        EXPECT_VALID(result == 0, "data via filter_tcp from server");
+        /* Test with FilterOneofMessage_filter_tcp (is_to_server = false) */
+        result = FilterOneofMessage_filter_tcp(NULL, buffer, msg_len, false);
+        EXPECT_VALID(result == 0, "data via FilterOneofMessage_filter_tcp from server");
     }
 }
 
@@ -153,7 +153,7 @@ static void test_valid_messages(void) {
  * Test invalid messages with validation rule violations using filter functions
  */
 static void test_invalid_messages(void) {
-    printf("\n=== Testing Invalid Messages with filter_udp ===\n");
+    printf("\n=== Testing Invalid Messages with FilterOneofMessage_filter_udp ===\n");
     uint8_t buffer[256];
     size_t msg_len;
     int result;
@@ -168,8 +168,8 @@ static void test_invalid_messages(void) {
         /* Encode to buffer */
         assert(encode_message(&FilterOneofMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
         
-        /* Test with filter_udp - should reject */
-        result = filter_udp(NULL, buffer, msg_len);
+        /* Test with FilterOneofMessage_filter_udp - should reject */
+        result = FilterOneofMessage_filter_udp(NULL, buffer, msg_len);
         EXPECT_INVALID(result == 0, "username too short");
     }
     
@@ -183,15 +183,15 @@ static void test_invalid_messages(void) {
         /* Encode to buffer */
         assert(encode_message(&FilterOneofMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
         
-        /* Test with filter_udp - should reject */
-        result = filter_udp(NULL, buffer, msg_len);
+        /* Test with FilterOneofMessage_filter_udp - should reject */
+        result = FilterOneofMessage_filter_udp(NULL, buffer, msg_len);
         EXPECT_INVALID(result == 0, "negative data value");
     }
     
-    printf("\n=== Testing Invalid Messages with filter_tcp ===\n");
+    printf("\n=== Testing Invalid Messages with FilterOneofMessage_filter_tcp ===\n");
     
-    /* Test 3: Invalid via filter_tcp */
-    TEST("Invalid auth username via filter_tcp");
+    /* Test 3: Invalid via FilterOneofMessage_filter_tcp */
+    TEST("Invalid auth username via FilterOneofMessage_filter_tcp");
     {
         FilterOneofMessage msg = FilterOneofMessage_init_zero;
         msg.which_payload = FilterOneofMessage_auth_username_tag;
@@ -200,9 +200,9 @@ static void test_invalid_messages(void) {
         /* Encode to buffer */
         assert(encode_message(&FilterOneofMessage_msg, &msg, buffer, sizeof(buffer), &msg_len));
         
-        /* Test with filter_tcp - should reject */
-        result = filter_tcp(NULL, buffer, msg_len, true);
-        EXPECT_INVALID(result == 0, "invalid via filter_tcp");
+        /* Test with FilterOneofMessage_filter_tcp - should reject */
+        result = FilterOneofMessage_filter_tcp(NULL, buffer, msg_len, true);
+        EXPECT_INVALID(result == 0, "invalid via FilterOneofMessage_filter_tcp");
     }
 }
 
