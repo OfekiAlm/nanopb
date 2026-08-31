@@ -1,0 +1,11 @@
+syntax = "proto3";
+import "validate.proto";
+
+message Settings {
+    bool use_default = 1;
+    string custom_value = 2;
+
+    option (validate.message).mutex = {
+        fields: ["use_default", "custom_value"]
+    };
+}

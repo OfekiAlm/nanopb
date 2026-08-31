@@ -1410,24 +1410,73 @@ static void test_bypass_behavior(void)
         EXPECT_INVALID(ok, "first_num out of range");
         EXPECT_VIOLATION(viol, "int32.lte");
     }
+
+#ifdef PB_VALIDATE_DEBUG
+    /* Under PB_VALIDATE_DEBUG, validation always collects every violation
+     * (forced collect-all, ignoring PB_VALIDATE_EARLY_EXIT), unlike the
+     * single-violation early-exit default exercised above. */
+    TEST("BypassBehavior - debug mode collects all violations");
+    {
+        BypassBehavior msg = BypassBehavior_init_zero;
+        msg.first_num = 200;   /* > 100, violates int32.lte */
+        msg.second_num = -5;   /* < 0, violates int32.gte */
+        msg.third_num = 50;
+        strcpy(msg.first_str, "");   /* empty, violates string.min_len */
+        strcpy(msg.second_str, "valid");
+        msg.extra1 = 0;
+        msg.extra2 = 0;
+        msg.extra3 = 0;
+        msg.extra4 = 0;
+        msg.extra5 = 0;
+
+        pb_violations_init(&viol);
+        ok = pb_validate_BypassBehavior(&msg, &viol);
+        EXPECT_INVALID(ok, "multiple simultaneous violations");
+
+        if (pb_violations_count(&viol) > 1) {
+            tests_passed++;
+            printf("    [PASS] Collected %u violations (early exit forced off)\n",
+                   (unsigned)pb_violations_count(&viol));
+        } else {
+            tests_failed++;
+            printf("    [FAIL] Expected more than 1 violation, got %u\n",
+                   (unsigned)pb_violations_count(&viol));
+        }
+
+        /* Spot-check that the numeric violation's message carries the
+         * interpolated actual/expected values, not just a static string. */
+        if (strstr(viol.violations[0].message, "200") != NULL) {
+            tests_passed++;
+            printf("    [PASS] Debug message carries interpolated value: '%s'\n",
+                   viol.violations[0].message);
+        } else {
+            tests_failed++;
+            printf("    [FAIL] Debug message missing interpolated value: '%s'\n",
+                   viol.violations[0].message);
+        }
+    }
+#endif /* PB_VALIDATE_DEBUG */
 }
 
 /*======================================================================
  * PATH REPORTING TESTS
- * NOTE: Path reporting has a known limitation - the path buffer pointer
- * is stored in violations, not a copy. After nested validation returns,
- * the path may be truncated or modified.
+ * NOTE: field_path is now a copy owned by the violation itself (made at
+ * the moment the violation is recorded), so it stays valid and correct
+ * for the reporting message's own fields. Cross-message prefixing (e.g.
+ * "nested.nested_name" from the outer message's perspective) is still a
+ * known limitation: each nested pb_validate_* call tracks its own path
+ * independently and has no way to prepend the parent's path.
  *======================================================================*/
 
 static void test_path_reporting(void)
 {
     pb_violations_t viol;
     bool ok;
-    
+
     printf("\n=== Path Reporting Tests ===\n");
-    printf("  NOTE: Path reporting has known limitation (pointer not copy)\n");
-    
-    /* Test top-level field path - path should exist but may be truncated */
+
+    /* Test top-level field path is reported correctly and stays valid
+     * after pb_validate_PathReporting has returned. */
     TEST("PathReporting - violation reported");
     {
         PathReporting msg = PathReporting_init_zero;
@@ -1435,23 +1484,19 @@ static void test_path_reporting(void)
         msg.has_nested = true;
         strcpy(msg.nested.nested_name, "nested");
         msg.nested.nested_value = 0;
-        
+
         pb_violations_init(&viol);
         ok = pb_validate_PathReporting(&msg, &viol);
         EXPECT_INVALID(ok, "name empty");
-        
-        /* Just verify a path was reported (even if truncated) */
-        if (pb_violations_has_any(&viol)) {
-            if (viol.violations[0].field_path != NULL) {
-                tests_passed++;
-                printf("    [PASS] Path pointer exists: '%s'\n", viol.violations[0].field_path);
-            } else {
-                tests_failed++;
-                printf("    [FAIL] Path pointer is null\n");
-            }
+
+        if (pb_violations_has_any(&viol) &&
+            strcmp(viol.violations[0].field_path, "name") == 0) {
+            tests_passed++;
+            printf("    [PASS] Path correctly reported: '%s'\n", viol.violations[0].field_path);
         } else {
             tests_failed++;
-            printf("    [FAIL] No violations recorded\n");
+            printf("    [FAIL] Path missing or incorrect: '%s'\n",
+                   pb_violations_has_any(&viol) ? viol.violations[0].field_path : "(none)");
         }
     }
     
@@ -1514,8 +1559,7 @@ static void test_violations_collection(void)
         pb_violations_init(&viol);
         pb_violations_add(&viol, "test_field", "test_rule", "test_message");
         
-        if (viol.violations[0].field_path != NULL &&
-            strcmp(viol.violations[0].field_path, "test_field") == 0 &&
+        if (strcmp(viol.violations[0].field_path, "test_field") == 0 &&
             strcmp(viol.violations[0].constraint_id, "test_rule") == 0 &&
             strcmp(viol.violations[0].message, "test_message") == 0) {
             tests_passed++;

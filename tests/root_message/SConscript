@@ -1,15 +1,17 @@
 # Build and run root_message test suite
-# Tests the --root-message CLI option for single-message decode+validate mode
+# Tests a single-message filter: every packet is decoded and validated as one
+# fixed message type. TestPacket declares no oneof and carries no Any, so
+# --filter-mode=auto resolves to the "single" strategy on its own.
 
 Import("env")
 
-# Clone environment to set root_message-specific options
+# Clone environment to set filter-specific options
 test_env = env.Clone()
 
-# Enable validation code generation with --root-message option
-# This generates filter_tcp/filter_udp that decode directly as TestPacket
+# Enable validation code generation with a single-message filter.
+# This generates rootmsg_TestPacket_filter_udp/_filter_tcp.
 test_env.Replace(NANOPBFLAGS = "-x,validate.proto")
-test_env.Replace(NANOPB_VALIDATE_FLAGS = "--root-message=rootmsg.TestPacket")
+test_env.Replace(NANOPB_VALIDATE_FLAGS = "--filter=rootmsg.TestPacket")
 
 # Remove -ansi flag since pb_validate.h requires C99 features (inline)
 # Also enable C99 for stdbool.h

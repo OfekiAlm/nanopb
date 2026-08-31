@@ -50,3 +50,4 @@ tests/*/test_*
 !tests/*/test_*.c
 !tests/*/test_*.proto
 !tests/data_generator_any/test_data_generator_any.py
+!tests/validation/unimplemented_rules_check.py

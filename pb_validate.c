@@ -22,12 +22,17 @@ void pb_violations_init(pb_violations_t *violations)
     }
 }
 
-/* Add a violation to the collection */
+/* Add a violation to the collection. field_path and message are copied into
+ * the violation's own storage (never retained by pointer), so this is safe
+ * to call with buffers -- including ctx->path_stack-derived strings -- that
+ * do not outlive the call. */
 bool pb_violations_add(pb_violations_t *violations,
                        const char *field_path,
                        const char *constraint_id,
                        const char *message)
 {
+    pb_violation_t *v;
+
     if (!violations)
         return false;
 
@@ -37,84 +42,155 @@ bool pb_violations_add(pb_violations_t *violations,
         return false;
     }
 
-    pb_violation_t *v = &violations->violations[violations->count];
-    v->field_path = field_path;
+    v = &violations->violations[violations->count];
+
+    if (field_path)
+    {
+        strncpy(v->field_path, field_path, sizeof(v->field_path) - 1);
+        v->field_path[sizeof(v->field_path) - 1] = '\0';
+    }
+    else
+    {
+        v->field_path[0] = '\0';
+    }
+
     v->constraint_id = constraint_id;
+
+#ifdef PB_VALIDATE_DEBUG
+    if (message)
+    {
+        strncpy(v->message, message, sizeof(v->message) - 1);
+        v->message[sizeof(v->message) - 1] = '\0';
+    }
+    else
+    {
+        v->message[0] = '\0';
+    }
+#else
     v->message = message;
+#endif
+
     violations->count++;
 
     return true;
 }
 
-/* Push a field name to the path */
+/* Materialize the context's current path stack into a dotted/bracketed
+ * string, e.g. segments {"user"},{"emails"},{index 2} -> "user.emails[2]".
+ * Called only when a violation is about to be recorded. */
+static void pb_validate_context_format_path(const pb_validate_context_t *ctx, char *out, size_t out_size)
+{
+    size_t pos = 0;
+    pb_size_t i;
+
+    if (!out || out_size == 0)
+        return;
+
+    out[0] = '\0';
+
+    if (!ctx)
+        return;
+
+    for (i = 0; i < ctx->path_depth && pos < out_size; i++)
+    {
+        const pb_validate_path_seg_t *seg = &ctx->path_stack[i];
+        int n;
+
+        if (seg->field_name)
+        {
+            n = snprintf(&out[pos], out_size - pos, (pos > 0) ? ".%s" : "%s", seg->field_name);
+        }
+        else
+        {
+            n = snprintf(&out[pos], out_size - pos, "[%u]", (unsigned int)seg->index);
+        }
+
+        if (n < 0)
+            break;
+
+        pos += (size_t)n;
+        if (pos >= out_size)
+        {
+            pos = out_size - 1;
+            break;
+        }
+    }
+}
+
+/* Push a field name segment onto the path stack (O(1), no string work). */
 bool pb_validate_context_push_field(pb_validate_context_t *ctx, const char *field_name)
 {
-    size_t name_len = strlen(field_name);
-    size_t needed = name_len + (ctx->path_length > 0 ? 1 : 0); /* +1 for dot separator */
-
-    if (ctx->path_length + needed >= PB_VALIDATE_MAX_PATH_LENGTH)
+    if (!ctx || ctx->path_depth >= PB_VALIDATE_MAX_PATH_DEPTH)
         return false;
 
-    if (ctx->path_length > 0)
-    {
-        ctx->path_buffer[ctx->path_length++] = '.';
-    }
-
-    memcpy(&ctx->path_buffer[ctx->path_length], field_name, name_len);
-    ctx->path_length += name_len;
-    ctx->path_buffer[ctx->path_length] = '\0';
+    ctx->path_stack[ctx->path_depth].field_name = field_name;
+    ctx->path_stack[ctx->path_depth].index = 0;
+    ctx->path_depth++;
 
     return true;
 }
 
-/* Pop a field name from the path */
+/* Pop the most recently pushed path segment. */
 void pb_validate_context_pop_field(pb_validate_context_t *ctx)
 {
-    /* Find the last dot and truncate there */
-    char *last_dot = strrchr(ctx->path_buffer, '.');
-    if (last_dot)
-    {
-        *last_dot = '\0';
-        ctx->path_length = last_dot - ctx->path_buffer;
-    }
-    else
-    {
-        /* No dot found, clear the entire path */
-        ctx->path_buffer[0] = '\0';
-        ctx->path_length = 0;
-    }
+    if (ctx && ctx->path_depth > 0)
+        ctx->path_depth--;
 }
 
-/* Push an array index to the path */
+/* Push an array index segment onto the path stack (O(1), no string work). */
 bool pb_validate_context_push_index(pb_validate_context_t *ctx, pb_size_t index)
 {
-    char index_str[16];
-    int len = snprintf(index_str, sizeof(index_str), "[%u]", (unsigned int)index);
-
-    if (len < 0 || (size_t)len >= sizeof(index_str))
+    if (!ctx || ctx->path_depth >= PB_VALIDATE_MAX_PATH_DEPTH)
         return false;
 
-    if (ctx->path_length + len >= PB_VALIDATE_MAX_PATH_LENGTH)
-        return false;
-
-    memcpy(&ctx->path_buffer[ctx->path_length], index_str, len);
-    ctx->path_length += len;
-    ctx->path_buffer[ctx->path_length] = '\0';
+    ctx->path_stack[ctx->path_depth].field_name = NULL;
+    ctx->path_stack[ctx->path_depth].index = index;
+    ctx->path_depth++;
 
     return true;
 }
 
-/* Pop an array index from the path */
+/* Pop the most recently pushed path segment. */
 void pb_validate_context_pop_index(pb_validate_context_t *ctx)
 {
-    /* Find the last '[' and truncate there */
-    char *last_bracket = strrchr(ctx->path_buffer, '[');
-    if (last_bracket)
-    {
-        *last_bracket = '\0';
-        ctx->path_length = last_bracket - ctx->path_buffer;
-    }
+    if (ctx && ctx->path_depth > 0)
+        ctx->path_depth--;
 }
+
+/* Record a violation using the context's current path stack. The
+ * truncation check happens first so a violation that will be discarded
+ * never pays the (failure-path-only) cost of materializing a path. */
+void pb_violations_record(pb_validate_context_t *ctx, const char *constraint_id, const char *message)
+{
+    char path[PB_VALIDATE_MAX_PATH_LENGTH];
+
+    if (!ctx || !ctx->violations)
+        return;
+
+    if (ctx->violations->count >= PB_VALIDATE_MAX_VIOLATIONS)
+    {
+        ctx->violations->truncated = true;
+        return;
+    }
+
+    pb_validate_context_format_path(ctx, path, sizeof(path));
+    pb_violations_add(ctx->violations, path, constraint_id, message);
+}
+
+#ifdef PB_VALIDATE_DEBUG
+/* Debug-only: format actual/expected numeric values into the violation
+ * message. Values are carried as double for a single implementation
+ * covering every numeric rule type; this trades exact int64/uint64
+ * precision at extreme magnitudes for a much smaller surface, which is
+ * an acceptable tradeoff for a human-readable debug message. */
+void pb_violations_record_numeric(pb_validate_context_t *ctx, const char *constraint_id,
+                                   const char *base_message, double actual, double expected)
+{
+    char buf[PB_VALIDATE_MAX_MESSAGE_LENGTH];
+    snprintf(buf, sizeof(buf), "%s (got %g, expected %g)", base_message, actual, expected);
+    pb_violations_record(ctx, constraint_id, buf);
+}
+#endif
 
 /* Helper function to check if a value is in a list */
 static bool value_in_list(const void *value, const void *list, pb_size_t count, size_t elem_size)

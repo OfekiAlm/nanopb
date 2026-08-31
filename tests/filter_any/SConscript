@@ -1,16 +1,17 @@
 # Build and run filter_any test suite
-# Tests filter_tcp/filter_udp with google.protobuf.Any envelope pattern
+# Tests an Any-payload tunnel: FilterAnyAllowed_filter_udp/_filter_tcp
 
 Import("env")
 
 # Clone environment to set validation-specific options
 test_env = env.Clone()
 
-# Enable validation code generation with any envelope mode
+# Generate a filter for the FilterAnyAllowed entrypoint. It carries exactly one
+# google.protobuf.Any field, so --filter-mode=auto resolves to Any dispatch, and
+# the allow-list is taken from the (validate.rules).any.in on that field.
 # Also exclude validate.proto from #include list since it's only used for options
-# Specify envelope name for clarity
 test_env.Replace(NANOPBFLAGS = "-x,validate.proto")
-test_env.Replace(NANOPB_VALIDATE_FLAGS = "--envelope-mode=any,--envelope-name=FilterAnyAllowed")
+test_env.Replace(NANOPB_VALIDATE_FLAGS = "--filter=FilterAnyAllowed")
 
 # Remove -ansi flag since pb_validate.h requires C99 features (inline)
 # Also enable C99 for stdbool.h
@@ -37,10 +38,13 @@ test_env.SideEffect(validate_c, pb_files)
 test_env.SideEffect(validate_h, pb_files)
 validate_sources = [validate_c]
 
-# Also need to compile Any proto with options for the any field
-# Use a separate environment without validation for google.protobuf.Any
+# Also need to compile Any proto with options for the any field.
+# google.protobuf.Any does not define the filter entrypoint, so the --filter
+# option must not leak into this invocation: the plugin (rightly) refuses to
+# generate a filter for an entrypoint that is not in the descriptors it was given.
 any_env = test_env.Clone()
 any_env.Replace(NANOPBFLAGS = "-x,validate.proto")
+any_env.Replace(NANOPB_VALIDATE_FLAGS = "")
 any_env.NanopbProto(["google/protobuf/any", "google/protobuf/any.options"])
 
 # All C source files for the test binary

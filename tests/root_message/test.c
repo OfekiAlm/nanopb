@@ -1,7 +1,7 @@
 /*
  * Test suite for --root-message functionality
  * 
- * Tests the single-root-message mode where filter_tcp/filter_udp
+ * Tests the single-root-message mode where rootmsg_TestPacket_filter_tcp/rootmsg_TestPacket_filter_udp
  * decode and validate a specific message type directly without
  * envelope/Any detection.
  */
@@ -83,14 +83,14 @@ static bool encode_test_packet(uint8_t *buffer, size_t *size,
     return true;
 }
 
-/* Test 1: Valid message through filter_udp */
+/* Test 1: Valid message through rootmsg_TestPacket_filter_udp */
 static void test_valid_message_udp(void)
 {
     uint8_t buffer[256];
     size_t size = sizeof(buffer);
     int result;
     
-    TEST("Valid message - filter_udp");
+    TEST("Valid message - rootmsg_TestPacket_filter_udp");
     
     /* Create a valid TestPacket: name is non-empty, value > 0 */
     if (!encode_test_packet(buffer, &size, "test_name", 42, NULL, 0, false)) {
@@ -99,18 +99,18 @@ static void test_valid_message_udp(void)
         return;
     }
     
-    result = filter_udp(NULL, buffer, size);
+    result = rootmsg_TestPacket_filter_udp(NULL, buffer, size);
     EXPECT_PASS(result, "Valid message should pass validation");
 }
 
-/* Test 2: Valid message through filter_tcp */
+/* Test 2: Valid message through rootmsg_TestPacket_filter_tcp */
 static void test_valid_message_tcp(void)
 {
     uint8_t buffer[256];
     size_t size = sizeof(buffer);
     int result;
     
-    TEST("Valid message - filter_tcp");
+    TEST("Valid message - rootmsg_TestPacket_filter_tcp");
     
     /* Create a valid TestPacket */
     if (!encode_test_packet(buffer, &size, "hello", 100, NULL, 0, false)) {
@@ -119,11 +119,11 @@ static void test_valid_message_tcp(void)
         return;
     }
     
-    result = filter_tcp(NULL, buffer, size, true);
+    result = rootmsg_TestPacket_filter_tcp(NULL, buffer, size, true);
     EXPECT_PASS(result, "Valid message should pass validation");
     
     /* Test with is_to_server = false */
-    result = filter_tcp(NULL, buffer, size, false);
+    result = rootmsg_TestPacket_filter_tcp(NULL, buffer, size, false);
     EXPECT_PASS(result, "Valid message should pass with is_to_server=false");
 }
 
@@ -143,7 +143,7 @@ static void test_invalid_name_empty(void)
         return;
     }
     
-    result = filter_udp(NULL, buffer, size);
+    result = rootmsg_TestPacket_filter_udp(NULL, buffer, size);
     EXPECT_FAIL(result, "Empty name should fail validation");
 }
 
@@ -163,7 +163,7 @@ static void test_invalid_value_zero(void)
         return;
     }
     
-    result = filter_udp(NULL, buffer, size);
+    result = rootmsg_TestPacket_filter_udp(NULL, buffer, size);
     EXPECT_FAIL(result, "Value of 0 should fail validation");
 }
 
@@ -183,7 +183,7 @@ static void test_invalid_value_negative(void)
         return;
     }
     
-    result = filter_udp(NULL, buffer, size);
+    result = rootmsg_TestPacket_filter_udp(NULL, buffer, size);
     EXPECT_FAIL(result, "Negative value should fail validation");
 }
 
@@ -203,7 +203,7 @@ static void test_valid_nested_message(void)
         return;
     }
     
-    result = filter_udp(NULL, buffer, size);
+    result = rootmsg_TestPacket_filter_udp(NULL, buffer, size);
     EXPECT_PASS(result, "Valid nested message should pass validation");
 }
 
@@ -223,7 +223,7 @@ static void test_invalid_nested_count(void)
         return;
     }
     
-    result = filter_udp(NULL, buffer, size);
+    result = rootmsg_TestPacket_filter_udp(NULL, buffer, size);
     EXPECT_FAIL(result, "Nested negative count should fail validation");
 }
 
@@ -235,10 +235,10 @@ static void test_decode_failure(void)
     
     TEST("Decode failure - malformed data");
     
-    result = filter_udp(NULL, garbage, sizeof(garbage));
+    result = rootmsg_TestPacket_filter_udp(NULL, garbage, sizeof(garbage));
     EXPECT_FAIL(result, "Malformed data should fail decoding");
     
-    result = filter_tcp(NULL, garbage, sizeof(garbage), true);
+    result = rootmsg_TestPacket_filter_tcp(NULL, garbage, sizeof(garbage), true);
     EXPECT_FAIL(result, "Malformed data should fail on TCP too");
 }
 
@@ -254,7 +254,7 @@ static void test_empty_buffer(void)
     /* A zero-length protobuf message will decode to default values,
        but validation should fail because name is empty (min_len=1) 
        and value is 0 (gt=0) */
-    result = filter_udp(NULL, placeholder, 0);
+    result = rootmsg_TestPacket_filter_udp(NULL, placeholder, 0);
     /* An empty buffer will decode to default values (empty string, 0), 
        which should fail validation */
     EXPECT_FAIL(result, "Empty buffer should fail validation");
@@ -264,7 +264,7 @@ int main(void)
 {
     printf("=== Root Message Mode Test Suite ===\n\n");
     
-    printf("Testing filter_udp and filter_tcp in single-root-message mode:\n\n");
+    printf("Testing rootmsg_TestPacket_filter_udp and rootmsg_TestPacket_filter_tcp in single-root-message mode:\n\n");
     
     /* Run all tests */
     test_valid_message_udp();

@@ -34,12 +34,28 @@ extern "C"
 #define PB_VALIDATE_MAX_MESSAGE_LENGTH 256
 #endif
 
-    /* Violation structure representing a single validation error */
+    /* Maximum simultaneous field/index nesting depth tracked while validating
+     * (e.g. "a.b[2].c" is depth 3). This bounds a small fixed-size stack, not
+     * a string buffer -- see pb_validate_context_t below. */
+    #ifndef PB_VALIDATE_MAX_PATH_DEPTH
+    #define PB_VALIDATE_MAX_PATH_DEPTH 16
+    #endif
+
+    /* Violation structure representing a single validation error.
+     *
+     * field_path and (in PB_VALIDATE_DEBUG builds) message are owned copies,
+     * materialized only at the moment a violation is recorded. This keeps
+     * them valid for the lifetime of the pb_violations_t regardless of how
+     * deep in nested/oneof/repeated validation the failure occurred. */
     typedef struct pb_violation_s
     {
-        const char *field_path;    /* Dotted path to the field, e.g., "user.email" */
-        const char *constraint_id; /* Constraint identifier, e.g., "string.max_len" */
-        const char *message;       /* Human-readable error message */
+        char field_path[PB_VALIDATE_MAX_PATH_LENGTH]; /* Dotted path to the field, e.g., "user.email" */
+        const char *constraint_id; /* Constraint identifier, e.g., "string.max_len" (string literal) */
+#ifdef PB_VALIDATE_DEBUG
+        char message[PB_VALIDATE_MAX_MESSAGE_LENGTH]; /* Human-readable error message, may include values */
+#else
+        const char *message;       /* Human-readable error message (string literal) */
+#endif
     } pb_violation_t;
 
     /* Violations collection structure */
@@ -53,7 +69,9 @@ extern "C"
     /* Initialize a violations structure */
     void pb_violations_init(pb_violations_t *violations);
 
-    /* Add a violation to the collection */
+    /* Add a violation to the collection. field_path and message are copied
+     * (not retained by pointer), so the caller's buffers need not outlive
+     * this call. */
     bool pb_violations_add(pb_violations_t *violations,
                            const char *field_path,
                            const char *constraint_id,
@@ -71,13 +89,22 @@ extern "C"
         return pb_violations_count(violations) > 0;
     }
 
+    /* One segment of the path currently being validated: either a field name
+     * (string literal from generated code) or a repeated-item index. Pushing
+     * and popping a segment is an O(1) struct store/decrement -- no string
+     * work happens until (and unless) a violation is actually recorded. */
+    typedef struct pb_validate_path_seg_s
+    {
+        const char *field_name; /* non-NULL: field-name segment */
+        pb_size_t index;        /* valid iff field_name == NULL: array index segment */
+    } pb_validate_path_seg_t;
+
     /* Validation context structure (internal use) */
     typedef struct pb_validate_context_s
     {
         pb_violations_t *violations;
-        char path_buffer[PB_VALIDATE_MAX_PATH_LENGTH];
-        pb_size_t path_length;
-        bool early_exit;
+        pb_validate_path_seg_t path_stack[PB_VALIDATE_MAX_PATH_DEPTH];
+        pb_size_t path_depth;
     } pb_validate_context_t;
 
         /* Convenience macros for generated validators
@@ -100,7 +127,6 @@ extern "C"
     #define PB_VALIDATE_BEGIN(ctx_var, MsgType, msg_ptr, violations_ptr) \
         pb_validate_context_t ctx_var = {0};                             \
         ctx_var.violations = (violations_ptr);                           \
-        ctx_var.early_exit = PB_VALIDATE_EARLY_EXIT;                     \
         if (!(msg_ptr)) return false
 
     #define PB_VALIDATE_END(ctx_var, violations_ptr) \
@@ -108,7 +134,7 @@ extern "C"
         return !pb_violations_has_any(violations_ptr)
 
     /* Per-field context helpers. These wrap push/pop of the field name
-     * into the validation context path buffer.
+     * into the validation context's path stack.
      */
     #define PB_VALIDATE_FIELD_BEGIN(ctx_var, field_name_str)                 \
         if (!pb_validate_context_push_field(&(ctx_var), (field_name_str)))   \
@@ -128,38 +154,98 @@ extern "C"
             }                                                 \
         } while (0)
 
+    /* Whether a failed check should abort validation immediately.
+     * Prod (PB_VALIDATE_DEBUG undefined): compile-time constant, folds away
+     * entirely -- this is what makes early-exit "free" in the fast path.
+     * Debug: always 0, forcing every check to run so all violations on a
+     * message are collected in one call.
+     */
+    #ifdef PB_VALIDATE_DEBUG
+    #define PB_VALIDATE_SHOULD_EXIT(ctx_var) (0)
+    #else
+    #define PB_VALIDATE_SHOULD_EXIT(ctx_var) (PB_VALIDATE_EARLY_EXIT)
+    #endif
+
+    /* Record a violation using the context's current path stack and a
+     * static (string-literal) message. This is the single point every
+     * check macro below funnels through; behavior (whether the message is
+     * copied or stored by pointer) is decided once, in pb_violations_add's
+     * implementation, based on PB_VALIDATE_DEBUG. */
+    #define PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, MESSAGE) \
+        pb_violations_record(&(ctx_var), (CONSTRAINT_ID), (MESSAGE))
+
     /* Generic numeric comparison helper. The generator supplies the
      * concrete C type, validator function and rule enum.
      */
+#ifdef PB_VALIDATE_DEBUG
     #define PB_VALIDATE_NUMERIC_GENERIC(ctx_var, msg_ptr, field_name, CTYPE, FUNC, RULE_ENUM, VALUE_EXPR, CONSTRAINT_ID) \
         do {                                                                                                            \
             CTYPE __pb_expected = (CTYPE)(VALUE_EXPR);                                                                  \
             if (!FUNC((msg_ptr)->field_name, &__pb_expected, (RULE_ENUM))) {                                            \
-                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "Value constraint failed"); \
-                if ((ctx_var).early_exit) return false;                                                                 \
+                pb_violations_record_numeric(&(ctx_var), (CONSTRAINT_ID), "Value constraint failed",                    \
+                                              (double)((msg_ptr)->field_name), (double)__pb_expected);                  \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                                     \
             }                                                                                                           \
         } while (0)
+#else
+    #define PB_VALIDATE_NUMERIC_GENERIC(ctx_var, msg_ptr, field_name, CTYPE, FUNC, RULE_ENUM, VALUE_EXPR, CONSTRAINT_ID) \
+        do {                                                                                                            \
+            CTYPE __pb_expected = (CTYPE)(VALUE_EXPR);                                                                  \
+            if (!FUNC((msg_ptr)->field_name, &__pb_expected, (RULE_ENUM))) {                                            \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "Value constraint failed");                                  \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                                     \
+            }                                                                                                           \
+        } while (0)
+#endif
 
     /* String length helpers for normal (non-callback) string fields. */
+#ifdef PB_VALIDATE_DEBUG
+    #define PB_VALIDATE_STR_MIN_LEN(ctx_var, msg_ptr, field_name, MIN_LEN, CONSTRAINT_ID)                      \
+        do {                                                                                                   \
+            uint32_t __pb_min_len_v = (uint32_t)(MIN_LEN);                                                     \
+            pb_size_t __pb_len_v = (pb_size_t)strlen((msg_ptr)->field_name);                                   \
+            if (!pb_validate_string((msg_ptr)->field_name, __pb_len_v,                                         \
+                                    &__pb_min_len_v, PB_VALIDATE_RULE_MIN_LEN)) {                               \
+                pb_violations_record_numeric(&(ctx_var), (CONSTRAINT_ID), "String too short",                  \
+                                              (double)__pb_len_v, (double)__pb_min_len_v);                      \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                             \
+            }                                                                                                  \
+        } while (0)
+#else
     #define PB_VALIDATE_STR_MIN_LEN(ctx_var, msg_ptr, field_name, MIN_LEN, CONSTRAINT_ID)                      \
         do {                                                                                                   \
             uint32_t __pb_min_len_v = (uint32_t)(MIN_LEN);                                                     \
             if (!pb_validate_string((msg_ptr)->field_name, (pb_size_t)strlen((msg_ptr)->field_name),          \
                                     &__pb_min_len_v, PB_VALIDATE_RULE_MIN_LEN)) {                              \
-                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "String too short"); \
-                if ((ctx_var).early_exit) return false;                                                        \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "String too short");                                \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                            \
             }                                                                                                  \
         } while (0)
+#endif
 
+#ifdef PB_VALIDATE_DEBUG
+    #define PB_VALIDATE_STR_MAX_LEN(ctx_var, msg_ptr, field_name, MAX_LEN, CONSTRAINT_ID)                      \
+        do {                                                                                                   \
+            uint32_t __pb_max_len_v = (uint32_t)(MAX_LEN);                                                     \
+            pb_size_t __pb_len_v = (pb_size_t)strlen((msg_ptr)->field_name);                                   \
+            if (!pb_validate_string((msg_ptr)->field_name, __pb_len_v,                                         \
+                                    &__pb_max_len_v, PB_VALIDATE_RULE_MAX_LEN)) {                               \
+                pb_violations_record_numeric(&(ctx_var), (CONSTRAINT_ID), "String too long",                   \
+                                              (double)__pb_len_v, (double)__pb_max_len_v);                      \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                             \
+            }                                                                                                  \
+        } while (0)
+#else
     #define PB_VALIDATE_STR_MAX_LEN(ctx_var, msg_ptr, field_name, MAX_LEN, CONSTRAINT_ID)                      \
         do {                                                                                                   \
             uint32_t __pb_max_len_v = (uint32_t)(MAX_LEN);                                                     \
             if (!pb_validate_string((msg_ptr)->field_name, (pb_size_t)strlen((msg_ptr)->field_name),          \
                                     &__pb_max_len_v, PB_VALIDATE_RULE_MAX_LEN)) {                              \
-                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "String too long"); \
-                if ((ctx_var).early_exit) return false;                                                        \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "String too long");                                 \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                            \
             }                                                                                                  \
         } while (0)
+#endif
 
     /* String pattern helpers for normal (non-callback) string fields. */
     #define PB_VALIDATE_STR_PREFIX(ctx_var, msg_ptr, field_name, PREFIX_STR, CONSTRAINT_ID)                     \
@@ -167,9 +253,8 @@ extern "C"
             const char *__pb_prefix = (PREFIX_STR);                                                             \
             if (!pb_validate_string((msg_ptr)->field_name, (pb_size_t)strlen((msg_ptr)->field_name),           \
                                     __pb_prefix, PB_VALIDATE_RULE_PREFIX)) {                                   \
-                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),                 \
-                                  "String must start with specified prefix");                                 \
-                if ((ctx_var).early_exit) return false;                                                         \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "String must start with specified prefix");         \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                             \
             }                                                                                                   \
         } while (0)
 
@@ -178,9 +263,8 @@ extern "C"
             const char *__pb_suffix = (SUFFIX_STR);                                                             \
             if (!pb_validate_string((msg_ptr)->field_name, (pb_size_t)strlen((msg_ptr)->field_name),           \
                                     __pb_suffix, PB_VALIDATE_RULE_SUFFIX)) {                                   \
-                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),                 \
-                                  "String must end with specified suffix");                                   \
-                if ((ctx_var).early_exit) return false;                                                         \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "String must end with specified suffix");           \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                             \
             }                                                                                                   \
         } while (0)
 
@@ -189,9 +273,8 @@ extern "C"
             const char *__pb_needle = (NEEDLE_STR);                                                             \
             if (!pb_validate_string((msg_ptr)->field_name, (pb_size_t)strlen((msg_ptr)->field_name),           \
                                     __pb_needle, PB_VALIDATE_RULE_CONTAINS)) {                                 \
-                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),                 \
-                                  "String must contain specified substring");                                  \
-                if ((ctx_var).early_exit) return false;                                                         \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "String must contain specified substring");         \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                             \
             }                                                                                                   \
         } while (0)
 
@@ -202,8 +285,8 @@ extern "C"
         do {                                                                                                    \
             if (!pb_validate_string((msg_ptr)->field_name, (pb_size_t)strlen((msg_ptr)->field_name),           \
                                     NULL, (RULE_ENUM))) {                                                       \
-                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), (ERR_MSG));     \
-                if ((ctx_var).early_exit) return false;                                                         \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, ERR_MSG);                                            \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                             \
             }                                                                                                   \
         } while (0)
 
@@ -233,8 +316,8 @@ extern "C"
             const char *__pb_s = NULL; pb_size_t __pb_l = 0;                                                    \
             if (pb_read_callback_string(&(msg_ptr)->field_name, &__pb_s, &__pb_l)) {                            \
                 if (!pb_validate_string(__pb_s, __pb_l, NULL, (RULE_ENUM))) {                                   \
-                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), (ERR_MSG)); \
-                    if ((ctx_var).early_exit) return false;                                                     \
+                    PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, ERR_MSG);                                        \
+                    if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                         \
                 }                                                                                               \
             }                                                                                                   \
         } while (0)
@@ -248,8 +331,8 @@ extern "C"
             if (pb_read_callback_string(&(msg_ptr)->field_name, &__pb_s, &__pb_l)) {                            \
                 uint32_t __pb_len_v = (uint32_t)(LEN_VALUE);                                                    \
                 if (!pb_validate_string(__pb_s, __pb_l, &__pb_len_v, (RULE_ENUM))) {                            \
-                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), (ERR_MSG)); \
-                    if ((ctx_var).early_exit) return false;                                                     \
+                    PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, ERR_MSG);                                        \
+                    if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                         \
                 }                                                                                               \
             }                                                                                                   \
         } while (0)
@@ -263,8 +346,8 @@ extern "C"
             if (pb_read_callback_string(&(msg_ptr)->field_name, &__pb_s, &__pb_l)) {                            \
                 const char *__pb_pattern = (PATTERN_STR);                                                       \
                 if (!pb_validate_string(__pb_s, __pb_l, __pb_pattern, (RULE_ENUM))) {                           \
-                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), (ERR_MSG)); \
-                    if ((ctx_var).early_exit) return false;                                                     \
+                    PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, ERR_MSG);                                        \
+                    if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                         \
                 }                                                                                               \
             }                                                                                                   \
         } while (0)
@@ -278,8 +361,8 @@ extern "C"
             const char *__pb_s = NULL; pb_size_t __pb_l = 0;                                                    \
             if (pb_read_callback_string(&(msg_ptr)->field_name, &__pb_s, &__pb_l)) {                            \
                 if (!pb_validate_string(__pb_s, __pb_l, (RULE_DATA_EXPR), (RULE_ENUM))) {                       \
-                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), (ERR_MSG)); \
-                    if ((ctx_var).early_exit) return false;                                                     \
+                    PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, ERR_MSG);                                        \
+                    if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                         \
                 }                                                                                               \
             }                                                                                                   \
         } while (0)
@@ -324,16 +407,16 @@ extern "C"
     #define PB_VALIDATE_MIN_ITEMS(ctx_var, msg_ptr, field_name, MIN_ITEMS, CONSTRAINT_ID)                      \
         do {                                                                                                   \
             if (!pb_validate_min_items((msg_ptr)->field_name##_count, (MIN_ITEMS))) {                          \
-                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "Too few items"); \
-                if ((ctx_var).early_exit) return false;                                                        \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "Too few items");                                    \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                            \
             }                                                                                                  \
         } while (0)
 
     #define PB_VALIDATE_MAX_ITEMS(ctx_var, msg_ptr, field_name, MAX_ITEMS, CONSTRAINT_ID)                      \
         do {                                                                                                   \
             if (!pb_validate_max_items((msg_ptr)->field_name##_count, (MAX_ITEMS))) {                          \
-                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "Too many items"); \
-                if ((ctx_var).early_exit) return false;                                                        \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "Too many items");                                  \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                            \
             }                                                                                                  \
         } while (0)
 
@@ -343,9 +426,8 @@ extern "C"
             for (pb_size_t __pb_i = 0; __pb_i < (msg_ptr)->field_name##_count; ++__pb_i) {                     \
                 for (pb_size_t __pb_j = __pb_i + 1; __pb_j < (msg_ptr)->field_name##_count; ++__pb_j) {        \
                     if ((msg_ptr)->field_name[__pb_i] == (msg_ptr)->field_name[__pb_j]) {                      \
-                        pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),        \
-                                          "Repeated field elements must be unique");                           \
-                        if ((ctx_var).early_exit) return false;                                                \
+                        PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "Repeated field elements must be unique");   \
+                        if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                     \
                     }                                                                                          \
                 }                                                                                              \
             }                                                                                                  \
@@ -357,9 +439,8 @@ extern "C"
             for (pb_size_t __pb_i = 0; __pb_i < (msg_ptr)->field_name##_count; ++__pb_i) {                     \
                 for (pb_size_t __pb_j = __pb_i + 1; __pb_j < (msg_ptr)->field_name##_count; ++__pb_j) {        \
                     if (strcmp((msg_ptr)->field_name[__pb_i], (msg_ptr)->field_name[__pb_j]) == 0) {           \
-                        pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),        \
-                                          "Repeated field elements must be unique");                           \
-                        if ((ctx_var).early_exit) return false;                                                \
+                        PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "Repeated field elements must be unique");   \
+                        if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                     \
                     }                                                                                          \
                 }                                                                                              \
             }                                                                                                  \
@@ -373,9 +454,8 @@ extern "C"
                     if ((msg_ptr)->field_name[__pb_i].size == (msg_ptr)->field_name[__pb_j].size &&            \
                         memcmp((msg_ptr)->field_name[__pb_i].bytes, (msg_ptr)->field_name[__pb_j].bytes,       \
                                (msg_ptr)->field_name[__pb_i].size) == 0) {                                    \
-                        pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),        \
-                                          "Repeated field elements must be unique");                           \
-                        if ((ctx_var).early_exit) return false;                                                \
+                        PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "Repeated field elements must be unique");   \
+                        if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                     \
                     }                                                                                          \
                 }                                                                                              \
             }                                                                                                  \
@@ -390,9 +470,8 @@ extern "C"
                 if (!pb_validate_string((msg_ptr)->field_name[__pb_i],                                         \
                                         (pb_size_t)strlen((msg_ptr)->field_name[__pb_i]),                      \
                                         &__pb_min_len_v, PB_VALIDATE_RULE_MIN_LEN)) {                          \
-                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),            \
-                                      "String too short");                                                     \
-                    if ((ctx_var).early_exit) { pb_validate_context_pop_index(&(ctx_var)); return false; }     \
+                    PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "String too short");                            \
+                    if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) { pb_validate_context_pop_index(&(ctx_var)); return false; } \
                 }                                                                                              \
                 pb_validate_context_pop_index(&(ctx_var));                                                     \
             }                                                                                                  \
@@ -406,9 +485,8 @@ extern "C"
                 if (!pb_validate_string((msg_ptr)->field_name[__pb_i],                                         \
                                         (pb_size_t)strlen((msg_ptr)->field_name[__pb_i]),                      \
                                         &__pb_max_len_v, PB_VALIDATE_RULE_MAX_LEN)) {                          \
-                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),            \
-                                      "String too long");                                                      \
-                    if ((ctx_var).early_exit) { pb_validate_context_pop_index(&(ctx_var)); return false; }     \
+                    PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "String too long");                             \
+                    if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) { pb_validate_context_pop_index(&(ctx_var)); return false; } \
                 }                                                                                              \
                 pb_validate_context_pop_index(&(ctx_var));                                                     \
             }                                                                                                  \
@@ -421,9 +499,8 @@ extern "C"
                 pb_validate_context_push_index(&(ctx_var), __pb_i);                                            \
                 CTYPE __pb_expected = (CTYPE)(VALUE_EXPR);                                                     \
                 if (!FUNC((msg_ptr)->field_name[__pb_i], &__pb_expected, (RULE_ENUM))) {                       \
-                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),            \
-                                      "Value constraint failed");                                              \
-                    if ((ctx_var).early_exit) { pb_validate_context_pop_index(&(ctx_var)); return false; }     \
+                    PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "Value constraint failed");                     \
+                    if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) { pb_validate_context_pop_index(&(ctx_var)); return false; } \
                 }                                                                                              \
                 pb_validate_context_pop_index(&(ctx_var));                                                     \
             }                                                                                                  \
@@ -433,16 +510,16 @@ extern "C"
     #define PB_VALIDATE_BYTES_MIN_LEN(ctx_var, msg_ptr, field_name, MIN_LEN, CONSTRAINT_ID)                     \
         do {                                                                                                   \
             if ((msg_ptr)->field_name.size < (MIN_LEN)) {                                                      \
-                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "Bytes too short"); \
-                if ((ctx_var).early_exit) return false;                                                        \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "Bytes too short");                                  \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                            \
             }                                                                                                  \
         } while (0)
 
     #define PB_VALIDATE_BYTES_MAX_LEN(ctx_var, msg_ptr, field_name, MAX_LEN, CONSTRAINT_ID)                     \
         do {                                                                                                   \
             if ((msg_ptr)->field_name.size > (MAX_LEN)) {                                                      \
-                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "Bytes too long"); \
-                if ((ctx_var).early_exit) return false;                                                        \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "Bytes too long");                                   \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                            \
             }                                                                                                  \
         } while (0)
 
@@ -453,9 +530,8 @@ extern "C"
         do {                                                                                                   \
             if (!pb_validate_enum_defined_only((int)(msg_ptr)->field_name, (values_arr),                       \
                     (pb_size_t)(sizeof(values_arr)/sizeof((values_arr)[0])))) {                                \
-                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),                \
-                                  "Value must be a defined enum value");                                       \
-                if ((ctx_var).early_exit) return false;                                                        \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "Value must be a defined enum value");               \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                            \
             }                                                                                                  \
         } while (0)
 
@@ -463,7 +539,7 @@ extern "C"
     #define PB_VALIDATE_NESTED_MSG(ctx_var, validate_func, msg_ptr, field_name, violations_ptr)                 \
         do {                                                                                                   \
             bool __pb_ok_nested = validate_func(&(msg_ptr)->field_name, (violations_ptr));                     \
-            if (!__pb_ok_nested && (ctx_var).early_exit) {                                                     \
+            if (!__pb_ok_nested && PB_VALIDATE_SHOULD_EXIT(ctx_var)) {                                          \
                 pb_validate_context_pop_field(&(ctx_var));                                                     \
                 return false;                                                                                  \
             }                                                                                                  \
@@ -473,7 +549,7 @@ extern "C"
         do {                                                                                                   \
             if ((msg_ptr)->has_##field_name) {                                                                 \
                 bool __pb_ok_nested = validate_func(&(msg_ptr)->field_name, (violations_ptr));                 \
-                if (!__pb_ok_nested && (ctx_var).early_exit) {                                                 \
+                if (!__pb_ok_nested && PB_VALIDATE_SHOULD_EXIT(ctx_var)) {                                      \
                     pb_validate_context_pop_field(&(ctx_var));                                                 \
                     return false;                                                                              \
                 }                                                                                              \
@@ -484,7 +560,7 @@ extern "C"
         do {                                                                                                   \
             if ((msg_ptr)->field_name) {                                                                       \
                 bool __pb_ok_nested = validate_func((msg_ptr)->field_name, (violations_ptr));                  \
-                if (!__pb_ok_nested && (ctx_var).early_exit) {                                                 \
+                if (!__pb_ok_nested && PB_VALIDATE_SHOULD_EXIT(ctx_var)) {                                      \
                     pb_validate_context_pop_field(&(ctx_var));                                                 \
                     return false;                                                                              \
                 }                                                                                              \
@@ -498,9 +574,8 @@ extern "C"
         do {                                                                                                   \
             CTYPE __pb_expected = (CTYPE)(VALUE_EXPR);                                                         \
             if (!FUNC((msg_ptr)->oneof_name.field_name, &__pb_expected, (RULE_ENUM))) {                        \
-                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),                \
-                                  "Value constraint failed");                                                  \
-                if ((ctx_var).early_exit) return false;                                                        \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "Value constraint failed");                          \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                            \
             }                                                                                                  \
         } while (0)
 
@@ -510,8 +585,8 @@ extern "C"
             if (!pb_validate_string((msg_ptr)->oneof_name.field_name,                                          \
                     (pb_size_t)strlen((msg_ptr)->oneof_name.field_name),                                       \
                     &__pb_min_len, PB_VALIDATE_RULE_MIN_LEN)) {                                                \
-                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "String too short"); \
-                if ((ctx_var).early_exit) return false;                                                        \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "String too short");                                \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                            \
             }                                                                                                  \
         } while (0)
 
@@ -521,8 +596,8 @@ extern "C"
             if (!pb_validate_string((msg_ptr)->oneof_name.field_name,                                          \
                     (pb_size_t)strlen((msg_ptr)->oneof_name.field_name),                                       \
                     &__pb_max_len, PB_VALIDATE_RULE_MAX_LEN)) {                                                \
-                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "String too long"); \
-                if ((ctx_var).early_exit) return false;                                                        \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "String too long");                                 \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                            \
             }                                                                                                  \
         } while (0)
 
@@ -532,9 +607,8 @@ extern "C"
             if (!pb_validate_string((msg_ptr)->oneof_name.field_name,                                          \
                     (pb_size_t)strlen((msg_ptr)->oneof_name.field_name),                                       \
                     __pb_prefix, PB_VALIDATE_RULE_PREFIX)) {                                                   \
-                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),                \
-                                  "String must start with specified prefix");                                  \
-                if ((ctx_var).early_exit) return false;                                                        \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "String must start with specified prefix");          \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                            \
             }                                                                                                  \
         } while (0)
 
@@ -544,9 +618,8 @@ extern "C"
             if (!pb_validate_string((msg_ptr)->oneof_name.field_name,                                          \
                     (pb_size_t)strlen((msg_ptr)->oneof_name.field_name),                                       \
                     __pb_suffix, PB_VALIDATE_RULE_SUFFIX)) {                                                   \
-                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),                \
-                                  "String must end with specified suffix");                                    \
-                if ((ctx_var).early_exit) return false;                                                        \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "String must end with specified suffix");            \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                            \
             }                                                                                                  \
         } while (0)
 
@@ -556,9 +629,8 @@ extern "C"
             if (!pb_validate_string((msg_ptr)->oneof_name.field_name,                                          \
                     (pb_size_t)strlen((msg_ptr)->oneof_name.field_name),                                       \
                     __pb_needle, PB_VALIDATE_RULE_CONTAINS)) {                                                 \
-                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),                \
-                                  "String must contain specified substring");                                  \
-                if ((ctx_var).early_exit) return false;                                                        \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "String must contain specified substring");          \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                            \
             }                                                                                                  \
         } while (0)
 
@@ -567,24 +639,24 @@ extern "C"
             if (!pb_validate_string((msg_ptr)->oneof_name.field_name,                                          \
                     (pb_size_t)strlen((msg_ptr)->oneof_name.field_name),                                       \
                     NULL, (RULE_ENUM))) {                                                                      \
-                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), (ERR_MSG));    \
-                if ((ctx_var).early_exit) return false;                                                        \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, ERR_MSG);                                            \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                            \
             }                                                                                                  \
         } while (0)
 
     #define PB_VALIDATE_ONEOF_BYTES_MIN_LEN(ctx_var, msg_ptr, oneof_name, field_name, MIN_LEN, CONSTRAINT_ID)   \
         do {                                                                                                   \
             if ((msg_ptr)->oneof_name.field_name.size < (MIN_LEN)) {                                           \
-                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "Bytes too short"); \
-                if ((ctx_var).early_exit) return false;                                                        \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "Bytes too short");                                  \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                            \
             }                                                                                                  \
         } while (0)
 
     #define PB_VALIDATE_ONEOF_BYTES_MAX_LEN(ctx_var, msg_ptr, oneof_name, field_name, MAX_LEN, CONSTRAINT_ID)   \
         do {                                                                                                   \
             if ((msg_ptr)->oneof_name.field_name.size > (MAX_LEN)) {                                           \
-                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID), "Bytes too long"); \
-                if ((ctx_var).early_exit) return false;                                                        \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "Bytes too long");                                   \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                            \
             }                                                                                                  \
         } while (0)
 
@@ -603,9 +675,8 @@ extern "C"
                     }                                                                                          \
                 }                                                                                              \
                 if (!__pb_valid) {                                                                             \
-                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),            \
-                                      "type_url not in allowed list");                                         \
-                    if ((ctx_var).early_exit) return false;                                                    \
+                    PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "type_url not in allowed list");                 \
+                    if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                        \
                 }                                                                                              \
             }                                                                                                  \
         } while (0)
@@ -616,9 +687,8 @@ extern "C"
                 const char *__pb_type_url = (const char *)(msg_ptr)->field_name.type_url;                      \
                 for (size_t __pb_i = 0; __pb_i < (count); ++__pb_i) {                                          \
                     if (__pb_type_url && strcmp(__pb_type_url, (type_urls)[__pb_i]) == 0) {                    \
-                        pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),        \
-                                          "type_url in disallowed list");                                      \
-                        if ((ctx_var).early_exit) return false;                                                \
+                        PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "type_url in disallowed list");              \
+                        if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                    \
                         break;                                                                                 \
                     }                                                                                          \
                 }                                                                                              \
@@ -634,9 +704,8 @@ extern "C"
                 time_t __pb_now = time(NULL);                                                                  \
                 int64_t __pb_now_seconds = (int64_t)__pb_now;                                                  \
                 if ((msg_ptr)->field_name.seconds <= __pb_now_seconds) {                                       \
-                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),            \
-                                      "timestamp must be after current time");                                 \
-                    if ((ctx_var).early_exit) return false;                                                    \
+                    PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "timestamp must be after current time");         \
+                    if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                        \
                 }                                                                                              \
             }                                                                                                  \
         } while (0)
@@ -647,9 +716,8 @@ extern "C"
                 time_t __pb_now = time(NULL);                                                                  \
                 int64_t __pb_now_seconds = (int64_t)__pb_now;                                                  \
                 if ((msg_ptr)->field_name.seconds >= __pb_now_seconds) {                                       \
-                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),            \
-                                      "timestamp must be before current time");                                \
-                    if ((ctx_var).early_exit) return false;                                                    \
+                    PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "timestamp must be before current time");        \
+                    if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                        \
                 }                                                                                              \
             }                                                                                                  \
         } while (0)
@@ -662,9 +730,8 @@ extern "C"
                 int64_t __pb_diff = (msg_ptr)->field_name.seconds - __pb_now_seconds;                          \
                 if (__pb_diff < 0) __pb_diff = -__pb_diff;                                                     \
                 if (__pb_diff > (seconds_val)) {                                                               \
-                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),            \
-                                      "timestamp not within specified duration from now");                     \
-                    if ((ctx_var).early_exit) return false;                                                    \
+                    PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "timestamp not within specified duration from now"); \
+                    if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                        \
                 }                                                                                              \
             }                                                                                                  \
         } while (0)
@@ -682,9 +749,8 @@ extern "C"
                 }                                                                                               \
             }                                                                                                   \
             if (!__pb_valid) {                                                                                  \
-                pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),                 \
-                                  "Value must be one of allowed set");                                          \
-                if ((ctx_var).early_exit) return false;                                                         \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "Value must be one of allowed set");                  \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                             \
             }                                                                                                   \
         } while (0)
 
@@ -692,9 +758,8 @@ extern "C"
         do {                                                                                                    \
             for (size_t __pb_i = 0; __pb_i < (count); ++__pb_i) {                                               \
                 if (strcmp((msg_ptr)->field_name, (values_arr)[__pb_i]) == 0) {                                 \
-                    pb_violations_add((ctx_var).violations, (ctx_var).path_buffer, (CONSTRAINT_ID),             \
-                                      "Value must not be one of forbidden set");                                \
-                    if ((ctx_var).early_exit) return false;                                                     \
+                    PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "Value must not be one of forbidden set");        \
+                    if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                         \
                     break;                                                                                      \
                 }                                                                                               \
             }                                                                                                   \
@@ -716,6 +781,17 @@ extern "C"
 
     #define PB_VALIDATE_ONEOF_END()                                                                              \
         }
+
+    /* Debug-only pluggable logging hook for generated packet filters
+     * (pkg_Msg_filter_udp/filter_tcp). Default is a no-op; an application
+     * may #define this before including generated filter code to route
+     * rejected-packet diagnostics to its own logger. Generated filter code
+     * only calls this from within "#ifdef PB_VALIDATE_DEBUG" blocks, so it
+     * costs nothing when debug mode is off.
+     */
+    #ifndef PB_VALIDATE_FILTER_LOG
+    #define PB_VALIDATE_FILTER_LOG(...) ((void)0)
+    #endif
 
     /* Rule types for internal use */
     typedef enum
@@ -784,11 +860,31 @@ extern "C"
     struct pb_callback_s; /* forward decl from pb.h */
     bool pb_read_callback_string(const struct pb_callback_s *callback, const char **out_str, pb_size_t *out_len);
 
-    /* Helper functions for validation context */
+    /* Helper functions for validation context path tracking (O(1) push/pop,
+     * no string work -- see pb_validate_path_seg_t above). */
     bool pb_validate_context_push_field(pb_validate_context_t *ctx, const char *field_name);
     void pb_validate_context_pop_field(pb_validate_context_t *ctx);
     bool pb_validate_context_push_index(pb_validate_context_t *ctx, pb_size_t index);
     void pb_validate_context_pop_index(pb_validate_context_t *ctx);
+
+    /* Record a violation using the context's current path stack, materializing
+     * the dotted/bracketed path string only now (and only if the violation
+     * will actually be stored, i.e. PB_VALIDATE_MAX_VIOLATIONS not yet hit).
+     * This is what PB_VALIDATE_RECORD expands to; called directly by
+     * generator-emitted code that doesn't go through one of the check macros
+     * above (e.g. hand-emitted loops for repeated.items / in / not_in rules). */
+    void pb_violations_record(pb_validate_context_t *ctx, const char *constraint_id, const char *message);
+
+#ifdef PB_VALIDATE_DEBUG
+    /* Debug-only: like pb_violations_record, but formats the actual and
+     * expected numeric values into the violation message
+     * (e.g. "Value constraint failed (got 5000, expected <= 100)").
+     * Only used by the macros/emitters that carry a comparable numeric
+     * value (numeric rules, string length rules); everything else still
+     * records a plain static message via pb_violations_record. */
+    void pb_violations_record_numeric(pb_validate_context_t *ctx, const char *constraint_id,
+                                       const char *base_message, double actual, double expected);
+#endif
 
     /* Repeated field count helpers */
     static inline bool pb_validate_min_items(pb_size_t count, pb_size_t min_required)

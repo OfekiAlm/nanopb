@@ -1,0 +1,7 @@
+syntax = "proto3";
+import "validate.proto";
+import "nanopb.proto";
+
+message Bar {
+    map<string, int32> m = 1 [(nanopb).max_count = 4, (validate.rules).map.no_sparse = true];
+}

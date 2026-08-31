@@ -137,3 +137,41 @@ nested_test_prog = nested_env.Program(
 
 # Run the nested import test
 nested_env.RunTest(nested_test_prog)
+
+# ==================================================================================
+# Debug-mode build - same generated sources, compiled with PB_VALIDATE_DEBUG
+#
+# Proves two things: the generated *_validate.c/.h files are mode-agnostic
+# (no regeneration needed, just a different #define at compile time), and
+# PB_VALIDATE_DEBUG actually changes behavior (collect-all instead of
+# early-exit, value-interpolated messages) -- see test_bypass_behavior()'s
+# "#ifdef PB_VALIDATE_DEBUG" block in test.c.
+# ==================================================================================
+
+import os as _os
+
+debug_env = test_env.Clone()
+debug_env.Append(CPPDEFINES = ['PB_VALIDATE_DEBUG'])
+
+def _debug_target(src):
+    # Same source files as the default build above, so objects must land
+    # under a separate subdirectory: PB_VALIDATE_DEBUG changes the layout of
+    # pb_violation_t, so the two object sets can never be mixed and must not
+    # collide on disk with the non-debug .o files built from the same .c.
+    base, _ext = _os.path.splitext(src)
+    return "debug/" + base
+
+debug_objs = [debug_env.Object(target = _debug_target(s), source = s) for s in sources]
+debug_pb_validate_obj = debug_env.Object("debug/pb_validate.o", "$NANOPB/pb_validate.c")
+
+debug_test_prog = debug_env.Program(
+    "debug/test",
+    debug_objs + [
+        "$COMMON/pb_encode.o",
+        "$COMMON/pb_decode.o",
+        "$COMMON/pb_common.o",
+        debug_pb_validate_obj
+    ]
+)
+
+debug_env.RunTest(debug_test_prog)

@@ -1,7 +1,7 @@
 /*
  * Test suite for google.protobuf.Any envelope pattern validation
  *
- * This test exercises the filter_tcp/filter_udp functions generated with --envelope-mode=any
+ * This test exercises the FilterAnyAllowed_filter_tcp/FilterAnyAllowed_filter_udp functions generated with --envelope-mode=any
  * to validate messages containing google.protobuf.Any fields with type restrictions.
  */
 
@@ -76,10 +76,10 @@ static bool encode_message(const pb_msgdesc_t *fields, const void *src_struct,
 }
 
 /*
- * Test valid messages with allowed Any types using filter_udp
+ * Test valid messages with allowed Any types using FilterAnyAllowed_filter_udp
  */
 static void test_valid_allowed_any(void) {
-    printf("\n=== Testing Valid Allowed Any Messages with filter_udp ===\n");
+    printf("\n=== Testing Valid Allowed Any Messages with FilterAnyAllowed_filter_udp ===\n");
     uint8_t buffer[512];
     size_t msg_len;
     int result;
@@ -99,8 +99,8 @@ static void test_valid_allowed_any(void) {
         /* Encode to buffer */
         assert(encode_message(&FilterAnyAllowed_msg, &msg, buffer, sizeof(buffer), &msg_len));
         
-        /* Test with filter_udp */
-        result = filter_udp(NULL, buffer, msg_len);
+        /* Test with FilterAnyAllowed_filter_udp */
+        result = FilterAnyAllowed_filter_udp(NULL, buffer, msg_len);
         EXPECT_VALID(result == 0, "valid UserInfo in allowed Any");
     }
     
@@ -119,17 +119,17 @@ static void test_valid_allowed_any(void) {
         /* Encode to buffer */
         assert(encode_message(&FilterAnyAllowed_msg, &msg, buffer, sizeof(buffer), &msg_len));
         
-        /* Test with filter_udp */
-        result = filter_udp(NULL, buffer, msg_len);
+        /* Test with FilterAnyAllowed_filter_udp */
+        result = FilterAnyAllowed_filter_udp(NULL, buffer, msg_len);
         EXPECT_VALID(result == 0, "valid ProductInfo in allowed Any");
     }
 }
 
 /*
- * Test invalid messages with disallowed Any types using filter_udp
+ * Test invalid messages with disallowed Any types using FilterAnyAllowed_filter_udp
  */
 static void test_invalid_allowed_any(void) {
-    printf("\n=== Testing Invalid Allowed Any Messages with filter_udp ===\n");
+    printf("\n=== Testing Invalid Allowed Any Messages with FilterAnyAllowed_filter_udp ===\n");
     uint8_t buffer[512];
     size_t msg_len;
     int result;
@@ -148,8 +148,8 @@ static void test_invalid_allowed_any(void) {
         /* Encode to buffer */
         assert(encode_message(&FilterAnyAllowed_msg, &msg, buffer, sizeof(buffer), &msg_len));
         
-        /* Test with filter_udp - should reject due to any.in rules */
-        result = filter_udp(NULL, buffer, msg_len);
+        /* Test with FilterAnyAllowed_filter_udp - should reject due to any.in rules */
+        result = FilterAnyAllowed_filter_udp(NULL, buffer, msg_len);
         EXPECT_INVALID(result == 0, "OrderInfo not in allowed types");
     }
     
@@ -168,8 +168,8 @@ static void test_invalid_allowed_any(void) {
         /* Encode to buffer */
         assert(encode_message(&FilterAnyAllowed_msg, &msg, buffer, sizeof(buffer), &msg_len));
         
-        /* Test with filter_udp - should reject */
-        result = filter_udp(NULL, buffer, msg_len);
+        /* Test with FilterAnyAllowed_filter_udp - should reject */
+        result = FilterAnyAllowed_filter_udp(NULL, buffer, msg_len);
         EXPECT_INVALID(result == 0, "invalid UserInfo payload");
     }
     
@@ -188,58 +188,56 @@ static void test_invalid_allowed_any(void) {
         /* Encode to buffer */
         assert(encode_message(&FilterAnyAllowed_msg, &msg, buffer, sizeof(buffer), &msg_len));
         
-        /* Test with filter_udp - should reject */
-        result = filter_udp(NULL, buffer, msg_len);
+        /* Test with FilterAnyAllowed_filter_udp - should reject */
+        result = FilterAnyAllowed_filter_udp(NULL, buffer, msg_len);
         EXPECT_INVALID(result == 0, "invalid email format");
     }
 }
 
 /*
- * Test disallowed Any types with filter_tcp
+ * Test the any.not_in deny-list on FilterAnyDisallowed.
+ *
+ * FilterAnyDisallowed is deliberately NOT a filter entrypoint: a deny-list says
+ * what is forbidden, not what is decodable, so it cannot produce a dispatch
+ * table and the generator refuses to build a filter from one. The rule is still
+ * enforced by the generated validator, which is what this exercises.
  */
 static void test_disallowed_any(void) {
-    printf("\n=== Testing Disallowed Any Messages with filter_tcp ===\n");
-    uint8_t buffer[512];
-    size_t msg_len;
-    int result;
-    
-    /* Test 1: UserInfo allowed in FilterAnyDisallowed */
-    TEST("UserInfo allowed in disallowed Any via filter_tcp");
+    printf("\n=== Testing any.not_in deny-list via pb_validate_FilterAnyDisallowed ===\n");
+    pb_violations_t violations;
+    bool valid;
+
+    /* Test 1: UserInfo is not on the deny-list, so it passes */
+    TEST("UserInfo accepted by any.not_in deny-list");
     {
         UserInfo user = UserInfo_init_zero;
         user.user_id = 123;
         strcpy(user.email, "user@example.com");
         user.age = 25;
-        
+
         FilterAnyDisallowed msg = FilterAnyDisallowed_init_zero;
         msg.has_payload = true;
         assert(pack_any(&msg.payload, "type.googleapis.com/UserInfo", &UserInfo_msg, &user));
-        
-        /* Encode to buffer */
-        assert(encode_message(&FilterAnyDisallowed_msg, &msg, buffer, sizeof(buffer), &msg_len));
-        
-        /* Test with filter_tcp */
-        result = filter_tcp(NULL, buffer, msg_len, true);
-        EXPECT_VALID(result == 0, "UserInfo allowed in disallowed Any");
+
+        pb_violations_init(&violations);
+        valid = pb_validate_FilterAnyDisallowed(&msg, &violations);
+        EXPECT_VALID(valid, "UserInfo not on the deny-list");
     }
-    
-    /* Test 2: OrderInfo explicitly disallowed */
-    TEST("OrderInfo explicitly disallowed via filter_tcp");
+
+    /* Test 2: OrderInfo is explicitly denied */
+    TEST("OrderInfo rejected by any.not_in deny-list");
     {
         OrderInfo order = OrderInfo_init_zero;
         order.order_id = 789;
         order.total = 99.99;
-        
+
         FilterAnyDisallowed msg = FilterAnyDisallowed_init_zero;
         msg.has_payload = true;
         assert(pack_any(&msg.payload, "type.googleapis.com/OrderInfo", &OrderInfo_msg, &order));
-        
-        /* Encode to buffer */
-        assert(encode_message(&FilterAnyDisallowed_msg, &msg, buffer, sizeof(buffer), &msg_len));
-        
-        /* Test with filter_tcp - should reject due to any.not_in rules */
-        result = filter_tcp(NULL, buffer, msg_len, false);
-        EXPECT_INVALID(result == 0, "OrderInfo explicitly disallowed");
+
+        pb_violations_init(&violations);
+        valid = pb_validate_FilterAnyDisallowed(&msg, &violations);
+        EXPECT_INVALID(valid, "OrderInfo explicitly disallowed");
     }
 }
 
