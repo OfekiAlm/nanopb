@@ -66,6 +66,14 @@ static void test_valid_message(void)
     CHECK(memcmp(msg.header.message_id, expected_message_id, expected_message_id_size) == 0);
     CHECK(msg.header.version == expected_version);
 
+    /* The generator must respect the (nanopb) storage limits, otherwise the
+     * decode above would already have failed with an overflow. */
+    CHECK(strlen(msg.header.origin) == expected_origin_size);
+    CHECK(memcmp(msg.header.origin, expected_origin, expected_origin_size) == 0);
+    CHECK(expected_origin_size < sizeof(msg.header.origin));
+    CHECK(msg.header.tags_count == expected_tags_count);
+    CHECK(msg.header.tags_count <= 3);
+
     CHECK(msg.has_message);
     CHECK(strlen(msg.message.type_url) == expected_type_url_size);
     CHECK(memcmp(msg.message.type_url, expected_type_url, expected_type_url_size) == 0);

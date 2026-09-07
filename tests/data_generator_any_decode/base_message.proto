@@ -16,6 +16,12 @@ message Header {
         (validate.rules).string.max_len = 24
     ];
     uint32 version = 2 [(validate.rules).uint32.const_value = 3];
+    /* No string.max_len rule: the generated data must still be clamped to the
+     * nanopb storage, otherwise pb_decode() aborts with "string overflow" and
+     * every later field is left unset. */
+    string origin = 3 [(nanopb).max_size = 8];
+    /* No repeated rules either: the item count must respect max_count. */
+    repeated uint32 tags = 4 [(nanopb).max_count = 3];
 }
 
 /* Payload that is transported inside the google.protobuf.Any field */
