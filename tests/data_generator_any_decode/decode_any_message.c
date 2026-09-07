@@ -154,12 +154,32 @@ static void test_invalid_any_payload_name(void)
     CHECK(strcmp(first_constraint(&viol), "string.const") == 0);
 }
 
+/* The required Any field was omitted by the data generator: pb_decode()
+ * succeeds but leaves has_message false, and validation reports "required".
+ */
+static void test_missing_any(void)
+{
+    anydecode_BaseMessage msg;
+    pb_violations_t viol;
+
+    printf("Testing generated message with omitted Any field\n");
+
+    CHECK(decode_base_message(missing_any_message, missing_any_message_size, &msg));
+    CHECK(msg.has_header);
+    CHECK(!msg.has_message);
+
+    pb_violations_init(&viol);
+    CHECK(!pb_validate_anydecode_BaseMessage(&msg, &viol));
+    CHECK(strcmp(first_constraint(&viol), "required") == 0);
+}
+
 int main(void)
 {
     test_valid_message();
     test_invalid_any_type();
     test_invalid_any_payload();
     test_invalid_any_payload_name();
+    test_missing_any();
 
     if (status == 0)
         printf("OK\n");

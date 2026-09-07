@@ -42,6 +42,14 @@ except ImportError:
 
 _MISSING = object()
 
+# Sentinel returned by _generate_invalid_value() when the only way to violate a
+# rule is to leave the field out of the encoded message (e.g. "required").
+_OMIT_FIELD = object()
+
+
+class ValidationRuleNotViolatableError(ValueError):
+    """Raised when no invalid value can be generated for a validation rule."""
+
 
 def _load_validate_pb2() -> Any:
     """Load validate_pb2 from the repository-local generator/proto directory."""
@@ -621,6 +629,9 @@ class DataGenerator:
                 chosen,
                 (message_info.full_name,),
             )
+            if data[field_name] is _OMIT_FIELD:
+                # The violation is the absence of the field itself.
+                data.pop(field_name, None)
 
         return data
 
@@ -1123,6 +1134,10 @@ class DataGenerator:
         rule_value = constraint.value
         type_name = field_info.get_type_name()
 
+        if rule_type in ('required', 'oneof_required'):
+            # The only way to violate presence rules is to omit the field.
+            return _OMIT_FIELD
+
         if field_info.is_any():
             return self._generate_invalid_any_value(field_info, rule_type, rule_value, active_stack)
 
@@ -1147,7 +1162,10 @@ class DataGenerator:
                 return str(rule_value) + "_invalid"
             if type_name == 'bytes':
                 return bytes(rule_value) + b'_invalid'
-            return None
+            raise ValidationRuleNotViolatableError(
+                f"Cannot generate a value violating '{rule_type}' for field "
+                f"'{field_info.name}' of type '{type_name}'"
+            )
 
         if rule_type == 'min_len':
             if type_name == 'bytes':
@@ -1211,7 +1229,10 @@ class DataGenerator:
             item = self._generate_valid_single_item(field_info, active_stack)
             return [item, item, item]
 
-        return None
+        raise ValidationRuleNotViolatableError(
+            f"Cannot generate a value violating '{rule_type}' for field "
+            f"'{field_info.name}' of type '{type_name}'"
+        )
 
     def _generate_invalid_any_value(
         self,
@@ -1257,7 +1278,10 @@ class DataGenerator:
                 }
             return {'type_url': disallowed_url, 'value': b''}
 
-        return {'type_url': 'type.googleapis.com/invalid.Payload', 'value': b''}
+        raise ValidationRuleNotViolatableError(
+            f"Cannot generate an Any value violating '{rule_type}' for field "
+            f"'{field_info.name}'"
+        )
 
     def encode_to_binary(self, message_name: str, data: Dict[str, Any]) -> bytes:
         """Encode a data dictionary to protobuf binary format."""

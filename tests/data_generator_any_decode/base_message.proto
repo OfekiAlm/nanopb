@@ -31,8 +31,9 @@ message SensorReading {
 }
 
 message BaseMessage {
-    Header header = 1;
+    Header header = 1 [(validate.rules).required = true];
     google.protobuf.Any message = 2 [
+        (validate.rules).required = true,
         (validate.rules).any.in = "type.googleapis.com/anydecode.SensorReading"
     ];
 }

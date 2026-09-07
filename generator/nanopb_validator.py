@@ -1824,6 +1824,10 @@ class RuleEmitterRegistry:
             emitter = self._const_emitter
         if emitter:
             code = emitter.emit(rule_ir, proto_file)
+            # Presence rules must run when the field is absent, so they are
+            # never wrapped in the has_<field> guard.
+            if rule_ir.rule_type in (RULE_REQUIRED, RULE_ONEOF_REQUIRED):
+                return code
             # Wrap in optional check if field is optional
             return self._wrap_optional(rule_ir, code)
 

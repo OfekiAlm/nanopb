@@ -61,8 +61,16 @@ def main():
     valid_bytes = generator.encode_to_binary('BaseMessage', valid)
 
     # Invalid message: Any carries a type_url rejected by the any.in rule.
-    bad_any = generator.generate_invalid('BaseMessage', violate_field='message', seed=1234)
+    bad_any = generator.generate_invalid('BaseMessage', violate_field='message',
+                                         violate_rule='in', seed=1234)
     bad_any_bytes = generator.encode_to_binary('BaseMessage', bad_any)
+
+    # Invalid message: the required Any field is omitted entirely, so nanopb
+    # decodes it with has_message == false.
+    missing_any = generator.generate_invalid('BaseMessage', violate_field='message',
+                                             violate_rule='required', seed=1234)
+    assert 'message' not in missing_any, missing_any
+    missing_any_bytes = generator.encode_to_binary('BaseMessage', missing_any)
 
     # Invalid payload: allowed type_url, but the message inside the Any breaks
     # the SensorReading rules.
@@ -85,6 +93,8 @@ def main():
         c_bytes('valid_base_message', valid_bytes),
         '\n',
         c_bytes('invalid_any_type_message', bad_any_bytes),
+        '\n',
+        c_bytes('missing_any_message', missing_any_bytes),
         '\n',
         c_bytes('invalid_payload_message', bad_value_msg_bytes),
         '\n',
