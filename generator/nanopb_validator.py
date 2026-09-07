@@ -1185,6 +1185,49 @@ class NumericRuleEmitter(RuleEmitter):
             ) % (rule_ir.field_name, ctype, validator_func, rule_enum, value, rule_ir.constraint_id)
 
 
+class ConstValueRuleEmitter(RuleEmitter):
+    """Emits C code for string/bytes const_value rules (RULE_EQ).
+
+    Numeric, bool and enum const_value rules are handled by
+    NumericRuleEmitter, which relies on a numeric C type being known for the
+    field. String and bytes fields have no such numeric type, so they need
+    their own emitter; without it the rule would be silently dropped.
+    """
+
+    def emit(self, rule_ir: RuleIR, proto_file: Any) -> str:
+        ctx = rule_ir.context
+        field_name = rule_ir.field_name
+        pbtype = getattr(ctx.field, 'pbtype', None)
+        value = rule_ir.rule.params.get('value', '')
+
+        if pbtype == 'STRING':
+            if isinstance(value, bytes):
+                value = value.decode('utf-8', 'replace')
+            escaped = _escape_c_string(value)
+            if ctx.is_oneof and not ctx.is_anonymous:
+                return '    PB_VALIDATE_ONEOF_STR_CONST(ctx, msg, %s, %s, "%s", "%s");\n' % (
+                    ctx.oneof_name, field_name, escaped, rule_ir.constraint_id)
+            return '        PB_VALIDATE_STR_CONST(ctx, msg, %s, "%s", "%s");\n' % (
+                field_name, escaped, rule_ir.constraint_id)
+
+        if pbtype == 'BYTES':
+            if isinstance(value, str):
+                value = value.encode('latin-1', 'replace')
+            data = bytes(value)
+            array_name = '__pb_%s_const' % field_name
+            byte_list = ', '.join('0x%02x' % byte for byte in data) if data else '0x00'
+            code = '        static const uint8_t %s[] = { %s };\n' % (array_name, byte_list)
+            if ctx.is_oneof and not ctx.is_anonymous:
+                code += '    PB_VALIDATE_ONEOF_BYTES_CONST(ctx, msg, %s, %s, %s, %d, "%s");\n' % (
+                    ctx.oneof_name, field_name, array_name, len(data), rule_ir.constraint_id)
+            else:
+                code += '        PB_VALIDATE_BYTES_CONST(ctx, msg, %s, %s, %d, "%s");\n' % (
+                    field_name, array_name, len(data), rule_ir.constraint_id)
+            return code
+
+        return ''
+
+
 class StringLengthRuleEmitter(RuleEmitter):
     """Emits C code for string length rules (MIN_LEN, MAX_LEN)."""
     
@@ -1697,6 +1740,9 @@ class RuleEmitterRegistry:
         numeric_emitter = NumericRuleEmitter()
         for rule_type in [RULE_GT, RULE_GTE, RULE_LT, RULE_LTE, RULE_EQ]:
             self._emitters[rule_type] = numeric_emitter
+
+        # const_value on string/bytes fields cannot use the numeric path
+        self._const_emitter = ConstValueRuleEmitter()
         
         length_emitter = StringLengthRuleEmitter()
         for rule_type in [RULE_MIN_LEN, RULE_MAX_LEN]:
@@ -1773,6 +1819,9 @@ class RuleEmitterRegistry:
                 documented in docs/validation.md.
         """
         emitter = self._emitters.get(rule_ir.rule_type)
+        if rule_ir.rule_type == RULE_EQ and \
+                getattr(rule_ir.context.field, 'pbtype', None) in ('STRING', 'BYTES'):
+            emitter = self._const_emitter
         if emitter:
             code = emitter.emit(rule_ir, proto_file)
             # Wrap in optional check if field is optional
