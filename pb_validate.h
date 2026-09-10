@@ -278,6 +278,17 @@ extern "C"
             }                                                                                                   \
         } while (0)
 
+    /* String const_value helper for normal (non-callback) string fields. */
+    #define PB_VALIDATE_STR_CONST(ctx_var, msg_ptr, field_name, CONST_STR, CONSTRAINT_ID)                     \
+        do {                                                                                                    \
+            const char *__pb_const = (CONST_STR);                                                              \
+            if (!pb_validate_string((msg_ptr)->field_name, (pb_size_t)strlen((msg_ptr)->field_name),           \
+                                    __pb_const, PB_VALIDATE_RULE_EQ)) {                                        \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "Value must equal specified constant");             \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                             \
+            }                                                                                                   \
+        } while (0)
+
     /* String format validation helpers for normal (non-callback) string fields.
      * These macros validate email, hostname, IP address, and ASCII format.
      */
@@ -523,6 +534,20 @@ extern "C"
             }                                                                                                  \
         } while (0)
 
+    /* Bytes const_value validation macro. The expected value is given as a
+     * plain byte array plus its length, so that the generated code does not
+     * need to construct a pb_bytes_array_t literal.
+     */
+    #define PB_VALIDATE_BYTES_CONST(ctx_var, msg_ptr, field_name, EXPECTED_ARR, EXPECTED_SIZE, CONSTRAINT_ID)   \
+        do {                                                                                                   \
+            if ((msg_ptr)->field_name.size != (pb_size_t)(EXPECTED_SIZE) ||                                    \
+                ((EXPECTED_SIZE) > 0 &&                                                                        \
+                 memcmp((msg_ptr)->field_name.bytes, (EXPECTED_ARR), (size_t)(EXPECTED_SIZE)) != 0)) {         \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "Value must equal specified constant");             \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                            \
+            }                                                                                                  \
+        } while (0)
+
     /* Enum defined_only validation macro.
      * values_arr must be an array of valid enum values.
      */
@@ -656,6 +681,28 @@ extern "C"
         do {                                                                                                   \
             if ((msg_ptr)->oneof_name.field_name.size > (MAX_LEN)) {                                           \
                 PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "Bytes too long");                                   \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                            \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_ONEOF_STR_CONST(ctx_var, msg_ptr, oneof_name, field_name, CONST_STR, CONSTRAINT_ID)     \
+        do {                                                                                                   \
+            const char *__pb_const = (CONST_STR);                                                              \
+            if (!pb_validate_string((msg_ptr)->oneof_name.field_name,                                          \
+                    (pb_size_t)strlen((msg_ptr)->oneof_name.field_name),                                       \
+                    __pb_const, PB_VALIDATE_RULE_EQ)) {                                                        \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "Value must equal specified constant");             \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                            \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_ONEOF_BYTES_CONST(ctx_var, msg_ptr, oneof_name, field_name, EXPECTED_ARR, EXPECTED_SIZE, CONSTRAINT_ID) \
+        do {                                                                                                   \
+            if ((msg_ptr)->oneof_name.field_name.size != (pb_size_t)(EXPECTED_SIZE) ||                         \
+                ((EXPECTED_SIZE) > 0 &&                                                                        \
+                 memcmp((msg_ptr)->oneof_name.field_name.bytes, (EXPECTED_ARR),                                \
+                        (size_t)(EXPECTED_SIZE)) != 0)) {                                                      \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "Value must equal specified constant");             \
                 if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                            \
             }                                                                                                  \
         } while (0)
