@@ -15,12 +15,15 @@ includes nanopb headers.
 * `PB_MAX_REQUIRED_FIELDS`: Maximum number of proto2 `required` fields to check for presence. Default value is 64. Compiler warning will tell if you need this.
 * `PB_FIELD_32BIT`: Add support for field tag numbers over 65535, fields larger than 64 kiB and arrays larger than 65535 entries. Compiler warning will tell if you need this.
 * `PB_NO_ERRMSG`: Disable error message support to save code size. Only error information is the `true`/`false` return value.
+* `PB_NO_ENCODE_SIZE_CHECK`: Disable the consistency check that verifies a sub-message's encoded size matches between encoding passes. Slightly reduces code size and overhead when encoding sub-messages.
 * `PB_BUFFER_ONLY`: Disable support for custom streams. Only supports encoding and decoding with memory buffers. Speeds up execution and slightly decreases code size.
 * `PB_SYSTEM_HEADER`: Replace the standards header files with a single system-specific header file. Value must include quotes, for example `#define PB_SYSTEM_HEADER "foo.h"`. See [extra/pb_syshdr.h](https://github.com/nanopb/nanopb/blob/master/extra/pb_syshdr.h) for an example.
 * `PB_WITHOUT_64BIT`: Disable support of 64-bit integer fields, for old compilers or for a slight speedup on 8-bit platforms.
 * `PB_ENCODE_ARRAYS_UNPACKED`: Encode scalar arrays in the unpacked format, which takes up more space. Only to be used when the decoder on the receiving side cannot process packed arrays, such as [protobuf.js versions before 2020](https://github.com/protocolbuffers/protobuf/issues/1701).
 * `PB_CONVERT_DOUBLE_FLOAT`: Convert doubles to floats for platforms that do not support 64-bit `double` datatype. Mainly `AVR` processors.
 * `PB_VALIDATE_UTF8`: Check whether incoming strings are valid UTF-8 sequences. Adds a small performance and code size penalty.
+* `PB_NO_PACKED_STRUCTS`: Disable the use of packed C structs. Must be defined if the CPU/compiler does not support unaligned memory access. Note that packed structures are only used when explicitly requested via `.proto` options.
+* `PB_LITTLE_ENDIAN_8BIT`: Explicitly mark the platform as little-endian with 8-bit bytes, enabling certain encoding optimizations. Normally auto-detected via the `__BYTE_ORDER__` macro.
 * `PB_C99_STATIC_ASSERT`: Use C99 style negative array trick for static assertions. For compilers that do not support C11 standard.
 * `PB_NO_STATIC_ASSERT`: Disable static assertions at compile time. Only for compilers with limited support of C standards.
 
@@ -29,6 +32,26 @@ raising some datatype limits to suit larger messages. Their need is
 recognized automatically by C-preprocessor `#if`-directives in the
 generated `.pb.c` files. The default setting is to use the smallest
 datatypes (least resources used).
+
+### Performance optimization
+
+The following table summarizes which compilation flags to use to maximize runtime performance.
+Flags marked **enable** should be defined; flags marked **avoid** should be left undefined (or removed if previously set).
+
+| Flag | Action | Effect |
+|---|---|---|
+| `PB_BUFFER_ONLY` | **enable** | Removes the function-pointer indirection used for custom streams, allowing the compiler to inline I/O operations. Gives the most noticeable throughput improvement when encoding/decoding frequently. |
+| `PB_NO_ERRMSG` | **enable** | Eliminates error-string storage and string-pointer assignments on every error path. Saves both code size and a small amount of runtime overhead. |
+| `PB_NO_ENCODE_SIZE_CHECK` | **enable** | Skips the consistency check that re-encodes sub-messages to verify their size has not changed between passes. Reduces overhead when messages contain sub-messages. |
+| `PB_WITHOUT_64BIT` | **enable** (8/16-bit MCUs only) | Removes all `int64_t`/`uint64_t` handling. Beneficial on 8-bit and 16-bit platforms (e.g. AVR) where 64-bit arithmetic is emulated in software and is therefore expensive. Do not use this flag if your messages contain 64-bit fields. |
+| `PB_LITTLE_ENDIAN_8BIT` | **enable** (if applicable) | Allows the encoder/decoder to use direct memory copies instead of byte-by-byte serialisation for fixed-width fields on little-endian, 8-bit-byte platforms. Usually auto-detected, but can be forced when auto-detection fails. |
+| `PB_VALIDATE_UTF8` | **avoid** | Iterates over every decoded string to validate UTF-8 encoding. Leave it undefined unless UTF-8 validation is a hard requirement. |
+| `PB_FIELD_32BIT` | **avoid** (unless required) | Widens internal size and tag-number types from 16-bit to 32-bit, increasing memory footprint and reducing performance. Only enable it when the generated `.pb.c` file requests it via a compiler warning. |
+| `PB_ENABLE_MALLOC` | **avoid** (unless required) | Adds dynamic allocation paths throughout the decoder, including pointer-chasing and `free()` calls. Use static allocation (`FT_STATIC`) wherever possible. |
+| `PB_ENCODE_ARRAYS_UNPACKED` | **avoid** | Forces repeated scalar fields to be encoded one element at a time instead of as packed arrays. Packed encoding is both smaller and faster; only disable it for compatibility with legacy decoders. |
+
+> **NOTE:** Always profile your application before and after changing these flags. The relative
+> benefit of each flag depends on the target platform, message structure, and workload.
 
 ## Generator options
 
