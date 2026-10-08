@@ -1597,6 +1597,66 @@ static void test_violations_collection(void)
  * MAIN
  *======================================================================*/
 
+/*======================================================================
+ * CONST_VALUE RULE TESTS (string / bytes)
+ *======================================================================*/
+
+static void test_const_rules(void)
+{
+    pb_violations_t viol;
+    bool ok;
+
+    printf("\n=== const_value Rule Tests ===\n");
+
+    TEST("StringConstRules - matching value");
+    {
+        StringConstRules msg = StringConstRules_init_zero;
+        strcpy(msg.const_field, "exact");
+
+        pb_violations_init(&viol);
+        ok = pb_validate_StringConstRules(&msg, &viol);
+        EXPECT_VALID(ok, "string equals const_value");
+    }
+
+    TEST("StringConstRules - string.const violation");
+    {
+        StringConstRules msg = StringConstRules_init_zero;
+        strcpy(msg.const_field, "other");
+
+        pb_violations_init(&viol);
+        ok = pb_validate_StringConstRules(&msg, &viol);
+        EXPECT_INVALID(ok, "string differs from const_value");
+        EXPECT_VIOLATION(viol, "string.const");
+    }
+
+    TEST("BytesConstRules - matching value");
+    {
+        BytesConstRules msg = BytesConstRules_init_zero;
+        msg.const_field.size = 3;
+        msg.const_field.bytes[0] = 0x01;
+        msg.const_field.bytes[1] = 0x02;
+        msg.const_field.bytes[2] = 0x03;
+
+        pb_violations_init(&viol);
+        ok = pb_validate_BytesConstRules(&msg, &viol);
+        EXPECT_VALID(ok, "bytes equal const_value");
+    }
+
+    TEST("BytesConstRules - bytes.const violation");
+    {
+        BytesConstRules msg = BytesConstRules_init_zero;
+        msg.const_field.size = 3;
+        msg.const_field.bytes[0] = 0x01;
+        msg.const_field.bytes[1] = 0x02;
+        msg.const_field.bytes[2] = 0x04;
+
+        pb_violations_init(&viol);
+        ok = pb_validate_BytesConstRules(&msg, &viol);
+        EXPECT_INVALID(ok, "bytes differ from const_value");
+        EXPECT_VIOLATION(viol, "bytes.const");
+    }
+}
+
 int main(void)
 {
     printf("==========================================\n");
@@ -1615,6 +1675,7 @@ int main(void)
     test_message_rules();
     test_oneof_rules();
     test_bytes_rules();
+    test_const_rules();
     test_any_behavior();
     test_bypass_behavior();
     test_path_reporting();

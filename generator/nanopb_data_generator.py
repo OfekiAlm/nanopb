@@ -42,6 +42,14 @@ except ImportError:
 
 _MISSING = object()
 
+# Sentinel returned by _generate_invalid_value() when the only way to violate a
+# rule is to leave the field out of the encoded message (e.g. "required").
+_OMIT_FIELD = object()
+
+
+class ValidationRuleNotViolatableError(ValueError):
+    """Raised when no invalid value can be generated for a validation rule."""
+
 
 def _load_validate_pb2() -> Any:
     """Load validate_pb2 from the repository-local generator/proto directory."""
@@ -51,6 +59,16 @@ def _load_validate_pb2() -> Any:
         sys.path.insert(0, repo_root)
     from generator.proto import validate_pb2
     return validate_pb2
+
+
+def _load_nanopb_pb2() -> Any:
+    """Load nanopb_pb2 from the repository-local generator/proto directory."""
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from generator.proto import nanopb_pb2
+    return nanopb_pb2
 
 
 class OutputFormat(Enum):
@@ -83,6 +101,8 @@ class ProtoFieldInfo:
     type_name: str = field(init=False)
     label: int = field(init=False)
     constraints: List[ValidationConstraint] = field(default_factory=list, init=False)
+    max_size: Optional[int] = field(default=None, init=False)
+    max_count: Optional[int] = field(default=None, init=False)
 
     _TYPE_MAP = {
         descriptor_pb2.FieldDescriptorProto.TYPE_DOUBLE: 'double',
@@ -113,6 +133,40 @@ class ProtoFieldInfo:
         self.label = self.descriptor.label
         if hasattr(self.descriptor, 'options'):
             self._parse_validation_rules(self.descriptor.options)
+            self._parse_nanopb_options(self.descriptor.options)
+
+    def _parse_nanopb_options(self, field_options: Any) -> None:
+        """Parse (nanopb) storage options that limit the generated C buffers.
+
+        nanopb allocates fixed-size storage for string/bytes/repeated fields, so
+        data that ignores these limits fails to decode with "string overflow" or
+        "array overflow" even though it satisfies every validate.proto rule.
+        """
+
+        try:
+            nanopb_pb2 = _load_nanopb_pb2()
+            if not field_options.HasExtension(nanopb_pb2.nanopb):
+                return
+            options = field_options.Extensions[nanopb_pb2.nanopb]
+        except Exception:
+            return
+
+        if options.HasField('max_count') and options.max_count > 0:
+            self.max_count = options.max_count
+
+        # max_length is the string length excluding the null terminator;
+        # max_size is the allocated buffer, which includes it for strings.
+        if options.HasField('max_length') and options.max_length > 0:
+            self.max_size = options.max_length
+        elif options.HasField('max_size') and options.max_size > 0:
+            self.max_size = options.max_size
+            if self.get_type_name() == 'string':
+                self.max_size -= 1
+
+    def capacity(self) -> Optional[int]:
+        """Maximum string length / bytes count that fits the generated C struct."""
+
+        return self.max_size
 
     def _parse_validation_rules(self, field_options: Any) -> None:
         """Parse validation rules from field options."""
@@ -444,6 +498,12 @@ class DataGenerator:
 
         self._ensure_validate_pb2()
         _load_validate_pb2()
+        # Register the (nanopb) extensions too, otherwise storage options such
+        # as max_size land in unknown_fields and are invisible to the generator.
+        try:
+            _load_nanopb_pb2()
+        except Exception:
+            pass
 
         proto_abs_path = os.path.abspath(self.proto_file)
         proto_dir = os.path.dirname(proto_abs_path)
@@ -621,6 +681,9 @@ class DataGenerator:
                 chosen,
                 (message_info.full_name,),
             )
+            if data[field_name] is _OMIT_FIELD:
+                # The violation is the absence of the field itself.
+                data.pop(field_name, None)
 
         return data
 
@@ -671,12 +734,79 @@ class DataGenerator:
         }
 
         if type_name in scalar_generators:
+            if type_name in ('string', 'bytes'):
+                constraints = self._apply_storage_limits(field_info, constraints)
+                value = scalar_generators[type_name](constraints)
+                self._check_storage_limits(field_info, value)
+                return value
             return scalar_generators[type_name](constraints)
         if type_name == 'enum':
             return self._generate_valid_enum(field_info, constraints)
         if type_name == 'message':
             return self._generate_valid_message_field(field_info, active_stack)
         return None
+
+    def _apply_storage_limits(
+        self,
+        field_info: ProtoFieldInfo,
+        constraints: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Clamp length constraints to the storage nanopb allocates for a field.
+
+        Without this, generated data can satisfy every validate.proto rule and
+        still overflow the fixed-size C buffer, so pb_decode() aborts and every
+        field after the offending one is left unset (has_<field> == false).
+        """
+
+        capacity = field_info.capacity()
+        if capacity is None:
+            return constraints
+
+        min_len = constraints.get('min_len')
+        if min_len is not None and min_len > capacity:
+            raise ValueError(
+                "Field '%s' requires at least %d characters but nanopb only "
+                "allocates room for %d; the generated data could never be decoded. "
+                "Raise (nanopb).max_size/max_length or lower the min_len rule."
+                % (field_info.name, min_len, capacity)
+            )
+
+        for rule in ('const', 'in'):
+            if rule in constraints:
+                # Fixed values are dictated by the rule; report the conflict
+                # instead of silently truncating them into something invalid.
+                values = constraints[rule] if rule == 'in' else [constraints[rule]]
+                for value in values:
+                    if value is not None and len(value) > capacity:
+                        raise ValueError(
+                            "Field '%s' has a '%s' rule requiring %d characters but "
+                            "nanopb only allocates room for %d; the generated data "
+                            "could never be decoded."
+                            % (field_info.name, rule, len(value), capacity)
+                        )
+                return constraints
+
+        limited = dict(constraints)
+        max_len = limited.get('max_len')
+        limited['max_len'] = capacity if max_len is None else min(max_len, capacity)
+        limited['min_len'] = min(limited.get('min_len', 1), limited['max_len'])
+        return limited
+
+    @staticmethod
+    def _check_storage_limits(field_info: ProtoFieldInfo, value: Any) -> None:
+        """Fail loudly when a generated value cannot fit the nanopb storage."""
+
+        capacity = field_info.capacity()
+        if capacity is None or value is None:
+            return
+        encoded_len = len(value.encode('utf-8')) if isinstance(value, str) else len(value)
+        if encoded_len > capacity:
+            raise ValueError(
+                "Generated value for field '%s' needs %d bytes but nanopb only "
+                "allocates room for %d; pb_decode() would fail with an overflow. "
+                "Raise (nanopb).max_size/max_length or tighten the validate rules."
+                % (field_info.name, encoded_len, capacity)
+            )
 
     def _generate_valid_message_field(
         self,
@@ -1069,6 +1199,15 @@ class DataGenerator:
         constraints = field_info.constraint_map()
         min_items = constraints.get('min_items', 1)
         max_items = constraints.get('max_items', 5)
+        if field_info.max_count is not None:
+            if min_items > field_info.max_count:
+                raise ValueError(
+                    "Field '%s' requires at least %d items but nanopb only "
+                    "allocates room for %d; the generated data could never be "
+                    "decoded. Raise (nanopb).max_count or lower the min_items rule."
+                    % (field_info.name, min_items, field_info.max_count)
+                )
+            max_items = min(max_items, field_info.max_count)
         count = self._random.randint(min_items, max_items)
 
         items: List[Any] = []
@@ -1123,6 +1262,10 @@ class DataGenerator:
         rule_value = constraint.value
         type_name = field_info.get_type_name()
 
+        if rule_type in ('required', 'oneof_required'):
+            # The only way to violate presence rules is to omit the field.
+            return _OMIT_FIELD
+
         if field_info.is_any():
             return self._generate_invalid_any_value(field_info, rule_type, rule_value, active_stack)
 
@@ -1147,7 +1290,10 @@ class DataGenerator:
                 return str(rule_value) + "_invalid"
             if type_name == 'bytes':
                 return bytes(rule_value) + b'_invalid'
-            return None
+            raise ValidationRuleNotViolatableError(
+                f"Cannot generate a value violating '{rule_type}' for field "
+                f"'{field_info.name}' of type '{type_name}'"
+            )
 
         if rule_type == 'min_len':
             if type_name == 'bytes':
@@ -1211,7 +1357,10 @@ class DataGenerator:
             item = self._generate_valid_single_item(field_info, active_stack)
             return [item, item, item]
 
-        return None
+        raise ValidationRuleNotViolatableError(
+            f"Cannot generate a value violating '{rule_type}' for field "
+            f"'{field_info.name}' of type '{type_name}'"
+        )
 
     def _generate_invalid_any_value(
         self,
@@ -1257,7 +1406,10 @@ class DataGenerator:
                 }
             return {'type_url': disallowed_url, 'value': b''}
 
-        return {'type_url': 'type.googleapis.com/invalid.Payload', 'value': b''}
+        raise ValidationRuleNotViolatableError(
+            f"Cannot generate an Any value violating '{rule_type}' for field "
+            f"'{field_info.name}'"
+        )
 
     def encode_to_binary(self, message_name: str, data: Dict[str, Any]) -> bytes:
         """Encode a data dictionary to protobuf binary format."""
