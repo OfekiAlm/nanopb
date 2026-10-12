@@ -1293,14 +1293,15 @@ class DataGenerator:
     def _float_step(value: float, up: bool, single: bool) -> float:
         """Next representable float32/float64 above or below ``value``."""
 
-        if not single:
-            return math.nextafter(value, math.inf if up else -math.inf)
+        float_format, int_format = ('<f', '<I') if single else ('<d', '<Q')
+        if math.isnan(value) or value == (math.inf if up else -math.inf):
+            return value
         if value == 0:
-            tiny = struct.unpack('<f', struct.pack('<I', 1))[0]
+            tiny = struct.unpack(float_format, struct.pack(int_format, 1))[0]
             return tiny if up else -tiny
-        bits = struct.unpack('<I', struct.pack('<f', value))[0]
+        bits = struct.unpack(int_format, struct.pack(float_format, value))[0]
         bits += 1 if (value > 0) == up else -1
-        return struct.unpack('<f', struct.pack('<I', bits))[0]
+        return struct.unpack(float_format, struct.pack(int_format, bits))[0]
 
     def _generate_valid_float(self, field_info: ProtoFieldInfo, constraints: Dict[str, Any]) -> float:
         single = field_info.get_type_name() == 'float'

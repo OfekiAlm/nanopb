@@ -18,6 +18,9 @@ import os
 import sys
 import time
 import tempfile
+import math
+import struct
+from unittest import mock
 
 
 def find_repo_root():
@@ -522,6 +525,36 @@ def test_any_payloads_respect_any_storage():
     assert len(kinds) >= 5, kinds
 
 
+def test_float_step():
+    for single, float_format, int_format, one_bits, max_bits in (
+            (True, '<f', '<I', 0x3f800000, 0x7f7fffff),
+            (False, '<d', '<Q', 0x3ff0000000000000, 0x7fefffffffffffff)):
+        def from_bits(bits):
+            return struct.unpack(float_format, struct.pack(int_format, bits))[0]
+
+        step = lambda value, up: DataGenerator._float_step(value, up, single)
+        tiny = from_bits(1)
+        maximum = from_bits(max_bits)
+        for zero in (0.0, -0.0):
+            assert step(zero, True) == tiny
+            assert step(zero, False) == -tiny
+        assert step(tiny, False) == 0.0
+        assert step(-tiny, True) == 0.0
+        assert math.copysign(1.0, step(-tiny, True)) == -1.0
+        assert step(1.0, True) == from_bits(one_bits + 1)
+        assert step(1.0, False) == from_bits(one_bits - 1)
+        assert step(-1.0, True) == -from_bits(one_bits - 1)
+        assert step(-1.0, False) == -from_bits(one_bits + 1)
+        assert step(maximum, True) == math.inf
+        assert step(-maximum, False) == -math.inf
+        assert step(math.inf, False) == maximum
+        assert step(-math.inf, True) == -maximum
+        assert step(math.inf, True) == math.inf
+        assert step(-math.inf, False) == -math.inf
+        assert math.isnan(step(math.nan, True))
+        assert math.isnan(step(math.nan, False))
+
+
 def test_output_formats():
     generator = load('stress.proto')
     data = generator.generate_valid('Inner', seed=1)
@@ -529,6 +562,11 @@ def test_output_formats():
     assert generator.format_output(binary, OutputFormat.HEX_STRING) == binary.hex()
     c_array = generator.format_output(binary, OutputFormat.C_ARRAY, 'inner')
     assert 'const uint8_t inner[]' in c_array and ('inner_size = %d' % len(binary)) in c_array
+
+
+def test_float_step_without_nextafter():
+    with mock.patch.object(math, 'nextafter', None, create=True):
+        test_float_step()
 
 
 def main():
