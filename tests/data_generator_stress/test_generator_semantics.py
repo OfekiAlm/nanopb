@@ -11,7 +11,7 @@ validator.  This script covers what C cannot see:
   * (nanopb) options are read from inline options and from .options files with
     nanopb's precedence;
   * impossible rules are reported instead of producing wrong data;
-  * generation is reproducible.
+  * generation is reproducible and great.
 '''
 
 import os
