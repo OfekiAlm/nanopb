@@ -1,0 +1,81 @@
+/* Schemas used only by test_generator_semantics.py.
+ *
+ * They contain rules the generated C validator cannot enforce yet (or that
+ * are deliberately unsatisfiable), so they are never compiled by nanopb.
+ */
+
+syntax = "proto3";
+
+package pyonly;
+
+import "validate.proto";
+import "nanopb.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+
+message BytesRules {
+    bytes len_ruled = 1 [(nanopb).max_size = 10, (validate.rules).bytes.min_len = 2, (validate.rules).bytes.max_len = 8];
+    bytes pre_suf = 2 [(nanopb).max_size = 16, (validate.rules).bytes.prefix = "\x01\x02",
+                       (validate.rules).bytes.suffix = "\xff", (validate.rules).bytes.contains = "\x10\x20"];
+    bytes pick = 3 [(nanopb).max_size = 8, (validate.rules).bytes.in = "\x01\x02\x03", (validate.rules).bytes.in = "\x09"];
+    bytes avoid = 4 [(nanopb).max_size = 2, (validate.rules).bytes.min_len = 1, (validate.rules).bytes.max_len = 1,
+                     (validate.rules).bytes.not_in = "\x00"];
+    bytes fixed = 5 [(nanopb).max_size = 8, (validate.rules).bytes.const_value = "\xde\xad\xbe\xef"];
+    bytes exact4 = 6 [(nanopb).max_size = 4, (nanopb).fixed_length = true];
+    bytes oversized_in = 7 [(nanopb).max_size = 3, (validate.rules).bytes.in = "ab", (validate.rules).bytes.in = "too long for it"];
+}
+
+message Stamps {
+    google.protobuf.Timestamp future = 1 [(validate.rules).timestamp.gt_now = true];
+    google.protobuf.Timestamp past = 2 [(validate.rules).timestamp.lt_now = true];
+    google.protobuf.Timestamp recent = 3 [(validate.rules).timestamp.within.seconds = 3600];
+    google.protobuf.Timestamp plain = 4;
+    google.protobuf.Duration span = 5;
+}
+
+message OneofRequired {
+    oneof pick {
+        int32 number = 1 [(validate.rules).int32.gt = 0];
+        string text = 2 [(nanopb).max_size = 8, (validate.rules).oneof_required = true];
+        bytes blob = 3 [(nanopb).max_size = 4];
+    }
+}
+
+message MessageRules {
+    option (validate.message).requires = "b";
+    option (validate.message).mutex = {fields: ["c", "d"]};
+    option (validate.message).at_least = {n: 2 fields: ["a", "b", "c"]};
+    optional int32 a = 1;
+    optional int32 b = 2 [(validate.rules).int32.gt = 0];
+    optional string c = 3 [(nanopb).max_size = 6];
+    optional string d = 4 [(nanopb).max_size = 6];
+}
+
+/* Fields without static storage (callbacks / pointers) have no size limit. */
+message Dynamic {
+    string long_text = 1 [(validate.rules).string.min_len = 30, (validate.rules).string.max_len = 40];
+    bytes long_blob = 2 [(validate.rules).bytes.min_len = 50];
+    repeated int32 many = 3 [(validate.rules).repeated.min_items = 8, (validate.rules).repeated.max_items = 9];
+    string pointer = 4 [(nanopb).type = FT_POINTER, (nanopb).max_size = 2, (validate.rules).string.min_len = 5];
+}
+
+message Formats {
+    string email = 1 [(nanopb).max_size = 6, (validate.rules).string.email = true];
+    string host = 2 [(nanopb).max_size = 2, (validate.rules).string.hostname = true];
+    string v4 = 3 [(nanopb).max_size = 8, (validate.rules).string.ipv4 = true];
+    string v6 = 4 [(nanopb).max_size = 40, (validate.rules).string.ipv6 = true];
+    string any_ip = 5 [(nanopb).max_size = 9, (validate.rules).string.ip = true];
+    string long_host = 6 [(nanopb).max_size = 255, (validate.rules).string.hostname = true, (validate.rules).string.min_len = 200];
+}
+
+/* Each of these has rules that no value can satisfy. */
+message UnsatMinLen { string s = 1 [(nanopb).max_size = 4, (validate.rules).string.min_len = 5]; }
+message UnsatConstSize { string s = 1 [(nanopb).max_size = 4, (validate.rules).string.const_value = "toolong"]; }
+message UnsatIntSize { int32 v = 1 [(nanopb).int_size = IS_8, (validate.rules).int32.const_value = 1000]; }
+message UnsatIntRange { int32 v = 1 [(validate.rules).int32.gt = 10, (validate.rules).int32.lt = 11]; }
+message UnsatCount { repeated int32 v = 1 [(nanopb).max_count = 2, (validate.rules).repeated.min_items = 3]; }
+message UnsatUnique { repeated bool v = 1 [(nanopb).max_count = 5, (validate.rules).repeated.min_items = 3, (validate.rules).repeated.unique = true]; }
+message UnsatAffix { string s = 1 [(nanopb).max_size = 6, (validate.rules).string.prefix = "abcd", (validate.rules).string.suffix = "efgh"]; }
+message UnsatFloat { float f = 1 [(validate.rules).float.gt = 1.0, (validate.rules).float.lt = 1.0]; }
+message UnsatNotIn { int32 v = 1 [(validate.rules).int32.gte = 1, (validate.rules).int32.lte = 2,
+                                   (validate.rules).int32.not_in = 1, (validate.rules).int32.not_in = 2]; }

@@ -1,0 +1,45 @@
+/* Messages that the generated validator cannot check (validate.message
+ * rules) or that exercise nanopb option handling only (wildcard masks,
+ * imported .options, Any lists).  The data generator still has to produce data
+ * that fits the nanopb limits, so these vectors are only decoded.
+ */
+
+syntax = "proto3";
+
+package stressdec;
+
+import "validate.proto";
+import "nanopb.proto";
+import "google/protobuf/any.proto";
+import "common.proto";
+
+message Inner {
+    string name = 1 [(nanopb).max_size = 8, (validate.rules).string.min_len = 1];
+    int32 v = 2 [(validate.rules).int32.gte = 1, (validate.rules).int32.lte = 9];
+}
+
+message AnyList {
+    repeated google.protobuf.Any items = 1 [(nanopb).max_count = 3, (validate.rules).repeated.min_items = 1];
+}
+
+message MessageRules {
+    option (validate.message).requires = "b";
+    option (validate.message).mutex = {fields: ["c", "d"]};
+    option (validate.message).at_least = {n: 2 fields: ["a", "b", "c"]};
+    optional int32 a = 1;
+    optional int32 b = 2 [(validate.rules).int32.gt = 0];
+    optional string c = 3 [(nanopb).max_size = 6];
+    optional string d = 4 [(nanopb).max_size = 6];
+}
+
+/* Options come from wildcard masks and the options file of other protos. */
+message Wild {
+    string a = 1;                                    /* stressdec.Wild.* max_size:6 */
+    string b = 2 [(validate.rules).string.min_len = 3];
+    string special = 3;                              /* max_size:10 overrides the wildcard */
+    string inline_wins = 4 [(nanopb).max_size = 3];  /* inline option beats the .options file */
+    repeated int32 nums = 5;                         /* stressdec.Wild.* max_count:3 */
+    bytes blob = 6;                                  /* max_size:6 from the wildcard */
+    stresscommon.Meta meta = 7;
+    repeated stresscommon.Meta metas = 8;            /* max_count:2 */
+}

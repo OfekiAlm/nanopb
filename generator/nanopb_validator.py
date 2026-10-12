@@ -1171,6 +1171,9 @@ class NumericRuleEmitter(RuleEmitter):
             return ''
         
         value = rule_ir.rule.params.get('value', 0)
+        if isinstance(value, bool):
+            # str(True) would put the Python spelling "True" into the C source.
+            value = 'true' if value else 'false'
         ctype = rule_ir.c_type_info.c_type
         validator_func = rule_ir.c_type_info.validator_func
         
@@ -1494,6 +1497,30 @@ class ItemsRuleEmitter(RuleEmitter):
                     code += '            pb_validate_context_pop_index(&ctx);\n'
                     code += '        }\n'
             
+            elif rule_type == RULE_ENUM_DEFINED:
+                # Previously dropped without a trace, so repeated enum fields
+                # accepted undefined values even with items.enum.defined_only.
+                enum_vals = []
+                ctype = getattr(field, 'ctype', None)
+                for e in getattr(proto_file, 'enums', []) or []:
+                    if e.names == ctype or str(e.names) == str(ctype):
+                        enum_vals = [int(v) for (_, v) in getattr(e, 'values', [])]
+                        break
+                if enum_vals:
+                    arr_values = ', '.join(str(v) for v in enum_vals)
+                    code += '        /* repeated.items enum.defined_only validation */\n'
+                    code += '        {\n'
+                    code += '            static const int __pb_%s_item_vals[] = { %s };\n' % (field_name, arr_values)
+                    code += '            for (pb_size_t __pb_i = 0; __pb_i < msg->%s_count; ++__pb_i) {\n' % field_name
+                    code += '                pb_validate_context_push_index(&ctx, __pb_i);\n'
+                    code += '                if (!pb_validate_enum_defined_only((int)msg->%s[__pb_i], __pb_%s_item_vals, (pb_size_t)(sizeof(__pb_%s_item_vals)/sizeof(__pb_%s_item_vals[0])))) {\n' % (field_name, field_name, field_name, field_name)
+                    code += '                    PB_VALIDATE_RECORD(ctx, "%s", "Value must be a defined enum value");\n' % constraint_id
+                    code += '                    if (PB_VALIDATE_SHOULD_EXIT(ctx)) { pb_validate_context_pop_index(&ctx); return false; }\n'
+                    code += '                }\n'
+                    code += '                pb_validate_context_pop_index(&ctx);\n'
+                    code += '            }\n'
+                    code += '        }\n'
+
             elif rule_type == RULE_IN:
                 values = item_rule.get('values', [])
                 if pbtype == 'STRING':
@@ -1582,28 +1609,129 @@ class TimestampRuleEmitter(RuleEmitter):
 
 
 class AnyRuleEmitter(RuleEmitter):
-    """Emits C code for Any field rules (ANY_IN, ANY_NOT_IN)."""
-    
+    """Emits C code for Any field rules (ANY_IN, ANY_NOT_IN).
+
+    Handles singular Any fields (guarded by has_<field>), Any held in a oneof
+    arm (selected arm implies presence) and repeated Any fields (every entry).
+    """
+
     def emit(self, rule_ir: RuleIR, proto_file: Any) -> str:
         field_name = rule_ir.field_name
         values = rule_ir.rule.params.get('values', [])
-        
+        ctx = rule_ir.context
+
         if not values:
             return ''
-        
-        values_array = ', '.join('"%s"' % url for url in values)
-        
-        if rule_ir.rule_type == RULE_ANY_IN:
-            return ('    static const char *__pb_%s_urls_in[] = { %s };\n'
-                    '    PB_VALIDATE_ANY_IN(ctx, msg, %s, __pb_%s_urls_in, %d, "%s");\n') % (
-                field_name, values_array, field_name, field_name, len(values), rule_ir.constraint_id)
-        
-        elif rule_ir.rule_type == RULE_ANY_NOT_IN:
-            return ('    static const char *__pb_%s_urls_notin[] = { %s };\n'
-                    '    PB_VALIDATE_ANY_NOT_IN(ctx, msg, %s, __pb_%s_urls_notin, %d, "%s");\n') % (
-                field_name, values_array, field_name, field_name, len(values), rule_ir.constraint_id)
-        
-        return ''
+
+        values_array = ', '.join('"%s"' % _escape_c_string(url) for url in values)
+        is_in = rule_ir.rule_type == RULE_ANY_IN
+        suffix = 'in' if is_in else 'notin'
+        macro = 'ANY_IN' if is_in else 'ANY_NOT_IN'
+        message = 'type_url not in allowed list' if is_in else 'type_url in disallowed list'
+        array = '__pb_%s_urls_%s' % (field_name, suffix)
+        decl = '        static const char *%s[] = { %s };\n' % (array, values_array)
+
+        if ctx.is_oneof and not ctx.is_anonymous:
+            return '        {\n' + decl.replace('        static', '            static') + (
+                '            PB_VALIDATE_ONEOF_%s(ctx, msg, %s, %s, %s, %d, "%s");\n'
+                '        }\n') % (macro, ctx.oneof_name, field_name, array, len(values),
+                                  rule_ir.constraint_id)
+
+        rules = getattr(ctx.field, 'rules', None)
+        if rules in ('REPEATED', 'FIXARRAY') and not ctx.is_oneof:
+            count = ('msg->%s_count' % field_name) if rules == 'REPEATED' else \
+                '(sizeof(msg->%s) / sizeof(msg->%s[0]))' % (field_name, field_name)
+            check = ('(__pb_url && strcmp(__pb_url, %s[__pb_k]) == 0)' % array)
+            if is_in:
+                body = ('                bool __pb_ok = false;\n'
+                        '                for (size_t __pb_k = 0; __pb_k < %d; ++__pb_k)\n'
+                        '                    if %s { __pb_ok = true; break; }\n'
+                        '                if (!__pb_ok) {\n') % (len(values), check)
+            else:
+                body = ('                bool __pb_ok = true;\n'
+                        '                for (size_t __pb_k = 0; __pb_k < %d; ++__pb_k)\n'
+                        '                    if %s { __pb_ok = false; break; }\n'
+                        '                if (!__pb_ok) {\n') % (len(values), check)
+            return ('        {\n' + decl.replace('        static', '            static') +
+                    '            for (pb_size_t __pb_i = 0; __pb_i < %s; ++__pb_i) {\n'
+                    '                const char *__pb_url = (const char *)msg->%s[__pb_i].type_url;\n'
+                    '%s'
+                    '                    pb_validate_context_push_index(&ctx, __pb_i);\n'
+                    '                    PB_VALIDATE_RECORD(ctx, "%s", "%s");\n'
+                    '                    pb_validate_context_pop_index(&ctx);\n'
+                    '                    if (PB_VALIDATE_SHOULD_EXIT(ctx)) return false;\n'
+                    '                }\n'
+                    '            }\n'
+                    '        }\n') % (count, field_name, body, rule_ir.constraint_id, message)
+
+        return decl + '        PB_VALIDATE_%s(ctx, msg, %s, %s, %d, "%s");\n' % (
+            macro, field_name, array, len(values), rule_ir.constraint_id)
+
+
+class BytesSetRuleEmitter(RuleEmitter):
+    """Emits C code for bytes prefix / suffix / contains / in / not_in.
+
+    These used to fall through to the string macros, which call strlen() on a
+    pb_bytes_array_t and do not even compile.
+    """
+
+    C_RULE = {
+        RULE_PREFIX: 'PB_VALIDATE_RULE_PREFIX',
+        RULE_SUFFIX: 'PB_VALIDATE_RULE_SUFFIX',
+        RULE_CONTAINS: 'PB_VALIDATE_RULE_CONTAINS',
+    }
+    MESSAGES = {
+        RULE_PREFIX: 'Bytes must start with specified prefix',
+        RULE_SUFFIX: 'Bytes must end with specified suffix',
+        RULE_CONTAINS: 'Bytes must contain specified sub-sequence',
+        RULE_IN: 'Value must be one of allowed set',
+        RULE_NOT_IN: 'Value is in forbidden set',
+    }
+
+    @staticmethod
+    def _as_bytes(value: Any) -> bytes:
+        if isinstance(value, str):
+            return value.encode('latin-1', 'replace')
+        return bytes(value)
+
+    @staticmethod
+    def _array(name: str, data: bytes) -> str:
+        return 'static const pb_byte_t %s[] = { %s };' % (
+            name, ', '.join('0x%02x' % b for b in data) if data else '0x00')
+
+    def emit(self, rule_ir: RuleIR, proto_file: Any) -> str:
+        ctx = rule_ir.context
+        field_name = rule_ir.field_name
+        access = ('msg->%s.%s' % (ctx.oneof_name, field_name)
+                  if ctx.is_oneof and not ctx.is_anonymous else 'msg->%s' % field_name)
+        message = self.MESSAGES[rule_ir.rule_type]
+        fail = ('                PB_VALIDATE_RECORD(ctx, "%s", "%s");\n'
+                '                if (PB_VALIDATE_SHOULD_EXIT(ctx)) return false;\n'
+                % (rule_ir.constraint_id, message))
+
+        if rule_ir.rule_type in self.C_RULE:
+            data = self._as_bytes(rule_ir.rule.params.get('value', b''))
+            return ('        {\n'
+                    '            %s\n'
+                    '            if (!pb_validate_bytes_pattern(%s.bytes, %s.size, __pb_pattern, %d, %s)) {\n'
+                    '%s'
+                    '            }\n'
+                    '        }\n') % (self._array('__pb_pattern', data), access, access, len(data),
+                                       self.C_RULE[rule_ir.rule_type], fail)
+
+        values = [self._as_bytes(v) for v in rule_ir.rule.params.get('values', [])]
+        if not values:
+            return ''
+        arrays = '\n            '.join(self._array('__pb_v%d' % i, v) for i, v in enumerate(values))
+        items = ', '.join('{ __pb_v%d, %d }' % (i, len(v)) for i, v in enumerate(values))
+        negate = '' if rule_ir.rule_type == RULE_IN else '!'
+        return ('        {\n'
+                '            %s\n'
+                '            static const pb_validate_bytes_item_t __pb_set[] = { %s };\n'
+                '            if (!(%spb_validate_bytes_in(%s.bytes, %s.size, __pb_set, %d))) {\n'
+                '%s'
+                '            }\n'
+                '        }\n') % (arrays, items, negate, access, access, len(values), fail)
 
 
 class RequiredRuleEmitter(RuleEmitter):
@@ -1743,6 +1871,7 @@ class RuleEmitterRegistry:
 
         # const_value on string/bytes fields cannot use the numeric path
         self._const_emitter = ConstValueRuleEmitter()
+        self._bytes_set_emitter = BytesSetRuleEmitter()
         
         length_emitter = StringLengthRuleEmitter()
         for rule_type in [RULE_MIN_LEN, RULE_MAX_LEN]:
@@ -1822,6 +1951,9 @@ class RuleEmitterRegistry:
         if rule_ir.rule_type == RULE_EQ and \
                 getattr(rule_ir.context.field, 'pbtype', None) in ('STRING', 'BYTES'):
             emitter = self._const_emitter
+        if rule_ir.rule_type in (RULE_PREFIX, RULE_SUFFIX, RULE_CONTAINS, RULE_IN, RULE_NOT_IN) and \
+                getattr(rule_ir.context.field, 'pbtype', None) == 'BYTES':
+            emitter = self._bytes_set_emitter
         if emitter:
             code = emitter.emit(rule_ir, proto_file)
             # Presence rules must run when the field is absent, so they are
@@ -2077,6 +2209,78 @@ class ValidatorGenerator:
         
         return sorted(dep_headers)
 
+    def _nested_validation_lines(self, field: Any, field_name: str,
+                                 oneof_name: Optional[str] = None,
+                                 is_anonymous: bool = False) -> List[str]:
+        """C statements that validate the sub-message(s) stored in ``field``.
+
+        Covers singular, optional, pointer, repeated, fixed_count, map and
+        oneof-arm sub-messages.  google.protobuf.Any/Timestamp have their own
+        rules and are skipped.
+        """
+        pbtype = getattr(field, 'pbtype', None)
+        ctype = getattr(field, 'ctype', None)
+        if pbtype not in ('MESSAGE', 'MSG_W_CB') or not ctype:
+            return []
+        lowered = str(ctype).lower()
+        if 'google' in lowered and 'protobuf' in lowered and ('any' in lowered or 'timestamp' in lowered):
+            return []
+
+        sub_func = 'pb_validate_' + str(ctype).replace('.', '_')
+        allocation = getattr(field, 'allocation', None)
+        rules = getattr(field, 'rules', None)
+
+        if oneof_name is not None:
+            if not self._has_validator(ctype):
+                return []
+            if is_anonymous:
+                return ['    PB_VALIDATE_NESTED_MSG(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)]
+            return ['    PB_VALIDATE_NESTED_MSG_ONEOF(ctx, %s, msg, %s, %s, violations);\n'
+                    % (sub_func, oneof_name, field_name)]
+
+        if rules in ('REPEATED', 'FIXARRAY'):
+            if allocation != 'STATIC':
+                return []
+            member = ''
+            entry = self._message_by_name(ctype)
+            if entry is not None and getattr(getattr(entry, 'desc', None), 'options', None) is not None \
+                    and entry.desc.options.map_entry:
+                # map<K, V>: validate the values that are messages.
+                value_field = next((f for f in entry.fields if getattr(f, 'name', '') == 'value'), None)
+                if value_field is None:
+                    return []
+                inner = self._nested_validation_lines(value_field, 'value')
+                if not inner or getattr(value_field, 'pbtype', None) not in ('MESSAGE', 'MSG_W_CB'):
+                    return []
+                sub_func = 'pb_validate_' + str(getattr(value_field, 'ctype')).replace('.', '_')
+                member = '.value'
+            elif not self._has_validator(ctype):
+                return []
+            if rules == 'FIXARRAY':
+                count = 'sizeof(msg->%s) / sizeof(msg->%s[0])' % (field_name, field_name)
+            else:
+                count = 'msg->%s_count' % field_name
+            return ['    PB_VALIDATE_NESTED_MSG_ARRAY(ctx, %s, msg, %s, %s, %s, violations);\n'
+                    % (sub_func, field_name, count, member)]
+
+        if allocation == 'POINTER':
+            return ['    PB_VALIDATE_NESTED_MSG_POINTER(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)]
+        if rules == 'OPTIONAL':
+            return ['    PB_VALIDATE_NESTED_MSG_OPTIONAL(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)]
+        return ['    PB_VALIDATE_NESTED_MSG(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)]
+
+    def _message_by_name(self, ctype: Any) -> Optional[Any]:
+        for message in getattr(self.proto_file, 'messages', []) or []:
+            if str(message.name) == str(ctype):
+                return message
+        return None
+
+    def _has_validator(self, ctype: Any) -> bool:
+        """Will a pb_validate_<ctype>() exist?  Messages of other files are assumed to."""
+        if str(ctype) in self.validators:
+            return True
+        return self._message_by_name(ctype) is None
+
     def generate_header(self):
         """Generate validation header file content."""
         if not self.validators:
@@ -2295,35 +2499,13 @@ class ValidatorGenerator:
                     yield self._emit_rule(rule, field, message_name=struct_name)
 
                 # Automatic recursion for nested message fields
-                # When a field contains another message, we need to recursively
-                # validate that nested message as well
                 try:
-                    is_message_field = getattr(field, 'pbtype', None) in ('MESSAGE', 'MSG_W_CB')
-                    submsg_ctype = getattr(field, 'ctype', None)
-                    if is_message_field and submsg_ctype:
-                        # Skip google.protobuf.Any and google.protobuf.Timestamp - they have special validation
-                        submsg_ctype_str = str(submsg_ctype).lower()
-                        is_google_special = ('google' in submsg_ctype_str and 
-                                            'protobuf' in submsg_ctype_str and 
-                                            ('any' in submsg_ctype_str or 'timestamp' in submsg_ctype_str))
-                        if not is_google_special:
-                            allocation = getattr(field, 'allocation', None)
-                            # Generate the nested validation function name
-                            sub_func = 'pb_validate_' + str(submsg_ctype).replace('.', '_')
-                            rules = getattr(field, 'rules', None)
-                                
-                            # Use different macros based on allocation type
-                            if allocation == 'POINTER':
-                                yield '    PB_VALIDATE_NESTED_MSG_POINTER(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
-                            else:
-                                if rules == 'OPTIONAL':
-                                    yield '    PB_VALIDATE_NESTED_MSG_OPTIONAL(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
-                                else:
-                                    yield '    PB_VALIDATE_NESTED_MSG(ctx, %s, msg, %s, violations);\n' % (sub_func, field_name)
+                    for line in self._nested_validation_lines(field, field_name):
+                        yield line
                 except Exception:
                     # If field shape is unexpected, skip recursion silently to avoid crashes
                     pass
-                
+
                 yield '    PB_VALIDATE_FIELD_END(ctx);\n'
                 yield '\n'
             
@@ -2347,20 +2529,14 @@ class ValidatorGenerator:
                     if 'google' in submsg_ctype_str and 'protobuf' in submsg_ctype_str and ('any' in submsg_ctype_str or 'timestamp' in submsg_ctype_str):
                         continue
                     
-                    allocation = getattr(f, 'allocation', None)
-                    
-                    sub_func = 'pb_validate_' + str(submsg_ctype).replace('.', '_')
-                    rules = getattr(f, 'rules', None)
+                    lines = self._nested_validation_lines(f, fname)
+                    if not lines:
+                        continue
                     # Open path context
                     yield '    /* Validate field: %s */\n' % fname
                     yield '    PB_VALIDATE_FIELD_BEGIN(ctx, "%s");\n' % fname
-                    if allocation == 'POINTER':
-                        yield '    PB_VALIDATE_NESTED_MSG_POINTER(ctx, %s, msg, %s, violations);\n' % (sub_func, fname)
-                    else:
-                        if rules == 'OPTIONAL':
-                            yield '    PB_VALIDATE_NESTED_MSG_OPTIONAL(ctx, %s, msg, %s, violations);\n' % (sub_func, fname)
-                        else:
-                            yield '    PB_VALIDATE_NESTED_MSG(ctx, %s, msg, %s, violations);\n' % (sub_func, fname)
+                    for line in lines:
+                        yield line
                     yield '    PB_VALIDATE_FIELD_END(ctx);\n'
                     yield '\n'
                 except Exception:
@@ -2394,6 +2570,36 @@ class ValidatorGenerator:
                     yield '    PB_VALIDATE_FIELD_END(ctx);\n'
                     yield '    PB_VALIDATE_ONEOF_CASE_END()\n'
                 
+                yield '    PB_VALIDATE_ONEOF_DEFAULT()\n'
+                yield '    PB_VALIDATE_ONEOF_END()\n'
+                yield '\n'
+
+            # Sub-messages held in oneof arms are validated while their arm is
+            # selected, whether or not the arm has rules of its own.
+            for oneof in getattr(validator.message, 'fields', []):
+                if getattr(oneof, 'pbtype', None) != 'oneof':
+                    continue
+                is_anonymous = getattr(oneof, 'anonymous', False)
+                arms = []
+                for member in getattr(oneof, 'fields', []) or []:
+                    try:
+                        lines = self._nested_validation_lines(
+                            member, member.name, oneof_name=oneof.name, is_anonymous=is_anonymous)
+                    except Exception:
+                        lines = []
+                    if lines:
+                        arms.append((member, lines))
+                if not arms:
+                    continue
+                yield '    /* Validate sub-messages of oneof: %s */\n' % oneof.name
+                yield '    PB_VALIDATE_ONEOF_BEGIN(ctx, msg, %s)\n' % oneof.name
+                for member, lines in arms:
+                    yield '    PB_VALIDATE_ONEOF_CASE(%s_%s_tag)\n' % (struct_name, member.name)
+                    yield '    PB_VALIDATE_FIELD_BEGIN(ctx, "%s");\n' % member.name
+                    for line in lines:
+                        yield line
+                    yield '    PB_VALIDATE_FIELD_END(ctx);\n'
+                    yield '    PB_VALIDATE_ONEOF_CASE_END()\n'
                 yield '    PB_VALIDATE_ONEOF_DEFAULT()\n'
                 yield '    PB_VALIDATE_ONEOF_END()\n'
                 yield '\n'

@@ -610,6 +610,55 @@ static void test_string_rules(void)
  * REPEATED RULES TESTS
  *======================================================================*/
 
+/* IPv6 parsing edge cases found by the data generator soak test: a single
+ * trailing colon is malformed while a trailing "::" is a valid compression.
+ */
+static void test_ipv6_edge_cases(void)
+{
+    static const struct { const char *text; int valid; } cases[] = {
+        {"::", 1}, {"::1", 1}, {"1::", 1}, {"1:2::", 1}, {"1::2", 1}, {"fe80::1", 1},
+        {"1:2:3:4:5:6:7:8", 1}, {"1:2:3:4:5:6:7::", 1}, {"::ffff:1.2.3.4", 1},
+        {"1:2:", 0}, {"1:", 0}, {":", 0}, {":::", 0}, {"1:::2", 0}, {"1::2::3", 0},
+        {"1:2:3", 0}, {"1:2:3:4:5:6:7:8:9", 0}, {"1:2:3:4:5:6:7:8::", 0},
+        {"gggg::1", 0}, {"12345::1", 0}, {":1:2:3:4:5:6:7", 0}, {"1.2.3.4", 0},
+    };
+    pb_violations_t viol;
+    bool ok;
+    size_t i;
+
+    TEST("StringRules - ipv6 edge cases");
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+    {
+        StringRules msg = StringRules_init_zero;
+        strcpy(msg.min_len_field, "abc");
+        strcpy(msg.max_len_field, "short");
+        strcpy(msg.range_len_field, "hello");
+        strcpy(msg.prefix_field, "PREFIX_test");
+        strcpy(msg.suffix_field, "test_SUFFIX");
+        strcpy(msg.contains_field, "user@test");
+        strcpy(msg.ascii_field, "ASCII123");
+        strcpy(msg.email_field, "test@example.com");
+        strcpy(msg.hostname_field, "example.com");
+        strcpy(msg.ip_field, "192.168.1.1");
+        strcpy(msg.ipv4_field, "10.0.0.1");
+        strcpy(msg.ipv6_field, cases[i].text);
+        strcpy(msg.in_field, "red");
+        strcpy(msg.not_in_field, "safe");
+
+        pb_violations_init(&viol);
+        ok = pb_validate_StringRules(&msg, &viol);
+        if (cases[i].valid)
+        {
+            EXPECT_VALID(ok, cases[i].text);
+        }
+        else
+        {
+            EXPECT_INVALID(ok, cases[i].text);
+            EXPECT_VIOLATION(viol, "string.ipv6");
+        }
+    }
+}
+
 static void test_repeated_rules(void)
 {
     pb_violations_t viol;
@@ -1669,6 +1718,7 @@ int main(void)
     test_double_rules();
     test_uint_rules();
     test_string_rules();
+    test_ipv6_edge_cases();
     test_repeated_rules();
     test_repeated_items_rules();
     test_enum_rules();

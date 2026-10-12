@@ -1,0 +1,5 @@
+stress.Strings.opt_file_cap  max_length:5
+stress.Blobs.opt_file_cap    max_size:6
+stress.Repeats.opt_file_count max_count:2
+stress.Maps.ByNameEntry.key   max_size:8
+stress.Maps.ByIdEntry.value   max_size:6

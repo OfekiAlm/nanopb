@@ -598,6 +598,48 @@ bool pb_validate_bytes(const pb_bytes_array_t *value, const void *rule_data, pb_
     }
 }
 
+/* Prefix / suffix / contains on raw bytes (see pb_validate.h) */
+bool pb_validate_bytes_pattern(const pb_byte_t *data, size_t size,
+                               const pb_byte_t *pattern, size_t pattern_size,
+                               pb_validate_rule_type_t rule_type)
+{
+    size_t i;
+
+    if (pattern_size > size)
+        return false;
+
+    switch (rule_type)
+    {
+    case PB_VALIDATE_RULE_PREFIX:
+        return pattern_size == 0 || memcmp(data, pattern, pattern_size) == 0;
+    case PB_VALIDATE_RULE_SUFFIX:
+        return pattern_size == 0 || memcmp(data + (size - pattern_size), pattern, pattern_size) == 0;
+    case PB_VALIDATE_RULE_CONTAINS:
+        if (pattern_size == 0)
+            return true;
+        for (i = 0; i + pattern_size <= size; i++)
+        {
+            if (memcmp(data + i, pattern, pattern_size) == 0)
+                return true;
+        }
+        return false;
+    default:
+        return true;
+    }
+}
+
+bool pb_validate_bytes_in(const pb_byte_t *data, size_t size,
+                          const pb_validate_bytes_item_t *items, size_t count)
+{
+    size_t i;
+    for (i = 0; i < count; i++)
+    {
+        if (items[i].size == size && (size == 0 || memcmp(data, items[i].data, size) == 0))
+            return true;
+    }
+    return false;
+}
+
 /* Validation function for enums */
 bool pb_validate_enum(int value, const void *rule_data, pb_validate_rule_type_t rule_type)
 {
@@ -844,6 +886,7 @@ static bool is_valid_ipv6(const char *s, size_t len)
     size_t i = 0, start = 0;
     int hextets = 0;
     bool compress = false;
+    bool after_compress = false; /* the previous token was a "::" */
 
     if (s[i] == ':')
     {
@@ -852,6 +895,7 @@ static bool is_valid_ipv6(const char *s, size_t len)
         i += 2;
         start = i;
         compress = true; /* leading :: */
+        after_compress = true;
         if (i == len)
             return true; /* "::" only (all zeros) */
     }
@@ -862,14 +906,25 @@ static bool is_valid_ipv6(const char *s, size_t len)
         {
             if (i == start)
             {
+                if (i == len)
+                {
+                    /* The string ends in ':'. That is only fine as the end of
+                     * "::" (e.g. "1::"); a single trailing colon ("1:2:") is
+                     * malformed. */
+                    if (after_compress)
+                        break;
+                    return false;
+                }
                 /* empty, must be '::' */
                 if (compress)
                     return false; /* second '::' not allowed */
                 compress = true;
+                after_compress = true;
                 i++;
                 start = i; /* skip second ':' */
                 continue;
             }
+            after_compress = false;
 
             /* Check if this segment is IPv4 tail */
             bool has_dot = false;
