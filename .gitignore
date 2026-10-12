@@ -51,3 +51,4 @@ tests/*/test_*
 !tests/*/test_*.proto
 !tests/data_generator_any/test_data_generator_any.py
 !tests/validation/unimplemented_rules_check.py
+!tests/data_generator_stress/test_generator_semantics.py
