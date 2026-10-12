@@ -745,6 +745,7 @@ class DataGenerator:
                 'protoc',
                 '--descriptor_set_out=' + desc_file,
                 '--include_imports',
+                '--experimental_allow_proto3_optional',
             ]
 
             for path in search_paths:

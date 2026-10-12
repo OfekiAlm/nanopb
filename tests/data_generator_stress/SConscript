@@ -8,6 +8,7 @@ Import("env")
 import sys
 
 test_env = env.Clone()
+test_env.Append(PROTOCFLAGS = "--experimental_allow_proto3_optional")
 
 # Enable validation code generation, and exclude validate.proto from the
 # #include list since it is only used for options.
@@ -47,6 +48,7 @@ test_env.NanopbProto(["google/protobuf/any", "google/protobuf/any.options"])
 # Types the validator cannot handle yet are generated without the validate
 # plugin; the vectors for them are only decoded.
 decode_env = env.Clone()
+decode_env.Append(PROTOCFLAGS = "--experimental_allow_proto3_optional")
 decode_env.Replace(NANOPBFLAGS = "-x,validate.proto")
 decode_env.Prepend(CPPPATH = ['.'])
 decode_env.NanopbProto(["common", "common.options"])
