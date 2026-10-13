@@ -1,0 +1,4 @@
+stressdec.Wild.*              max_size:6 max_count:3
+stressdec.Wild.special        max_size:10
+stressdec.Wild.inline_wins    max_size:50
+stressdec.Wild.metas          max_count:2

@@ -1,0 +1,31 @@
+/* proto2 schema: required fields, defaults, packed repeated fields. */
+
+syntax = "proto2";
+
+package legacy;
+
+import "validate.proto";
+import "nanopb.proto";
+
+enum Mode {
+    MODE_OFF = 0;
+    MODE_ON = 1;
+    MODE_AUTO = 2;
+}
+
+message Record {
+    required string name = 1 [(nanopb).max_size = 8, (validate.rules).string.min_len = 2];
+    required int32 id = 2 [(validate.rules).int32.gte = 1];
+    optional int32 level = 3 [default = 5, (validate.rules).int32.lte = 10];
+    optional string note = 4 [default = "none", (nanopb).max_size = 10];
+    repeated int32 samples = 5 [packed = true, (nanopb).max_count = 6, (validate.rules).repeated.max_items = 4];
+    optional Mode mode = 6 [default = MODE_AUTO];
+    optional bytes blob = 7 [(nanopb).max_size = 5];
+    optional fixed32 stamp = 8 [(validate.rules).fixed32.gt = 100];
+}
+
+message Packet {
+    required Record record = 1;
+    optional Record extra = 2;
+    repeated Record history = 3 [(nanopb).max_count = 2];
+}

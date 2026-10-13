@@ -1,0 +1,13 @@
+/* Imported by decode_only.proto; has its own common.options. */
+
+syntax = "proto3";
+
+package stresscommon;
+
+import "validate.proto";
+
+message Meta {
+    string label = 1;                       /* max_size:6 in common.options */
+    repeated uint32 ids = 2;                /* max_count:2 in common.options */
+    bytes token = 3 [(validate.rules).bytes.min_len = 2];   /* max_size:4 in common.options */
+}

@@ -1,0 +1,244 @@
+/* Stress fixture for generator/nanopb_data_generator.py.
+ *
+ * Every message below combines validate.proto rules with nanopb storage
+ * limits (inline (nanopb) options and entries in stress.options), because
+ * data that satisfies only one of the two either fails pb_decode() or fails
+ * the generated validator.
+ */
+
+syntax = "proto3";
+
+package stress;
+
+import "validate.proto";
+import "nanopb.proto";
+import "google/protobuf/any.proto";
+
+option (validate.validate) = true;
+
+enum Color {
+    COLOR_NONE = 0;
+    COLOR_RED = 1;
+    COLOR_GREEN = 2;
+    COLOR_BLUE = 3;
+}
+
+enum Level {
+    LEVEL_ZERO = 0;
+    LEVEL_LOW = 10;
+    LEVEL_MID = 20;
+    LEVEL_HIGH = 30;
+}
+
+message Ints {
+    int32 a = 1 [(validate.rules).int32.gt = -100, (validate.rules).int32.lt = 100];
+    int32 b = 2 [(validate.rules).int32.gte = 5, (validate.rules).int32.lte = 5];
+    int64 c = 3 [(validate.rules).int64.gte = -5000000000, (validate.rules).int64.lte = 5000000000];
+    uint32 d = 4 [(validate.rules).uint32.gt = 10, (validate.rules).uint32.lte = 4294967295];
+    uint64 e = 5 [(validate.rules).uint64.gte = 1099511627776];
+    sint32 f = 6 [(validate.rules).sint32.in = 3, (validate.rules).sint32.in = -7, (validate.rules).sint32.in = 11];
+    sint64 g = 7 [(validate.rules).sint64.not_in = 0, (validate.rules).sint64.gte = -2, (validate.rules).sint64.lte = 2];
+    fixed32 h = 8 [(validate.rules).fixed32.const_value = 77];
+    fixed64 i = 9 [(validate.rules).fixed64.lt = 1000];
+    sfixed32 j = 10 [(validate.rules).sfixed32.gte = -10, (validate.rules).sfixed32.lte = 10,
+                     (validate.rules).sfixed32.not_in = 0, (validate.rules).sfixed32.not_in = 1];
+    sfixed64 k = 11 [(validate.rules).sfixed64.gt = -1];
+    int32 free_i32 = 12;
+    int64 free_i64 = 13;
+    uint32 free_u32 = 14;
+    uint64 free_u64 = 15;
+    uint32 u_gt_zero = 16 [(validate.rules).uint32.gt = 0, (validate.rules).uint32.lt = 3];
+    int32 neg_only = 17 [(validate.rules).int32.lt = 0];
+    int32 not_in_small = 18 [(validate.rules).int32.gte = 0, (validate.rules).int32.lte = 3,
+                             (validate.rules).int32.not_in = 0, (validate.rules).int32.not_in = 2];
+}
+
+message SmallInts {
+    int32 i8 = 1 [(nanopb).int_size = IS_8];
+    int32 i16 = 2 [(nanopb).int_size = IS_16];
+    uint32 u8 = 3 [(nanopb).int_size = IS_8];
+    uint32 u16 = 4 [(nanopb).int_size = IS_16];
+    int64 i64_as_32 = 5 [(nanopb).int_size = IS_32];
+    sint32 s8 = 6 [(nanopb).int_size = IS_8];
+    uint64 u64_as_16 = 7 [(nanopb).int_size = IS_16];
+    int32 i8_ruled = 8 [(nanopb).int_size = IS_8, (validate.rules).int32.gte = -50];
+    uint32 u8_ruled = 9 [(nanopb).int_size = IS_8, (validate.rules).uint32.gt = 10];
+    int32 i16_in = 10 [(nanopb).int_size = IS_16, (validate.rules).int32.in = 1000, (validate.rules).int32.in = -1000];
+}
+
+message Floats {
+    float f_free = 1;
+    double d_free = 2;
+    float f_range = 3 [(validate.rules).float.gt = -1.5, (validate.rules).float.lt = 1.5];
+    double d_range = 4 [(validate.rules).double.gte = 0.25, (validate.rules).double.lte = 0.75];
+    float f_big_gt = 5 [(validate.rules).float.gt = 1000000.0];
+    double d_in = 6 [(validate.rules).double.in = 1.5, (validate.rules).double.in = 2.5];
+    float f_const = 7 [(validate.rules).float.const_value = 0.5];
+    double d_not_in = 8 [(validate.rules).double.gte = 0.0, (validate.rules).double.lte = 1.0,
+                         (validate.rules).double.not_in = 0.5];
+    double d_lt_only = 9 [(validate.rules).double.lt = 0.0];
+    float f_gte_only = 10 [(validate.rules).float.gte = 100.0];
+}
+
+message Bools {
+    bool free = 1;
+    bool must_true = 2 [(validate.rules).bool.const_value = true];
+    bool must_false = 3 [(validate.rules).bool.const_value = false];
+}
+
+message Strings {
+    string len_ruled = 1 [(nanopb).max_size = 10, (validate.rules).string.min_len = 2, (validate.rules).string.max_len = 8];
+    string cap_only = 2 [(nanopb).max_size = 16];
+    string opt_file_cap = 3;      /* max_length:5 in stress.options */
+    string prefixed = 4 [(nanopb).max_size = 12, (validate.rules).string.prefix = "id-", (validate.rules).string.min_len = 5];
+    string suffixed = 5 [(nanopb).max_size = 20, (validate.rules).string.suffix = ".txt", (validate.rules).string.contains = "log"];
+    string sandwich = 6 [(nanopb).max_size = 13, (validate.rules).string.prefix = "a", (validate.rules).string.suffix = "z",
+                         (validate.rules).string.contains = "mid"];
+    string ascii_short = 7 [(nanopb).max_size = 8, (validate.rules).string.ascii = true, (validate.rules).string.min_len = 3];
+    string email = 8 [(nanopb).max_size = 64, (validate.rules).string.email = true];
+    string host = 9 [(nanopb).max_size = 40, (validate.rules).string.hostname = true];
+    string v4 = 10 [(nanopb).max_size = 16, (validate.rules).string.ipv4 = true];
+    string v6 = 11 [(nanopb).max_size = 40, (validate.rules).string.ipv6 = true];
+    string any_ip = 12 [(nanopb).max_size = 40, (validate.rules).string.ip = true];
+    string pick = 13 [(nanopb).max_size = 16, (validate.rules).string.in = "alpha", (validate.rules).string.in = "beta"];
+    string avoid = 14 [(nanopb).max_size = 4, (validate.rules).string.not_in = "x", (validate.rules).string.min_len = 1,
+                       (validate.rules).string.max_len = 1];
+    string fixed = 15 [(nanopb).max_size = 16, (validate.rules).string.const_value = "fixed"];
+    string long_min = 16 [(nanopb).max_size = 64, (validate.rules).string.min_len = 30];
+    string tight_cap = 17 [(nanopb).max_size = 2, (validate.rules).string.min_len = 1];
+    string long_max = 18 [(nanopb).max_size = 100, (validate.rules).string.min_len = 40, (validate.rules).string.max_len = 60];
+}
+
+message Blobs {
+    bytes len_ruled = 1 [(nanopb).max_size = 10, (validate.rules).bytes.min_len = 2, (validate.rules).bytes.max_len = 8];
+    bytes fixed = 5 [(nanopb).max_size = 8, (validate.rules).bytes.const_value = "\xde\xad\xbe\xef"];
+    bytes exact4 = 6 [(nanopb).max_size = 4, (nanopb).fixed_length = true];
+    bytes cap_only = 7 [(nanopb).max_size = 3];
+    bytes long_min = 8 [(nanopb).max_size = 64, (validate.rules).bytes.min_len = 30];
+    bytes opt_file_cap = 9;       /* max_size:6 in stress.options */
+    bytes pre_suf = 10 [(nanopb).max_size = 16, (validate.rules).bytes.prefix = "\x01\x02",
+                        (validate.rules).bytes.suffix = "\xff", (validate.rules).bytes.contains = "\x10\x20"];
+    bytes pick = 11 [(nanopb).max_size = 8, (validate.rules).bytes.in = "\x01\x02\x03", (validate.rules).bytes.in = "\x09"];
+    bytes avoid = 12 [(nanopb).max_size = 2, (validate.rules).bytes.min_len = 1, (validate.rules).bytes.max_len = 1,
+                      (validate.rules).bytes.not_in = "\x00"];
+}
+
+message Enums {
+    Color c_const = 1 [(validate.rules).enum.const_value = 2];
+    Color c_in = 2 [(validate.rules).enum.in = 1, (validate.rules).enum.in = 3];
+    Color c_not_in = 3 [(validate.rules).enum.not_in = 0, (validate.rules).enum.not_in = 1];
+    Color c_defined = 4 [(validate.rules).enum.defined_only = true];
+    Level l_free = 5;
+    Level l_not_zero = 6 [(validate.rules).enum.not_in = 0, (validate.rules).enum.defined_only = true];
+}
+
+message Inner {
+    string name = 1 [(nanopb).max_size = 8, (validate.rules).string.min_len = 1];
+    int32 v = 2 [(validate.rules).int32.gte = 1, (validate.rules).int32.lte = 9];
+}
+
+message Repeats {
+    repeated int32 bounded = 1 [(nanopb).max_count = 6, (validate.rules).repeated.min_items = 2, (validate.rules).repeated.max_items = 4,
+                                (validate.rules).repeated.unique = true, (validate.rules).repeated.items.int32.gt = 0];
+    repeated string words = 2 [(nanopb).max_size = 8, (nanopb).max_count = 4, (validate.rules).repeated.max_items = 3,
+                               (validate.rules).repeated.items.string.min_len = 2, (validate.rules).repeated.items.string.max_len = 5];
+    repeated uint32 capped = 3 [(nanopb).max_count = 3];
+    repeated uint32 fixed3 = 4 [(nanopb).max_count = 3, (nanopb).fixed_count = true];
+    repeated Color colors = 5 [(nanopb).max_count = 4, (validate.rules).repeated.unique = true, (validate.rules).repeated.max_items = 3];
+    repeated bytes blobs = 6 [(nanopb).max_size = 4, (nanopb).max_count = 2];
+    repeated float unit = 8 [(nanopb).max_count = 4, (validate.rules).repeated.items.float.gte = 0.0,
+                             (validate.rules).repeated.items.float.lte = 1.0];
+    repeated int32 from_set = 9 [(nanopb).max_count = 5, (validate.rules).repeated.min_items = 3, (validate.rules).repeated.unique = true,
+                                 (validate.rules).repeated.items.int32.in = 1, (validate.rules).repeated.items.int32.in = 2,
+                                 (validate.rules).repeated.items.int32.in = 3];
+    repeated string tags = 10 [(nanopb).max_size = 6, (nanopb).max_count = 5, (validate.rules).repeated.min_items = 1,
+                               (validate.rules).repeated.items.string.prefix = "t:"];
+    repeated int64 big = 11 [(nanopb).max_count = 3, (validate.rules).repeated.items.int64.lte = -1];
+    repeated bool flags = 12 [(nanopb).max_count = 2, (validate.rules).repeated.min_items = 2];
+    repeated uint32 opt_file_count = 13;   /* max_count:2 in stress.options */
+    repeated Inner inners = 15 [(nanopb).max_count = 3, (validate.rules).repeated.min_items = 1, (validate.rules).repeated.max_items = 2];
+    repeated Color defined_colors = 14 [(nanopb).max_count = 4, (validate.rules).repeated.items.enum.defined_only = true,
+                                        (validate.rules).repeated.items.enum.not_in = 0];
+}
+
+message Nested {
+    Inner required_inner = 1 [(validate.rules).required = true];
+    Inner opt_inner = 2;
+    optional string maybe = 3 [(nanopb).max_size = 6, (validate.rules).string.min_len = 1];
+    optional int32 required_num = 4 [(validate.rules).required = true, (validate.rules).int32.gte = 100];
+}
+
+message Choice {
+    oneof kind {
+        int32 num = 1 [(validate.rules).int32.gt = 0, (validate.rules).int32.lt = 10];
+        string text = 2 [(nanopb).max_size = 6, (validate.rules).string.min_len = 1];
+        Inner inner = 3;
+        bytes blob = 4 [(nanopb).max_size = 4, (validate.rules).bytes.min_len = 2];
+    }
+    int32 after = 5 [(validate.rules).int32.gte = 0, (validate.rules).int32.lte = 3];
+}
+
+message Maps {
+    map<string, int32> by_name = 1 [(nanopb).max_count = 4, (validate.rules).map.min_pairs = 1, (validate.rules).map.max_pairs = 3];
+    map<int32, string> by_id = 2 [(nanopb).max_count = 2];
+    map<uint32, Inner> inners = 3 [(nanopb).max_count = 2];
+}
+
+message PayloadA {
+    string name = 1 [(nanopb).max_size = 12, (validate.rules).string.min_len = 1];
+    int32 v = 2 [(validate.rules).int32.gte = 0, (validate.rules).int32.lte = 50];
+}
+
+message PayloadB {
+    repeated uint32 ids = 1 [(nanopb).max_count = 4, (validate.rules).repeated.min_items = 1];
+    bytes raw = 2 [(nanopb).max_size = 16, (validate.rules).bytes.min_len = 1];
+}
+
+/* Payload that cannot fit the 96 byte Any.value of stress.options. */
+message PayloadHuge {
+    string text = 1 [(nanopb).max_size = 200, (validate.rules).string.min_len = 150];
+}
+
+message PayloadNested {
+    PayloadA a = 1 [(validate.rules).required = true];
+    Inner inner = 2;
+}
+
+message AnyHolder {
+    google.protobuf.Any one = 1 [
+        (validate.rules).required = true,
+        (validate.rules).any.in = "type.googleapis.com/stress.PayloadA",
+        (validate.rules).any.in = "type.googleapis.com/stress.PayloadB"
+    ];
+    google.protobuf.Any single = 2 [(validate.rules).any.in = "type.googleapis.com/stress.PayloadNested"];
+    google.protobuf.Any open = 3;
+    google.protobuf.Any denied = 4 [
+        (validate.rules).any.not_in = "type.googleapis.com/stress.PayloadA",
+        (validate.rules).any.not_in = "type.googleapis.com/stress.PayloadB"
+    ];
+    repeated google.protobuf.Any many = 5 [
+        (nanopb).max_count = 3,
+        (validate.rules).repeated.min_items = 1,
+        (validate.rules).repeated.max_items = 2
+    ];
+    int32 tail = 6 [(validate.rules).int32.const_value = 42];
+}
+
+message AnyChoice {
+    oneof body {
+        google.protobuf.Any any_body = 1 [(validate.rules).any.in = "type.googleapis.com/stress.PayloadA"];
+        google.protobuf.Any other_body = 3 [(validate.rules).any.not_in = "type.googleapis.com/stress.PayloadA"];
+        string text_body = 2 [(nanopb).max_size = 8];
+    }
+}
+
+message AnyList {
+    repeated google.protobuf.Any typed = 1 [(nanopb).max_count = 3, (validate.rules).any.in = "type.googleapis.com/stress.PayloadA"];
+}
+
+message Envelope {
+    string id = 1 [(nanopb).max_size = 12, (validate.rules).string.min_len = 4];
+    Nested nested = 2;
+    AnyHolder holder = 3;
+    Repeats repeats = 4;
+}

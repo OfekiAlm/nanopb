@@ -1,0 +1,3 @@
+stresscommon.Meta.label  max_size:6
+stresscommon.Meta.ids    max_count:2
+stresscommon.Meta.token  max_size:4

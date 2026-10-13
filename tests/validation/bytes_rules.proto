@@ -14,3 +14,8 @@ message BytesRules {
     bytes max_len_field = 2 [(nanopb).max_size = 256, (validate.rules).bytes.max_len = 100];
     bytes range_len_field = 3 [(nanopb).max_size = 256, (validate.rules).bytes.min_len = 4, (validate.rules).bytes.max_len = 64];
 }
+
+/* Test bytes const_value rule */
+message BytesConstRules {
+    bytes const_field = 1 [(nanopb).max_size = 32, (validate.rules).bytes.const_value = "\001\002\003"];
+}

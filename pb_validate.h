@@ -278,6 +278,17 @@ extern "C"
             }                                                                                                   \
         } while (0)
 
+    /* String const_value helper for normal (non-callback) string fields. */
+    #define PB_VALIDATE_STR_CONST(ctx_var, msg_ptr, field_name, CONST_STR, CONSTRAINT_ID)                     \
+        do {                                                                                                    \
+            const char *__pb_const = (CONST_STR);                                                              \
+            if (!pb_validate_string((msg_ptr)->field_name, (pb_size_t)strlen((msg_ptr)->field_name),           \
+                                    __pb_const, PB_VALIDATE_RULE_EQ)) {                                        \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "Value must equal specified constant");             \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                             \
+            }                                                                                                   \
+        } while (0)
+
     /* String format validation helpers for normal (non-callback) string fields.
      * These macros validate email, hostname, IP address, and ASCII format.
      */
@@ -523,6 +534,20 @@ extern "C"
             }                                                                                                  \
         } while (0)
 
+    /* Bytes const_value validation macro. The expected value is given as a
+     * plain byte array plus its length, so that the generated code does not
+     * need to construct a pb_bytes_array_t literal.
+     */
+    #define PB_VALIDATE_BYTES_CONST(ctx_var, msg_ptr, field_name, EXPECTED_ARR, EXPECTED_SIZE, CONSTRAINT_ID)   \
+        do {                                                                                                   \
+            if ((msg_ptr)->field_name.size != (pb_size_t)(EXPECTED_SIZE) ||                                    \
+                ((EXPECTED_SIZE) > 0 &&                                                                        \
+                 memcmp((msg_ptr)->field_name.bytes, (EXPECTED_ARR), (size_t)(EXPECTED_SIZE)) != 0)) {         \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "Value must equal specified constant");             \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                            \
+            }                                                                                                  \
+        } while (0)
+
     /* Enum defined_only validation macro.
      * values_arr must be an array of valid enum values.
      */
@@ -553,6 +578,45 @@ extern "C"
                     pb_validate_context_pop_field(&(ctx_var));                                                 \
                     return false;                                                                              \
                 }                                                                                              \
+            }                                                                                                  \
+        } while (0)
+
+    /* Sub-messages in an array: every entry is validated and reported by index.
+     * COUNT is the number of valid entries, MEMBER is empty for repeated
+     * messages or ".value" to validate the value of map entries.
+     */
+    #define PB_VALIDATE_NESTED_MSG_ARRAY(ctx_var, validate_func, msg_ptr, field_name, COUNT, MEMBER, violations_ptr) \
+        do {                                                                                                   \
+            pb_size_t __pb_n = (pb_size_t)(COUNT);                                                             \
+            for (pb_size_t __pb_i = 0; __pb_i < __pb_n; ++__pb_i) {                                            \
+                pb_validate_context_push_index(&(ctx_var), __pb_i);                                            \
+                bool __pb_ok_nested = validate_func(&(msg_ptr)->field_name[__pb_i] MEMBER, (violations_ptr));  \
+                pb_validate_context_pop_index(&(ctx_var));                                                     \
+                if (!__pb_ok_nested && PB_VALIDATE_SHOULD_EXIT(ctx_var)) {                                      \
+                    pb_validate_context_pop_field(&(ctx_var));                                                 \
+                    return false;                                                                              \
+                }                                                                                              \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_NESTED_MSG_REPEATED(ctx_var, validate_func, msg_ptr, field_name, violations_ptr)        \
+        PB_VALIDATE_NESTED_MSG_ARRAY(ctx_var, validate_func, msg_ptr, field_name,                              \
+                                     (msg_ptr)->field_name##_count, , violations_ptr)
+
+    /* Same for fixed_count arrays, which have no _count member. */
+    #define PB_VALIDATE_NESTED_MSG_FIXARRAY(ctx_var, validate_func, msg_ptr, field_name, violations_ptr)        \
+        PB_VALIDATE_NESTED_MSG_ARRAY(ctx_var, validate_func, msg_ptr, field_name,                              \
+                                     sizeof((msg_ptr)->field_name) / sizeof((msg_ptr)->field_name[0]), , violations_ptr)
+
+    /* Message held in a oneof arm: validated only while that arm is selected
+     * (the caller is already inside the matching case).
+     */
+    #define PB_VALIDATE_NESTED_MSG_ONEOF(ctx_var, validate_func, msg_ptr, oneof_name, field_name, violations_ptr) \
+        do {                                                                                                   \
+            bool __pb_ok_nested = validate_func(&(msg_ptr)->oneof_name.field_name, (violations_ptr));          \
+            if (!__pb_ok_nested && PB_VALIDATE_SHOULD_EXIT(ctx_var)) {                                          \
+                pb_validate_context_pop_field(&(ctx_var));                                                     \
+                return false;                                                                                  \
             }                                                                                                  \
         } while (0)
 
@@ -660,6 +724,28 @@ extern "C"
             }                                                                                                  \
         } while (0)
 
+    #define PB_VALIDATE_ONEOF_STR_CONST(ctx_var, msg_ptr, oneof_name, field_name, CONST_STR, CONSTRAINT_ID)     \
+        do {                                                                                                   \
+            const char *__pb_const = (CONST_STR);                                                              \
+            if (!pb_validate_string((msg_ptr)->oneof_name.field_name,                                          \
+                    (pb_size_t)strlen((msg_ptr)->oneof_name.field_name),                                       \
+                    __pb_const, PB_VALIDATE_RULE_EQ)) {                                                        \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "Value must equal specified constant");             \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                            \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_ONEOF_BYTES_CONST(ctx_var, msg_ptr, oneof_name, field_name, EXPECTED_ARR, EXPECTED_SIZE, CONSTRAINT_ID) \
+        do {                                                                                                   \
+            if ((msg_ptr)->oneof_name.field_name.size != (pb_size_t)(EXPECTED_SIZE) ||                         \
+                ((EXPECTED_SIZE) > 0 &&                                                                        \
+                 memcmp((msg_ptr)->oneof_name.field_name.bytes, (EXPECTED_ARR),                                \
+                        (size_t)(EXPECTED_SIZE)) != 0)) {                                                      \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "Value must equal specified constant");             \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                            \
+            }                                                                                                  \
+        } while (0)
+
     /* Any field validation macros - these check type_url against allowed/disallowed lists.
      * Note: type_urls is an array of const char*, count is the number of entries.
      */
@@ -691,6 +777,35 @@ extern "C"
                         if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                    \
                         break;                                                                                 \
                     }                                                                                          \
+                }                                                                                              \
+            }                                                                                                  \
+        } while (0)
+
+    /* Any held in a oneof arm: the arm being selected implies presence. */
+    #define PB_VALIDATE_ONEOF_ANY_IN(ctx_var, msg_ptr, oneof_name, field_name, type_urls, count, CONSTRAINT_ID)  \
+        do {                                                                                                   \
+            const char *__pb_type_url = (const char *)(msg_ptr)->oneof_name.field_name.type_url;               \
+            bool __pb_valid = false;                                                                           \
+            for (size_t __pb_i = 0; __pb_i < (count); ++__pb_i) {                                              \
+                if (__pb_type_url && strcmp(__pb_type_url, (type_urls)[__pb_i]) == 0) {                        \
+                    __pb_valid = true;                                                                         \
+                    break;                                                                                     \
+                }                                                                                              \
+            }                                                                                                  \
+            if (!__pb_valid) {                                                                                 \
+                PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "type_url not in allowed list");                     \
+                if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                            \
+            }                                                                                                  \
+        } while (0)
+
+    #define PB_VALIDATE_ONEOF_ANY_NOT_IN(ctx_var, msg_ptr, oneof_name, field_name, type_urls, count, CONSTRAINT_ID) \
+        do {                                                                                                   \
+            const char *__pb_type_url = (const char *)(msg_ptr)->oneof_name.field_name.type_url;               \
+            for (size_t __pb_i = 0; __pb_i < (count); ++__pb_i) {                                              \
+                if (__pb_type_url && strcmp(__pb_type_url, (type_urls)[__pb_i]) == 0) {                        \
+                    PB_VALIDATE_RECORD(ctx_var, CONSTRAINT_ID, "type_url in disallowed list");                  \
+                    if (PB_VALIDATE_SHOULD_EXIT(ctx_var)) return false;                                        \
+                    break;                                                                                     \
                 }                                                                                              \
             }                                                                                                  \
         } while (0)
@@ -836,6 +951,24 @@ extern "C"
     bool pb_validate_string(const char *value, pb_size_t length, const void *rule_data, pb_validate_rule_type_t rule_type);
     bool pb_validate_bytes(const pb_bytes_array_t *value, const void *rule_data, pb_validate_rule_type_t rule_type);
     bool pb_validate_enum(int value, const void *rule_data, pb_validate_rule_type_t rule_type);
+
+    /* Bytes pattern / set helpers. Generated code passes the expected bytes as
+     * a plain array plus length, so no pb_bytes_array_t literal is needed.
+     * rule_type is PB_VALIDATE_RULE_PREFIX, _SUFFIX or _CONTAINS.
+     */
+    bool pb_validate_bytes_pattern(const pb_byte_t *data, size_t size,
+                                   const pb_byte_t *pattern, size_t pattern_size,
+                                   pb_validate_rule_type_t rule_type);
+
+    typedef struct pb_validate_bytes_item_s
+    {
+        const pb_byte_t *data;
+        size_t size;
+    } pb_validate_bytes_item_t;
+
+    /* True if data[0..size) equals one of the items. */
+    bool pb_validate_bytes_in(const pb_byte_t *data, size_t size,
+                              const pb_validate_bytes_item_t *items, size_t count);
 
     /* Convenience helper for enum defined_only validation.
      * Returns true if 'value' is one of the provided enumeration values.

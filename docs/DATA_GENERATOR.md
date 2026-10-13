@@ -13,33 +13,71 @@ A Python module for generating valid and invalid protobuf test data based on val
 
 ## Supported Validation Rules
 
-### Numeric Types (int32, int64, uint32, uint64, sint32, sint64, float, double)
-- `gt` - Greater than
-- `gte` - Greater than or equal
-- `lt` - Less than
-- `lte` - Less than or equal
+### Numeric Types (int32, int64, uint32, uint64, sint32, sint64, fixed32, fixed64, sfixed32, sfixed64, float, double)
+- `gt` / `gte` / `lt` / `lte` - Bounds (floats are stepped to the next
+  representable `float`/`double`, so `gt`/`lt` hold after rounding)
 - `const` - Exact value
-- `in` - Value must be in list
-- `not_in` - Value must not be in list
+- `in` / `not_in` - Value must (not) be in list
 
 ### String/Bytes
-- `min_len` - Minimum length
-- `max_len` - Maximum length
-- `const` - Exact value
-- `prefix` - Required prefix
-- `suffix` - Required suffix
-- `contains` - Must contain substring
-- `ascii` - ASCII-only characters
-- `in` - Value must be in list
-- `not_in` - Value must not be in list
+- `min_len` / `max_len` - Length limits in bytes (like the C validator)
+- `const`, `in`, `not_in`
+- `prefix`, `suffix`, `contains`
+- `ascii`, `email`, `hostname`, `ip`, `ipv4`, `ipv6` (strings)
 
-### Repeated Fields
-- `min_items` - Minimum number of items
-- `max_items` - Maximum number of items
-- `unique` - All items must be unique
+### Enums
+- `const`, `in`, `not_in`, `defined_only`
+
+### Repeated Fields and Maps
+- `min_items` / `max_items` (`map.min_pairs` / `map.max_pairs`)
+- `unique`
+- `items` - per-entry rules, e.g. `repeated.items.int32.gt`. Violate them with
+  `violate_rule='items.gt'`.
 
 ### Boolean
 - `const` - Exact value
+
+### Messages, oneofs and well-known types
+- `required` / `oneof_required`
+- `google.protobuf.Any`: `any.in` / `any.not_in`. The payload is a real
+  message of the allowed type, serialised into `Any.value`
+- `google.protobuf.Timestamp`: `gt_now`, `lt_now`, `within`; plain
+  `Timestamp`/`Duration` values are always in the legal protobuf range
+- `validate.message`: `requires`, `mutex`, `at_least`
+
+A oneof carries exactly one generated member, so the dictionary returned by
+`generate_valid()` is what gets encoded.
+
+## nanopb Storage Limits
+
+Data that satisfies `validate.proto` can still be undecodable on the target:
+`pb_decode()` fails with `string overflow`, `bytes overflow`, `array overflow`
+or `integer too large` as soon as a value does not fit the C struct. The
+generator therefore reads the same nanopb options the nanopb generator uses
+and keeps **valid and invalid** data inside them:
+
+| Option | Effect on generated data |
+| --- | --- |
+| `max_size` / `max_length` | strings (`max_size - 1` characters) and bytes never exceed the buffer; `bytes` with `fixed_length` are exactly `max_size` long |
+| `max_count` | repeated fields and maps never hold more entries; `fixed_count` arrays are always full |
+| `int_size` | integers stay inside `int8_t`/`int16_t`/... of the generated field |
+| `type: FT_CALLBACK` / `FT_POINTER` | no static buffer, so no size limit is applied |
+| `google.protobuf.Any` `type_url` / `value` `max_size` | `Any` payloads that do not fit are never chosen |
+
+Options are picked up from, in nanopb's order of precedence (later wins):
+
+1. `<name>.options` next to every `.proto` (and below `-I` include paths), with
+   wildcard masks such as `Message.*`, also for imported files such as
+   `google/protobuf/any.options`;
+2. extra files given with `DataGenerator(..., options_files=[...])` or `-f FILE`;
+3. `(nanopb).max_size = ...` written in the `.proto` itself.
+
+If the rules and the storage cannot both be satisfied (for example
+`min_len = 40` for a field with `max_size = 8`) generation raises `ValueError`
+that names the field, instead of returning data the target could never accept.
+Likewise `generate_invalid()` raises `ValidationRuleNotViolatableError` for
+rules that cannot be broken by decodable data (`max_len` equal to the buffer
+size, `lte` equal to the type maximum, ...).
 
 ## Installation
 
@@ -87,6 +125,8 @@ python generator/nanopb_data_generator.py my_proto.proto MyMessage \
 - `--output FILE, -o FILE` - Output file (default: stdout)
 - `--seed SEED` - Random seed for reproducibility
 - `-I DIR, --include DIR` - Include path for proto files
+- `-f FILE, --options-file FILE` - Extra nanopb `.options` file (repeatable);
+  `<proto>.options` is always read automatically
 
 ### Python API
 
@@ -276,19 +316,26 @@ The data generator consists of several components:
 
 ## Limitations
 
-- Message and enum types are not yet fully supported
-- Map fields have limited support
-- Nested messages require manual handling
-- Some complex validation rules may need custom handling
+- `pattern` rules are not supported (the C runtime has no regex engine either)
+- Rules inside nested messages are only violated through the top-level fields
+  of the message passed to `generate_invalid()`
+- Strings are generated from ASCII characters, so `min_len`/`max_len` (bytes)
+  and character counts agree
 
 ## Testing
 
-Run the example script to see the generator in action:
+`tests/data_generator_stress` is a regression suite that runs in the normal
+`cd tests && scons` build. It generates data for a schema that mixes every
+rule with nanopb limits (inline and from `.options` files), then
 
-```bash
-cd examples/data_generation
-python generate_test_data.py
-```
+* decodes it with `pb_decode()` and validates it with the generated C
+  validator - valid data has to pass, invalid data has to be rejected on the
+  field and rule it was generated for - including the messages carried in
+  `google.protobuf.Any` fields (`run_vectors.c`);
+* re-checks every rule with an independent Python oracle and covers the cases
+  C cannot see (`test_generator_semantics.py`).
+
+Run only that suite with `cd tests && scons data_generator_stress`.
 
 ## Integration with Nanopb
 
@@ -327,9 +374,8 @@ void test_validation() {
 
 Contributions are welcome! Areas for improvement:
 
-- [ ] Support for nested messages
-- [ ] Support for enum validation
-- [ ] Support for map fields
+- [x] Support for nested messages, enums, maps, oneofs
+- [x] nanopb storage options (`max_size`, `max_count`, `int_size`, ...)
 - [ ] Custom validation rules
 - [ ] Better error messages
 - [ ] Performance optimizations

@@ -33,3 +33,8 @@ message StringRules {
     string in_field = 13 [(nanopb).max_size = 32, (validate.rules).string.in = "red", (validate.rules).string.in = "green", (validate.rules).string.in = "blue"];
     string not_in_field = 14 [(nanopb).max_size = 32, (validate.rules).string.not_in = "FORBIDDEN", (validate.rules).string.not_in = "BLOCKED", (validate.rules).string.not_in = "BANNED"];
 }
+
+/* Test string const_value rule */
+message StringConstRules {
+    string const_field = 1 [(nanopb).max_size = 32, (validate.rules).string.const_value = "exact"];
+}
